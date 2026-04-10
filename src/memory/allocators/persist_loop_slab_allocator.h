@@ -19,6 +19,7 @@
 #include "base/bitmap.h"
 #include "base/counter.h"
 #include "base/hashtable.h"
+#include "base/string.h"
 #include "memory/malloc.h"
 #include "memory/shm_file.h"
 namespace base {
@@ -76,7 +77,7 @@ public:
 
   std::string GetInfo() const override {
     std::string info;
-    info.append(folly::stringPrintf(
+    info.append(base::StringPrintf(
         "allocated/memory_size/util: %ld/%ld/%ld\n",
         allocated_.load(),
         memory_size_,
@@ -238,7 +239,7 @@ class PersistMemoryPool : public MallocApi {
     }
 
   private:
-    FOLLY_ALWAYS_INLINE int MaxEntryNumber() const {
+    ALWAYS_INLINE int MaxEntryNumber() const {
       return header_->nr_entries_;
     }
 
@@ -438,7 +439,7 @@ public:
         malloced_chunk++;
       }
     }
-    return folly::sformat(
+    return base::SFormat(
         "[PersistMemoryPool] "
         "Use {} of {} chunks,  Util {} %",
         malloced_chunk,
@@ -528,7 +529,7 @@ public:
   void GetMallocsAppend(std::vector<int64>* mallocs_offset) const;
   std::string GetInfo() const {
     std::string info;
-    info.append(folly::stringPrintf(
+    info.append(base::StringPrintf(
         "used/healthy/total block: %ld/%ld/%ld\n",
         total_used_,
         healthy_used_,

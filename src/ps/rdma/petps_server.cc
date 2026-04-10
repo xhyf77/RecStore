@@ -1,5 +1,3 @@
-#include <folly/init/Init.h>
-
 #include <cstdint>
 #include <fstream>
 #include <future>
@@ -8,7 +6,9 @@
 
 #include "base/base.h"
 #include "base/factory.h"
+#include "base/init.h"
 #include "base/log.h"
+#include "base/string.h"
 #include "base/timer.h"
 #include "ps/base/Postoffice.h"
 #include "ps/base/base_ps_server.h"
@@ -189,7 +189,7 @@ private:
             parameter_packs[i].emb_data,
             emb_dim,
             keys[i],
-            folly::sformat("server embedding check error, key is {}", keys[i]));
+            base::SFormat("server embedding check error, key is {}", keys[i]));
       }
     }
 #endif
@@ -293,7 +293,7 @@ private:
 } // namespace recstore
 
 int main(int argc, char* argv[]) {
-  folly::init(&argc, &argv);
+  base::Init(&argc, &argv);
   xmh::Reporter::StartReportThread();
 
   base::PMMmapRegisterCenter::GetConfig().use_dram = FLAGS_use_dram;

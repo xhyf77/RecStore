@@ -95,7 +95,7 @@ DEFINE_int32(brpc_timeout_ms, 5000, "brpc request timeout in milliseconds");
 DEFINE_int32(brpc_max_retry, 3, "brpc max retry times");
 DEFINE_bool(parameter_client_random_init_brpc, false, "");
 
-// 新的构造函数，接收 json 配置参数
+// New constructor that takes JSON config
 BRPCParameterClient::BRPCParameterClient(json config)
     : recstore::BasePSClient(config) {
   host_       = config.value("host", "localhost");
@@ -106,7 +106,7 @@ BRPCParameterClient::BRPCParameterClient(json config)
 
   Initialize();
 
-  // 初始化 bRPC channel
+  // Initialize bRPC channel
   channel_ = std::make_shared<brpc::Channel>();
   brpc::ChannelOptions options;
   options.timeout_ms = timeout_ms_;
@@ -121,7 +121,7 @@ BRPCParameterClient::BRPCParameterClient(json config)
   }
 }
 
-// 保留原有的构造函数以保持向后兼容
+// Legacy constructor for backward compatibility
 BRPCParameterClient::BRPCParameterClient(
     const std::string& host, int port, int shard)
     : recstore::BasePSClient(
@@ -167,14 +167,14 @@ int BRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
   std::vector<brpc::Controller> controllers(request_num);
   std::vector<int> key_sizes;
 
-  // 创建 stub
+  // Create stub
   recstoreps_brpc::ParameterService_Stub stub(channel_.get());
 
 #ifdef ENABLE_PERF_REPORT
   auto wait_start_time = std::chrono::high_resolution_clock::now();
 #endif
 
-  // 发送异步请求
+  // Send async RPC requests
   for (int start = 0, index = 0; start < keys.Size();
        start += MAX_PARAMETER_BATCH_BRPC, ++index) {
     int key_size =
@@ -185,12 +185,12 @@ int BRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
         reinterpret_cast<const char*>(&keys[start]),
         sizeof(uint64_t) * key_size);
 
-    google::protobuf::Closure* done = brpc::NewCallback([]() { /* 空回调 */ });
+    google::protobuf::Closure* done = brpc::NewCallback([]() { /* no-op */ });
     stub.GetParameter(
         &controllers[index], &requests[index], &responses[index], done);
   }
 
-  // 等待所有请求完成
+  // Wait for all RPCs to complete
   for (int i = 0; i < request_num; ++i) {
     brpc::Join(controllers[i].call_id());
     if (controllers[i].Failed()) {
@@ -236,7 +236,7 @@ int BRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
   auto deserialize_start_time = std::chrono::high_resolution_clock::now();
 #endif
 
-  // 解析结果
+  // Parse responses
   size_t get_embedding_acc = 0;
   int old_dimension        = -1;
   std::string payload_storage;
@@ -384,7 +384,7 @@ int BRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
   auto wait_start_time = std::chrono::high_resolution_clock::now();
 #endif
 
-  // 发送异步请求
+  // Send async RPC requests
   for (int start = 0, index = 0; start < keys.Size();
        start += MAX_PARAMETER_BATCH_BRPC, ++index) {
     int key_size =
@@ -395,12 +395,12 @@ int BRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
         reinterpret_cast<const char*>(&keys[start]),
         sizeof(uint64_t) * key_size);
 
-    google::protobuf::Closure* done = brpc::NewCallback([]() { /* 空回调 */ });
+    google::protobuf::Closure* done = brpc::NewCallback([]() { /* no-op */ });
     stub.GetParameter(
         &controllers[index], &requests[index], &responses[index], done);
   }
 
-  // 等待所有请求完成
+  // Wait for all RPCs to complete
   for (int i = 0; i < request_num; ++i) {
     brpc::Join(controllers[i].call_id());
     if (controllers[i].Failed()) {
@@ -447,7 +447,7 @@ int BRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
   auto deserialize_start_time = std::chrono::high_resolution_clock::now();
 #endif
 
-  // 解析结果
+  // Parse responses
   std::string payload_storage;
   for (int i = 0; i < responses.size(); ++i) {
     auto& response   = responses[i];
@@ -571,7 +571,7 @@ BRPCParameterClient::PrefetchParameter(const base::ConstArray<uint64_t>& keys) {
   int request_num =
       (keys.Size() + MAX_PARAMETER_BATCH_BRPC - 1) / MAX_PARAMETER_BATCH_BRPC;
 
-  // 在 map 中构造对象，以保证地址稳定
+  // Construct in map so batch pointers stay valid
   auto it = prefetch_batches_.emplace(prefetch_id, request_num).first;
   struct BrpcPrefetchBatch* pb = &it->second;
 
@@ -679,7 +679,7 @@ bool BRPCParameterClient::GetPrefetchResult(
     }
   }
 
-  // 清理
+  // Remove completed batch
   prefetch_batches_.erase(it);
 
   return true;
@@ -1261,6 +1261,6 @@ void BRPCParameterClient::WaitForWrite(uint64_t write_id) {
   prewrite_batches_.erase(it);
 }
 
-// 注册 BRPCParameterClient 到工厂
+// Register BRPCParameterClient with the factory
 using BasePSClient = recstore::BasePSClient;
 FACTORY_REGISTER(BasePSClient, brpc, BRPCParameterClient, json);

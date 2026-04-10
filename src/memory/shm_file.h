@@ -11,10 +11,8 @@
 #include <vector>
 
 #include "base/base.h"
+#include "base/string.h"
 #include "storage/nvm/pet_kv/persistence.h"
-
-#include <folly/GLog.h>
-#include <folly/String.h>
 
 DECLARE_bool(use_dram);
 
@@ -62,7 +60,7 @@ public:
       return append_register(name, size);
     } else if (item->size_ != size) {
       // reinit MMAP
-      LOG(INFO) << folly::sformat(
+      LOG(INFO) << base::SFormat(
           "PM mmap {} registered size{} != existing{}",
           name,
           size,
@@ -70,7 +68,7 @@ public:
       ReInitialize();
       return append_register(name, size);
     } else {
-      LOG(INFO) << folly::sformat("PM mmap {} use existing map", name);
+      LOG(INFO) << base::SFormat("PM mmap {} use existing map", name);
 
       shmfile_mmap_addr_ =
           std::max(shmfile_mmap_addr_.load(),
@@ -173,7 +171,7 @@ private:
       mlock(data, dax_mm_size_);
       ReInitialize();
     } else {
-      filename_ = folly::sformat("/dev/dax{}.0", GetConfig().numa_id);
+      filename_ = base::SFormat("/dev/dax{}.0", GetConfig().numa_id);
       fd_       = open(filename_.c_str(), 0666);
       if (fd_ < 0) {
         LOG(FATAL) << "Failed to open file " << filename_ << ": "

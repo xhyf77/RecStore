@@ -1,12 +1,12 @@
 #pragma once
 
-#include <folly/Conv.h>
-#include <folly/GLog.h>
 #include <stdlib.h>
 
 #include <cmath>
 #include <thread>
 
+#include "base/log.h"
+#include "base/string.h"
 #include "ps/base/shard_manager.h"
 #include "storage/kv_engine/base_kv.h"
 
@@ -39,7 +39,7 @@ public:
     }
 
     warmup_kv_count_in_this_ps_ = insert_to_this_db;
-    LOG(INFO) << folly::sformat(
+    LOG(INFO) << base::SFormat(
         "Server{} before load db, warm_capacity_ = {}, {}M, belong to this "
         "partititon inserting {} KVs, "
         "{}M ",
@@ -156,7 +156,7 @@ public:
     }
 
     if (inserted_kv_nr != warmup_kv_count_in_this_ps_)
-      LOG(ERROR) << folly::sformat(
+      LOG(ERROR) << base::SFormat(
           "Only insert {}/{}={}%",
           inserted_kv_nr.load(),
           warmup_kv_count_in_this_ps_,

@@ -1,5 +1,4 @@
 #include "framework/op.h"
-#include "ps/grpc/grpc_ps_client.h"
 #include "base/factory.h"
 #include <iostream>
 #include <stdexcept>
@@ -11,6 +10,7 @@
 #include <numeric>
 #include <thread>
 #include <cstdlib>
+#include <emmintrin.h>
 #include <string>
 #include <fstream>
 
@@ -107,7 +107,6 @@ std::shared_ptr<CommonOp> GetKVClientOp() {
 
 #ifndef USE_FAKE_KVCLIENT
 
-#  include "ps/grpc/grpc_ps_client.h"
 namespace recstore {
 
 BasePSClient* create_ps_client_from_config(const json& config) {
@@ -139,7 +138,10 @@ BasePSClient* create_ps_client_from_config(const json& config) {
   BasePSClient* client =
       base::Factory<BasePSClient, json>::NewInstance(type_key, client_config);
   if (client == nullptr) {
-    return new GRPCParameterClient(client_config);
+    throw std::runtime_error(
+        "Failed to create PS client: factory returned null for type_key=\"" +
+        type_key +
+        "\". Ensure the corresponding client is linked and registered.");
   }
   return client;
 }

@@ -1,9 +1,11 @@
 
 #include "spdk_wrapper.h"
 
-#include <folly/Format.h>
-#include <folly/GLog.h>
-#include <folly/Likely.h>
+#include "base/base.h"
+#include "base/log.h"
+#include "base/string.h"
+
+#include <atomic>
 
 const char* using_ssd = "0000:8d:00.0";
 
@@ -122,14 +124,14 @@ public:
     }
   }
 
-  FOLLY_ALWAYS_INLINE void PollCompleteQueue(int qp_id) override {
+  ALWAYS_INLINE void PollCompleteQueue(int qp_id) override {
     auto ns_entry = g_namespaces_[0];
     spdk_nvme_qpair_process_completions(ns_entry.qpair[qp_id], 0);
   }
 
-  FOLLY_ALWAYS_INLINE int GetLBASize() const override { return kLBASize_; }
+  ALWAYS_INLINE int GetLBASize() const override { return kLBASize_; }
 
-  FOLLY_ALWAYS_INLINE uint64_t GetLBANumber() const override {
+  ALWAYS_INLINE uint64_t GetLBANumber() const override {
     // uint64_t capacity = 3200631791616LL;
     uint64_t capacity = 300 * 1024 * 1024 * 1024LL;
     CHECK_EQ(0, capacity % GetLBASize());
@@ -209,7 +211,7 @@ public:
 private:
   static void
   SyncCommandCompleteCB(void* ctx, const struct spdk_nvme_cpl* cpl) {
-    if (FOLLY_UNLIKELY(spdk_nvme_cpl_is_error(cpl))) {
+    if (UNLIKELY(spdk_nvme_cpl_is_error(cpl))) {
       LOG(FATAL) << "I/O error status: "
                  << spdk_nvme_cpl_get_status_string(&cpl->status);
     }
@@ -241,7 +243,7 @@ private:
                              struct spdk_nvme_ctrlr* ctrlr,
                              const struct spdk_nvme_ctrlr_opts* opts) {
     SpdkWrapperImplementation* ptr = (SpdkWrapperImplementation*)(cb_ctx);
-    LOG(INFO) << folly::format("Attached to {}", trid->traddr);
+    LOG(INFO) << base::SFormat("Attached to {}", trid->traddr);
 
     /*
      * spdk_nvme_ctrlr is the logical abstraction in SPDK for an NVMe
@@ -280,7 +282,7 @@ private:
 
       ptr->g_namespaces_.push_back(entry);
 
-      LOG(INFO) << folly::format(
+      LOG(INFO) << base::SFormat(
           "Namespace ID: {} size: {} GB\n",
           spdk_nvme_ns_get_id(ns),
           spdk_nvme_ns_get_size(ns) / 1000000000);

@@ -3,6 +3,7 @@
 #include "petps_magic.h"
 #include "ps/base/Postoffice.h"
 #include "ps/base/shard_manager.h"
+#include "base/string.h"
 
 DECLARE_int32(value_size);
 DECLARE_int32(max_kv_num_per_request);
@@ -54,7 +55,7 @@ std::vector<int> PetPSClient::GetServerThreadIDs() {
       Slice extra_data = recv->get_string(cursor);
       base::ConstArray<int> cores(
           (int*)extra_data.s, extra_data.len / sizeof(int));
-      LOG(INFO) << folly::sformat(
+      LOG(INFO) << base::SFormat(
           "client{} {}th thread are routed to PS{} ({})th thread",
           m->node_id,
           (int)m->t_id,

@@ -1,7 +1,5 @@
 #include "pet_kv.h"
 
-#include <folly/GLog.h>
-
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -150,10 +148,10 @@ bool PetKV::Update(uint64 key, const char* log, int log_size) {
 std::string PetKV::GetInfo() {
   std::string info;
   info.append(
-      folly::sformat("cache: {}/{}\n", dict_->Size(), dict_->Capacity()));
+      base::SFormat("cache: {}/{}\n", dict_->Size(), dict_->Capacity()));
   info.append(shm_malloc_->GetInfo());
 
-  LOG(INFO) << folly::sformat(
+  LOG(INFO) << base::SFormat(
       "LoadFactor : {}/{}={}",
       dict_->Size(),
       dict_->Capacity(),

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <folly/system/MemoryMapping.h>
 #include <immintrin.h>
 #include <torch/custom_class.h>
 #include <torch/extension.h>
@@ -13,6 +12,7 @@
 #include "base/lock.h"
 #include "base/log.h"
 #include "base/math.h"
+#include "base/mmap.h"
 #include "base/pprint.h"
 #include "base/sleep.h"
 
@@ -70,11 +70,11 @@ class MultiProcessBarrierFactory : public torch::CustomClassHolder {
   };
 
   MultiProcessBarrierFactory() {
-    folly::MemoryMapping::Options options =
-        folly::MemoryMapping::writable().setPrefault(true).setShared(true);
+    base::MemoryMapping::Options options =
+        base::MemoryMapping::writable().setPrefault(true).setShared(true);
     // options.address = (void *)(0x080000000000);
     system("touch /dev/shm/recstore_ipc_barrier");
-    mapping_ = new folly::MemoryMapping(
+    mapping_ = new base::MemoryMapping(
         "/dev/shm/recstore_ipc_barrier", 0, kShmSize, options);
     header_ = new ((IPCBarrierShmRegion*)mapping_->writableRange().begin())
         IPCBarrierShmRegion();
@@ -129,7 +129,7 @@ private:
   static const int kShmSize = 4 * 1024 * 1024;
 
 private:
-  folly::MemoryMapping* mapping_;
+  base::MemoryMapping* mapping_;
   IPCBarrierShmRegion* header_;
 };
 

@@ -14,7 +14,7 @@
 
 namespace recstore {
 
-// bRPC 版本的参数服务实现
+// bRPC parameter service implementation
 class BRPCParameterServiceImpl : public recstoreps_brpc::ParameterService {
 public:
   explicit BRPCParameterServiceImpl(CachePS* cache_ps);

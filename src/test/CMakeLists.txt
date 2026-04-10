@@ -1,5 +1,3 @@
-find_package(folly REQUIRED)
-
 add_subdirectory(small_tests)
 add_subdirectory(server_mgr)
 
@@ -18,22 +16,19 @@ add_executable(test_hash_map
     test_hash_map.cpp 
 )
 
-target_link_libraries(test_hash_map PUBLIC
-    ${FOLLY_LIBRARIES}
-)
-
 target_compile_options(test_hash_map PUBLIC -fopenmp)
 
-target_link_libraries(test_hash_map PUBLIC -fopenmp)
+target_link_libraries(test_hash_map PUBLIC -fopenmp Folly::folly)
 
 
-add_executable(corotine 
-    corotine.cpp
+add_executable(coroutine 
+    coroutine.cpp
 )
 
-target_link_libraries(corotine PUBLIC
+target_link_libraries(coroutine PUBLIC
     ${BOOST_LIBRARIES}
-    ${FOLLY_LIBRARIES}
+    boost_context
+    boost_coroutine
 )
 
 add_executable(test_extendible_hash test_extendible_hash.cpp)

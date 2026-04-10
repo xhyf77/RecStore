@@ -1,8 +1,7 @@
-#include <folly/Random.h>
-#include <folly/init/Init.h>
-
 #include "base/cuda.h"
 #include "base/cudaEvent.h"
+#include "base/init.h"
+#include "base/random.h"
 #include "base/timer.h"
 
 DEFINE_int32(emb_dim, 32, "");
@@ -92,7 +91,7 @@ void Check(const uint64_t *d_indices, const int emb_dim, float *d_output_buffer,
 }
 
 int main(int argc, char **argv) {
-  folly::init(&argc, &argv);
+  base::Init(&argc, &argv);
   const int emb_dim = FLAGS_emb_dim;
   uint64_t test_key_capability = FLAGS_key_space_M * 1e6;
   const int query_count = FLAGS_query_count;
@@ -124,7 +123,7 @@ int main(int argc, char **argv) {
       break;
 
     for (int i = 0; i < query_count; i++) {
-      index[i] = folly::Random::rand64() % test_key_capability;
+      index[i] = base::Random::rand64(test_key_capability);
     }
     XMH_CUDA_CHECK(cudaMemcpy(d_indices, index.data(),
                               query_count * sizeof(uint64_t),

@@ -1,9 +1,8 @@
-#include <folly/String.h>
-
 #include "pprint.h"
+#include "base/string.h"
 
 namespace base {
 std::string PrettyPrintBytes(double bytes) {
-  return folly::prettyPrint(bytes, folly::PRETTY_BYTES);
+  return base::PrettyPrintBytesString(bytes);
 }
 } // namespace base

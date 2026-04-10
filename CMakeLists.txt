@@ -237,6 +237,9 @@ include_directories(
 include_directories(
   ${PROJECT_SOURCE_DIR}
 )
+include_directories(
+  ${PROJECT_SOURCE_DIR}/third_party/folly/folly-install-fPIC/usr/local/include
+)
 
 
 set(ONEAPI_ROOT /opt/intel/oneapi)

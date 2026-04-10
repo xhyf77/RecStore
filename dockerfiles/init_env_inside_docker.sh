@@ -59,7 +59,7 @@ else
     target_dir="/home/$USER"
 fi
 
-ln -sf "${PROJECT_PATH}/dockerfiles/docker_config/.bashrc" "${target_dir}/.bashrc"
+cp "${PROJECT_PATH}/dockerfiles/docker_config/.bashrc" "${target_dir}/.bashrc"
 source "${target_dir}/.bashrc"
 
 # ===============================================

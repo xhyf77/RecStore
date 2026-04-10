@@ -1,7 +1,6 @@
 #include "IPCTensor.h"
 
 #include <ATen/cuda/CUDAContext.h>
-#include <folly/system/MemoryMapping.h>
 #include <torch/custom_class.h>
 #include <torch/extension.h>
 #include <torch/torch.h>

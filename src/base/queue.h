@@ -1,6 +1,6 @@
 #pragma once
 
-#include <folly/concurrency/CacheLocality.h>
+#include "base/common.h"
 
 #include <atomic>
 #include <cassert>
@@ -176,15 +176,15 @@ struct ProducerConsumerQueue {
 private:
   using AtomicIndex = std::atomic<unsigned int>;
 
-  char pad0_[folly::hardware_destructive_interference_size];
+  char pad0_[base::kHardwareDestructiveInterferenceSize];
   const uint32_t size_;
   T* const records_;
 
-  alignas(folly::hardware_destructive_interference_size) AtomicIndex readIndex_;
-  alignas(folly::hardware_destructive_interference_size)
+  alignas(base::kHardwareDestructiveInterferenceSize) AtomicIndex readIndex_;
+  alignas(base::kHardwareDestructiveInterferenceSize)
       AtomicIndex writeIndex_;
 
-  char pad1_[folly::hardware_destructive_interference_size -
+  char pad1_[base::kHardwareDestructiveInterferenceSize -
              sizeof(AtomicIndex)];
 };
 

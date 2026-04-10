@@ -58,6 +58,7 @@ public:
   static LaunchDecision EvaluateLaunchDecision(const LauncherOptions& options);
   static std::vector<int>
   ExtractPortsFromConfig(const std::filesystem::path& config_path);
+  static std::vector<int> FindAvailablePorts(size_t count);
   static std::optional<int> ParseReadyShard(const std::string& line);
 
   bool Start();

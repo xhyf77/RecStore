@@ -5,6 +5,7 @@
 #include "common.h"
 #include "log.h"
 #include "pq.h"
+#include "random.h"
 
 class CustomElement {
 public:
@@ -108,7 +109,7 @@ int main() {
       } else {
         priorityQueue.CheckConsistency();
 
-        auto select             = folly::Random::rand32() % elements.size();
+        auto select             = base::Random::rand32(elements.size());
         elements[select]->value = dist(rng);
         priorityQueue.PushOrUpdate(elements[select]);
 

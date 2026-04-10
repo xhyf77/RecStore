@@ -9,6 +9,8 @@
 #include "base/array.h"
 #include "base/factory.h"
 #include "base/hash.h"
+#include "base/init.h"
+#include "base/thread.h"
 #include "base/timer.h"
 #include "ps/base/base_client.h"
 #include "test/server_mgr/ps_server_launcher.h"
@@ -47,7 +49,7 @@ static bool check_eq_2d(const std::vector<std::vector<float>>& a,
 void TestBasicConfig() {
   std::cout << "=== Testing Basic Configuration (bRPC) ===" << std::endl;
 
-  // 测试 recstore 配置格式
+  // Exercise recstore-style distributed_client config
   json recstore_config = {
       {"distributed_client",
        {{"servers",
@@ -89,7 +91,7 @@ void TestFactoryClient() {
   std::cout << "Successfully created distributed bRPC PS client via factory"
             << std::endl;
 
-  // 转换为子类指针以访问扩展接口
+  // Downcast for extended API
   auto* client =
       dynamic_cast<DistributedBRPCParameterClient*>(base_client.get());
   if (!client) {
@@ -200,7 +202,7 @@ void TestLargeBatch() {
   try {
     DistributedBRPCParameterClient client(config);
 
-    // 构造同一 shard 的大批量 keys，稳定超过 max_keys_per_request
+    // Many keys on the same shard to exceed max_keys_per_request
     std::vector<uint64_t> large_keys;
     std::vector<std::vector<float>> large_values;
     for (int i = 0; i < 100; ++i) {
@@ -212,11 +214,11 @@ void TestLargeBatch() {
 
     client.ClearPS();
 
-    // 写入大批量数据
+    // Large Put
     int put_result = client.PutParameter(keys_array, large_values);
     CHECK(put_result == 0);
 
-    // 读取并验证
+    // Read back and verify
     std::vector<std::vector<float>> retrieved_values;
     bool get_success = client.GetParameter(keys_array, &retrieved_values);
     CHECK(get_success);
@@ -347,7 +349,7 @@ void TestPrefetchConcurrency() {
 }
 
 int main(int argc, char** argv) {
-  folly::Init(&argc, &argv);
+  base::Init(&argc, &argv);
   Reporter::StartReportThread(2000);
 
   auto launch_options =
@@ -356,7 +358,7 @@ int main(int argc, char** argv) {
   launch_options.override_ports   = {kDistBrpcPort0, kDistBrpcPort1};
   recstore::test::ScopedPSServer server(launch_options, true);
 
-  std::cout << "=== 分布式 bRPC 客户端测试 ===" << std::endl;
+  std::cout << "=== Distributed bRPC PS client tests ===" << std::endl;
   std::cout << std::endl;
 
   TestBasicConfig();

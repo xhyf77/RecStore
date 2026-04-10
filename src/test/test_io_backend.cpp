@@ -8,9 +8,17 @@
 #include <string>
 #include <sstream>
 #include <vector>
+#include <mutex>
+#include <boost/coroutine2/all.hpp>
 #include <gtest/gtest.h>
 #include "base/factory.h"
+#include "storage/io_backend/force_link.h"
 #include "storage/io_backend/io_backend.h"
+
+using boost::coroutines2::coroutine;
+
+thread_local int pending = 0;
+thread_local std::vector<std::unique_ptr<coroutine<void>::pull_type>> coros;
 
 namespace {
 constexpr const char* kSpdkPcieAddress = "0000:c2:00.0";
@@ -84,6 +92,9 @@ MakeConfig(const std::string& backend, const std::string& file_path) {
 class IOBackendTest : public ::testing::Test {
 protected:
   void SetUp() override {
+    static std::once_flag force_link_once;
+    std::call_once(force_link_once, []() { ForceLinkIOBackends(); });
+
     const char* raw_backend = std::getenv("RECSTORE_IO_BACKEND");
     const bool backend_forced =
         (raw_backend != nullptr && std::string(raw_backend).size() > 0);

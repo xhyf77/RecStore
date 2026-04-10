@@ -1,16 +1,19 @@
-#include <folly/executors/CPUThreadPoolExecutor.h>
-
 #include <random>
 
 #include "base/array.h"
 #include "base/factory.h"
+#include "base/init.h"
 #include "base/timer.h"
 #include "ps/base/base_client.h"
 #include "grpc_ps_client.h"
 #include "test/server_mgr/ps_server_launcher.h"
 
 namespace {
-constexpr int kGrpcTestPort = 15123;
+std::vector<int> AcquireGrpcTestPorts() {
+  auto ports = recstore::test::PSServerLauncher::FindAvailablePorts(2);
+  CHECK_EQ(ports.size(), 2);
+  return ports;
+}
 }
 
 static bool
@@ -40,10 +43,10 @@ static bool check_eq_2d(std::vector<std::vector<float>>& a,
   return true;
 }
 
-void TestFactoryClient() {
+void TestFactoryClient(int grpc_port) {
   std::cout << "=== Testing Factory Pattern ===" << std::endl;
 
-  json config = {{"host", "127.0.0.1"}, {"port", kGrpcTestPort}, {"shard", 0}};
+  json config = {{"host", "127.0.0.1"}, {"port", grpc_port}, {"shard", 0}};
 
   std::unique_ptr<recstore::BasePSClient> client(
       base::Factory<recstore::BasePSClient, json>::NewInstance("grpc", config));
@@ -88,11 +91,11 @@ void TestFactoryClient() {
   }
 }
 
-void TestAsyncReadWriteConcurrency() {
+void TestAsyncReadWriteConcurrency(int grpc_port) {
   std::cout << "\n=== Testing gRPC Async Read/Write Concurrency ==="
             << std::endl;
 
-  GRPCParameterClient client("127.0.0.1", kGrpcTestPort, 1);
+  GRPCParameterClient client("127.0.0.1", grpc_port, 1);
   CHECK(client.ClearPS());
 
   struct CaseData {
@@ -156,59 +159,19 @@ void TestAsyncReadWriteConcurrency() {
 }
 
 int main(int argc, char** argv) {
-  folly::Init(&argc, &argv);
+  base::Init(&argc, &argv);
   xmh::Reporter::StartReportThread(2000);
+
+  const auto ports = AcquireGrpcTestPorts();
 
   auto launch_options =
       recstore::test::PSServerLauncher::LoadOptionsFromEnvironment();
   launch_options.override_ps_type = "GRPC";
-  launch_options.override_ports   = {kGrpcTestPort, kGrpcTestPort + 1};
+  launch_options.override_ports   = ports;
   recstore::test::ScopedPSServer server(launch_options, true);
 
-  TestFactoryClient();
-  TestAsyncReadWriteConcurrency();
-
-  std::cout << "\n=== Testing Original Implementation ===" << std::endl;
-
-  // GRPCParameterClient client("127.0.0.1", 15000, 1);
-  // std::random_device
-  //     rd;  // Will be used to obtain a seed for the random number engine
-  // std::mt19937 gen(rd());  // Standard mersenne_twister_engine seeded with
-  // rd() std::uniform_int_distribution<> distrib(1, 200LL * 1e6);
-
-  // // while (1) {
-  // //   int perf_count = 500;
-  // //   std::vector<uint64_t> keys(perf_count);
-  // //   for (int i = 0; i < perf_count; i++) {
-  // //     keys[i] = distrib(gen);
-  // //   }
-  // //   std::vector<std::vector<float>> values;
-  // //   xmh::Timer timer_client("client get");
-  // //   ConstArray<uint64_t> keys_array(keys);
-  // //   client.GetParameter(keys_array, &values);
-  // //   timer_client.end();
-  // // }
-
-  // client.ClearPS();
-  // // assert empty
-  // std::vector<uint64_t> keys = {1, 2, 3};
-  // std::vector<std::vector<float>> emptyvalues(keys.size());
-  // std::vector<std::vector<float>> rightvalues = {{1}, {2, 2}, {3, 3, 3}};
-  // std::vector<std::vector<float>> values;
-  // client.GetParameter(keys, &values);
-  // CHECK(check_eq_2d(values, emptyvalues));
-
-  // // insert something
-  // client.PutParameter(keys, rightvalues);
-  // // read those
-  // client.GetParameter(keys, &values);
-  // CHECK(check_eq_2d(values, rightvalues));
-
-  // // clear all
-  // client.ClearPS();
-  // // read those
-  // client.GetParameter(keys, &values);
-  // CHECK(check_eq_2d(values, emptyvalues));
+  TestFactoryClient(ports[0]);
+  TestAsyncReadWriteConcurrency(ports[0]);
 
   return 0;
 }

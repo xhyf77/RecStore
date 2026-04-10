@@ -7,13 +7,17 @@
 
 #include "base/array.h"
 #include "base/factory.h"
+#include "base/init.h"
 #include "base/timer.h"
 #include "ps/base/base_client.h"
 #include "test/server_mgr/ps_server_launcher.h"
 
 namespace {
-constexpr int kGrpcPort0 = 15123;
-constexpr int kGrpcPort1 = 15124;
+std::vector<int> AcquireDistGrpcTestPorts() {
+  auto ports = recstore::test::PSServerLauncher::FindAvailablePorts(2);
+  CHECK_EQ(ports.size(), 2);
+  return ports;
+}
 } // namespace
 
 using namespace xmh;
@@ -48,15 +52,15 @@ static bool check_eq_2d(std::vector<std::vector<float>>& a,
   return true;
 }
 
-void TestBasicConfig() {
+void TestBasicConfig(const std::vector<int>& ports) {
   std::cout << "=== Testing Basic Configuration ===" << std::endl;
 
-  // 测试recstore配置格式
+  // Exercise recstore-style distributed_client config
   json recstore_config = {
       {"distributed_client",
        {{"servers",
-         {{{"host", "127.0.0.1"}, {"port", kGrpcPort0}, {"shard", 0}},
-          {{"host", "127.0.0.1"}, {"port", kGrpcPort1}, {"shard", 1}}}},
+         {{{"host", "127.0.0.1"}, {"port", ports[0]}, {"shard", 0}},
+          {{"host", "127.0.0.1"}, {"port", ports[1]}, {"shard", 1}}}},
         {"num_shards", 2},
         {"hash_method", "city_hash"}}}};
 
@@ -69,14 +73,14 @@ void TestBasicConfig() {
   }
 }
 
-void TestFactoryClient() {
+void TestFactoryClient(const std::vector<int>& ports) {
   std::cout << "=== Testing Factory Pattern ===" << std::endl;
 
   json config = {
       {"distributed_client",
        {{"servers",
-         {{{"host", "127.0.0.1"}, {"port", kGrpcPort0}, {"shard", 0}},
-          {{"host", "127.0.0.1"}, {"port", kGrpcPort1}, {"shard", 1}}}},
+         {{{"host", "127.0.0.1"}, {"port", ports[0]}, {"shard", 0}},
+          {{"host", "127.0.0.1"}, {"port", ports[1]}, {"shard", 1}}}},
         {"num_shards", 2},
         {"hash_method", "city_hash"}}}};
 
@@ -90,7 +94,7 @@ void TestFactoryClient() {
     return;
   }
 
-  // 转换为子类指针以访问扩展接口
+  // Downcast for extended API
   auto* client =
       dynamic_cast<DistributedGRPCParameterClient*>(base_client.get());
   if (!client) {
@@ -140,14 +144,14 @@ void TestFactoryClient() {
   }
 }
 
-void TestDirectClient() {
+void TestDirectClient(const std::vector<int>& ports) {
   std::cout << "=== Testing Direct Client Creation ===" << std::endl;
 
   json config = {
       {"distributed_client",
        {{"servers",
-         {{{"host", "127.0.0.1"}, {"port", kGrpcPort0}, {"shard", 0}},
-          {{"host", "127.0.0.1"}, {"port", kGrpcPort1}, {"shard", 1}}}},
+         {{{"host", "127.0.0.1"}, {"port", ports[0]}, {"shard", 0}},
+          {{"host", "127.0.0.1"}, {"port", ports[1]}, {"shard", 1}}}},
         {"num_shards", 2},
         {"hash_method", "city_hash"}}}};
 
@@ -187,14 +191,14 @@ void TestDirectClient() {
   }
 }
 
-void TestLargeBatch() {
+void TestLargeBatch(const std::vector<int>& ports) {
   std::cout << "=== Testing Large Batch Operations ===" << std::endl;
 
   json config = {
       {"distributed_client",
        {{"servers",
-         {{{"host", "127.0.0.1"}, {"port", kGrpcPort0}, {"shard", 0}},
-          {{"host", "127.0.0.1"}, {"port", kGrpcPort1}, {"shard", 1}}}},
+         {{{"host", "127.0.0.1"}, {"port", ports[0]}, {"shard", 0}},
+          {{"host", "127.0.0.1"}, {"port", ports[1]}, {"shard", 1}}}},
         {"num_shards", 2},
         {"hash_method", "city_hash"},
         {"max_keys_per_request", 50}}}};
@@ -202,7 +206,7 @@ void TestLargeBatch() {
   try {
     DistributedGRPCParameterClient client(config);
 
-    // 构造同一 shard 的大批量 keys，稳定超过 max_keys_per_request
+    // Many keys on the same shard to exceed max_keys_per_request
     std::vector<uint64_t> large_keys;
     std::vector<std::vector<float>> large_values;
     for (int i = 0; i < 120; ++i) {
@@ -214,11 +218,11 @@ void TestLargeBatch() {
 
     client.ClearPS();
 
-    // 写入大批量数据
+    // Large Put
     int put_result = client.PutParameter(keys_array, large_values);
     CHECK(put_result == 0);
 
-    // 读取并验证
+    // Read back and verify
     std::vector<std::vector<float>> retrieved_values;
     bool get_success = client.GetParameter(keys_array, &retrieved_values);
     CHECK(get_success);
@@ -231,14 +235,14 @@ void TestLargeBatch() {
   }
 }
 
-void TestPrefetch() {
+void TestPrefetch(const std::vector<int>& ports) {
   std::cout << "=== Testing Distributed gRPC Prefetch ===" << std::endl;
 
   json config = {
       {"distributed_client",
        {{"servers",
-         {{{"host", "127.0.0.1"}, {"port", kGrpcPort0}, {"shard", 0}},
-          {{"host", "127.0.0.1"}, {"port", kGrpcPort1}, {"shard", 1}}}},
+         {{{"host", "127.0.0.1"}, {"port", ports[0]}, {"shard", 0}},
+          {{"host", "127.0.0.1"}, {"port", ports[1]}, {"shard", 1}}}},
         {"num_shards", 2},
         {"hash_method", "city_hash"},
         {"max_keys_per_request", 8}}}};
@@ -289,15 +293,15 @@ void TestPrefetch() {
   std::cout << "TestPrefetch done" << std::endl;
 }
 
-void TestPrefetchConcurrency() {
+void TestPrefetchConcurrency(const std::vector<int>& ports) {
   std::cout << "=== Testing Distributed gRPC Prefetch Concurrency ==="
             << std::endl;
 
   json config = {
       {"distributed_client",
        {{"servers",
-         {{{"host", "127.0.0.1"}, {"port", kGrpcPort0}, {"shard", 0}},
-          {{"host", "127.0.0.1"}, {"port", kGrpcPort1}, {"shard", 1}}}},
+         {{{"host", "127.0.0.1"}, {"port", ports[0]}, {"shard", 0}},
+          {{"host", "127.0.0.1"}, {"port", ports[1]}, {"shard", 1}}}},
         {"num_shards", 2},
         {"hash_method", "city_hash"},
         {"max_keys_per_request", 6}}}};
@@ -349,34 +353,36 @@ void TestPrefetchConcurrency() {
 }
 
 int main(int argc, char** argv) {
-  folly::Init(&argc, &argv);
+  base::Init(&argc, &argv);
   Reporter::StartReportThread(2000);
+
+  const auto ports = AcquireDistGrpcTestPorts();
 
   auto launch_options =
       recstore::test::PSServerLauncher::LoadOptionsFromEnvironment();
   launch_options.override_ps_type = "GRPC";
-  launch_options.override_ports   = {kGrpcPort0, kGrpcPort1};
+  launch_options.override_ports   = ports;
   recstore::test::ScopedPSServer server(launch_options, true);
 
-  std::cout << "=== 分布式gRPC客户端测试 ===" << std::endl;
+  std::cout << "=== Distributed gRPC PS client tests ===" << std::endl;
   std::cout << std::endl;
 
-  TestBasicConfig();
+  TestBasicConfig(ports);
   std::cout << std::endl;
 
-  TestFactoryClient();
+  TestFactoryClient(ports);
   std::cout << std::endl;
 
-  TestDirectClient();
+  TestDirectClient(ports);
   std::cout << std::endl;
 
-  TestLargeBatch();
+  TestLargeBatch(ports);
   std::cout << std::endl;
 
-  TestPrefetch();
+  TestPrefetch(ports);
   std::cout << std::endl;
 
-  TestPrefetchConcurrency();
+  TestPrefetchConcurrency(ports);
   std::cout << std::endl;
 
   std::cout << "All tests completed!" << std::endl;

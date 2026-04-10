@@ -1,5 +1,4 @@
 #pragma once
-#include <folly/ProducerConsumerQueue.h>
 
 #include <algorithm>
 #include <atomic>

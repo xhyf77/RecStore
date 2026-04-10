@@ -53,7 +53,7 @@ public:
   }
 
   std::string GetInfo() const override {
-    return folly::sformat("[TestDB] size={}", key_values_.size());
+    return base::SFormat("[TestDB] size={}", key_values_.size());
   }
 
 private:

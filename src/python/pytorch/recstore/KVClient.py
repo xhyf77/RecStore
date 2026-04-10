@@ -143,15 +143,14 @@ class RecStoreClient:
         if is_gdata:
             self._gdata_name_list.add(name)
         
-        if init_func:
+        # Avoid materializing a full dense tensor for large embedding tables
+        # unless the caller explicitly requests custom initialization data.
+        if init_func is not None:
             initial_data = init_func(shape, dtype)
-        else:
-            initial_data = torch.zeros(shape, dtype=dtype)
-        
-        all_keys = torch.arange(shape[0], dtype=torch.int64)
-        if base_offset != 0:
-            all_keys = all_keys + int(base_offset)
-        self.ops.emb_write(all_keys, initial_data)
+            all_keys = torch.arange(shape[0], dtype=torch.int64)
+            if base_offset != 0:
+                all_keys = all_keys + int(base_offset)
+            self.ops.emb_write(all_keys, initial_data)
 
 
     def delete_data(self, name: str):

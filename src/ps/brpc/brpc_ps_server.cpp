@@ -630,27 +630,27 @@ public:
   BRPCParameterServer() = default;
 
   void Run() {
-    // 检查是否配置了多分片
-    int num_shards = 1; // 默认单分片
+    // Check whether multi-shard mode is configured
+    int num_shards = 1; // default: single shard
     if (config_["cache_ps"].contains("num_shards")) {
       num_shards = config_["cache_ps"]["num_shards"];
     }
 
     if (num_shards > 1) {
-      // 多服务器启动逻辑
+      // Multi-server startup
       std::cout
           << "Starting distributed parameter server (bRPC), number of shards: "
           << num_shards << std::endl;
 
       if (!config_["cache_ps"].contains("servers")) {
-        LOG(FATAL) << "配置了 num_shards > 1 但缺少 servers 配置";
+        LOG(FATAL) << "num_shards > 1 but cache_ps.servers is missing";
         return;
       }
 
       auto servers = config_["cache_ps"]["servers"];
       if (servers.size() != num_shards) {
-        LOG(FATAL) << "servers 配置数量 (" << servers.size()
-                   << ") 与 num_shards (" << num_shards << ") 不匹配";
+        LOG(FATAL) << "servers count (" << servers.size()
+                   << ") does not match num_shards (" << num_shards << ")";
         return;
       }
 
@@ -699,13 +699,13 @@ public:
         });
       }
 
-      // 等待所有服务器线程
+      // Wait for all server threads
       for (auto& t : server_threads) {
         t.join();
       }
     } else {
-      // 单服务器启动逻辑
-      std::cout << "启动单参数服务器 (bRPC)" << std::endl;
+      // Single-server startup
+      std::cout << "Starting single parameter server (bRPC)" << std::endl;
       std::string server_address =
           "0.0.0.0:" + std::to_string(FLAGS_brpc_server_port);
       auto cache_ps = std::make_unique<CachePS>(config_["cache_ps"]);
