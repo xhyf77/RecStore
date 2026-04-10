@@ -371,7 +371,9 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
             raise ValueError("--in_memory_binary_criteo_path must be specified for single day mode")
         
         if args.num_embeddings_per_feature is None:
-            LIMIT_FEATURE = 800000
+            # Random-data smoke runs should fit on a single 24GB GPU without
+            # allocating production-scale embedding tables by default.
+            LIMIT_FEATURE = 100000 if args.random_dataset else 800000
             orig_list = [
                 40000000, 39060, 17295, 7424, 20265, 3, 7122, 1543, 63,
                 40000000, 3067956, 405282, 10, 2209, 11938, 155, 4, 976,

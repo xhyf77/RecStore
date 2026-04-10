@@ -536,6 +536,7 @@ $PYTHON_BIN -m torch.distributed.run --nnodes 1 \
     --embedding_dim 128 \
     "${extra_args[@]}" \
     --adagrad > training_output.${dataset_size}.${mode}.pf$( [ "$enable_prefetch" = true ] && echo "$prefetch_depth" || echo 0 ).f$( [ "$fuse_emb_tables" = true ] && echo 1 || echo 0 ).$(date +%Y%m%d%H%M%S).log 2>&1
+train_exit_code=$?
 
 
 end_time=$(date +%s.%N)
@@ -562,3 +563,8 @@ echo "Uploading training duration: $total_seconds seconds"
 # if [ $? -ne 0 ]; then
 #     echo "Warning: Data upload failed. Continuing with summary output."
 # fi
+
+if [ "$train_exit_code" -ne 0 ]; then
+    echo "Training command failed with exit code: $train_exit_code" >&2
+    exit "$train_exit_code"
+fi
