@@ -520,14 +520,18 @@ if [ "$use_random_dataset" != true ]; then
     data_args+=(--in_memory_binary_criteo_path "$processed_dataset_path" --mmap_mode)
 fi
 
-echo "Executing command: $PYTHON_BIN -m torch.distributed.run --nnodes 1 --nproc_per_node 1 --rdzv_backend c10d --rdzv_endpoint localhost --rdzv_id run-$(date +%s) --role trainer $script_to_run ${data_args[@]} --batch_size $batch_size --learning_rate $learning_rate --epochs $epochs --pin_memory --embedding_dim 128 ${extra_args[@]} --adagrad"
+launcher_args=(--nnodes 1 --nproc_per_node 1)
+if [ "$start_ps" = true ]; then
+    launcher_args+=(--standalone)
+else
+    launcher_args+=(--rdzv_backend c10d --rdzv_endpoint localhost --rdzv_id "run-$(date +%s)" --role trainer)
+fi
 
-$PYTHON_BIN -m torch.distributed.run --nnodes 1 \
-    --nproc_per_node 1 \
-    --rdzv_backend c10d \
-    --rdzv_endpoint localhost \
-    --rdzv_id run-$(date +%s) \
-    --role trainer $script_to_run \
+echo "Executing command: $PYTHON_BIN -m torch.distributed.run ${launcher_args[*]} $script_to_run ${data_args[@]} --batch_size $batch_size --learning_rate $learning_rate --epochs $epochs --pin_memory --embedding_dim 128 ${extra_args[@]} --adagrad"
+
+$PYTHON_BIN -m torch.distributed.run \
+    "${launcher_args[@]}" \
+    $script_to_run \
     "${data_args[@]}" \
     --batch_size $batch_size \
     --learning_rate $learning_rate \
