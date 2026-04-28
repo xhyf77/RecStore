@@ -167,6 +167,12 @@ def _fmt_num(value):
     return f"{value:,.2f}"
 
 
+def _per_request_us(row, field):
+    if row["iterations"] <= 0:
+        return 0.0
+    return row[field] / row["iterations"]
+
+
 def print_summary_table(rows):
     if not rows:
         print("[summary] no parsed measure summary rows found")
@@ -179,11 +185,9 @@ def print_summary_table(rows):
         "rounds",
         "iterations",
         "batch_keys",
-        "mean_us",
-        "p50_us",
-        "p95_us",
-        "p99_us",
-        "ops/s",
+        "mean_req_us",
+        "p50_req_us",
+        "p95_req_us",
         "key_ops/s",
     ]
     table = [header]
@@ -195,11 +199,9 @@ def print_summary_table(rows):
                 str(row["rounds"]),
                 str(row["iterations"]),
                 str(row["batch_keys"]),
-                _fmt_num(row["mean"]),
-                _fmt_num(row["p50"]),
-                _fmt_num(row["p95"]),
-                _fmt_num(row["p99"]),
-                _fmt_num(row["ops"]),
+                _fmt_num(_per_request_us(row, "mean")),
+                _fmt_num(_per_request_us(row, "p50")),
+                _fmt_num(_per_request_us(row, "p95")),
                 _fmt_num(row["key_ops"]),
             ]
         )
