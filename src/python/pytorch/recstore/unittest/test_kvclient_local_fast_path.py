@@ -40,6 +40,7 @@ class TestKVClientLocalFastPath(unittest.TestCase):
         client._role = "default"
         client._next_async_handle = 1
         client._pending_async_ops = {}
+        client._gpu_cache_table_name = None
         client._initialized = True
         return client
 
@@ -165,6 +166,88 @@ class TestKVClientLocalFastPath(unittest.TestCase):
 
         self.assertEqual(client.ops.current_ps_backend(), "local_shm")
         self.assertEqual(client.ops.backend_switch_calls, ["local_shm"])
+
+    def test_gpu_cache_control_ops_forward_to_library(self):
+        client = self._build_client()
+        client.ops.gpu_cache_calls = []
+        client.ops.enable_gpu_cache = lambda capacity, embedding_dim: client.ops.gpu_cache_calls.append(
+            ("enable", int(capacity), int(embedding_dim))
+        ) or True
+        client.ops.disable_gpu_cache = lambda: client.ops.gpu_cache_calls.append(("disable",))
+        client.ops.clear_gpu_cache = lambda: client.ops.gpu_cache_calls.append(("clear",))
+        client.ops.get_last_gpu_cache_profile = lambda: [1.0, 2.0, 3.0, 4.0, 5.0]
+
+        self.assertTrue(client.enable_gpu_cache(capacity=1024, embedding_dim=4))
+        client.clear_gpu_cache()
+        client.disable_gpu_cache()
+        profile = client.get_last_gpu_cache_profile()
+
+        self.assertEqual(
+            client.ops.gpu_cache_calls,
+            [("enable", 1024, 4), ("clear",), ("disable",)],
+        )
+        self.assertEqual(
+            profile,
+            {
+                "gpu_cache_query_ms": 1.0,
+                "gpu_cache_backend_lookup_ms": 2.0,
+                "gpu_cache_fill_ms": 3.0,
+                "gpu_cache_update_ms": 4.0,
+                "gpu_cache_hit_count": 5.0,
+            },
+        )
+
+    def test_gpu_cache_clears_when_local_lookup_switches_tables(self):
+        client = self._build_client()
+        client._tensor_meta["table_b"] = {"shape": (16, 4), "dtype": torch.float32}
+        client.ops.clear_gpu_cache_calls = 0
+        client.ops.clear_gpu_cache = lambda: setattr(
+            client.ops,
+            "clear_gpu_cache_calls",
+            client.ops.clear_gpu_cache_calls + 1,
+        )
+
+        client.local_lookup_flat("table_a", torch.tensor([1], dtype=torch.int64))
+        client.local_lookup_flat("table_a", torch.tensor([2], dtype=torch.int64))
+        client.local_lookup_flat("table_b", torch.tensor([1], dtype=torch.int64))
+
+        self.assertEqual(client.ops.clear_gpu_cache_calls, 1)
+        self.assertEqual(client._gpu_cache_table_name, "table_b")
+
+    def test_gpu_cache_control_requires_ops_support(self):
+        client = self._build_client()
+
+        with self.assertRaisesRegex(RuntimeError, "enable_gpu_cache"):
+            client.enable_gpu_cache(capacity=1024, embedding_dim=4)
+        with self.assertRaisesRegex(RuntimeError, "disable_gpu_cache"):
+            client.disable_gpu_cache()
+        with self.assertRaisesRegex(RuntimeError, "clear_gpu_cache"):
+            client.clear_gpu_cache()
+
+        self.assertEqual(client.get_last_gpu_cache_profile(), {})
+
+    def test_enable_gpu_cache_rejects_invalid_parameters_before_ops_call(self):
+        client = self._build_client()
+        client.ops.enable_gpu_cache_calls = []
+        client.ops.enable_gpu_cache = lambda capacity, embedding_dim: client.ops.enable_gpu_cache_calls.append(
+            (capacity, embedding_dim)
+        ) or True
+
+        invalid_args = (
+            {"capacity": 0, "embedding_dim": 4, "message": "capacity"},
+            {"capacity": 1024, "embedding_dim": 0, "message": "embedding_dim"},
+            {"capacity": 1.5, "embedding_dim": 4, "message": "capacity"},
+            {"capacity": 1024, "embedding_dim": "4", "message": "embedding_dim"},
+        )
+        for kwargs in invalid_args:
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaisesRegex(ValueError, kwargs["message"]):
+                    client.enable_gpu_cache(
+                        capacity=kwargs["capacity"],
+                        embedding_dim=kwargs["embedding_dim"],
+                    )
+
+        self.assertEqual(client.ops.enable_gpu_cache_calls, [])
 
 
 if __name__ == "__main__":

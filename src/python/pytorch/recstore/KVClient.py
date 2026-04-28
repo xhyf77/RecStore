@@ -60,6 +60,7 @@ class RecStoreClient:
         self._role = role
         self._next_async_handle = 1
         self._pending_async_ops = {}
+        self._gpu_cache_table_name: Optional[str] = None
         self._initialized = True
         # print(f"RecStoreClient initialized. Loaded library from: {library_path}")
 
@@ -135,6 +136,7 @@ class RecStoreClient:
         num_embeddings, embedding_dim = shape
         # print(f"[DEBUG] Calling init_embedding_table for '{name}' with num_embeddings={num_embeddings}, embedding_dim={embedding_dim}")
         success = self.ops.init_embedding_table(name, int(num_embeddings), int(embedding_dim))
+        self._clear_gpu_cache_if_available()
         # print(f"[DEBUG] init_embedding_table returned: {success}")
         if not success:
             raise RuntimeError(f"Failed to initialize embedding table '{name}' on backend.")
@@ -154,6 +156,7 @@ class RecStoreClient:
         if base_offset != 0:
             all_keys = all_keys + int(base_offset)
         self.ops.emb_write(all_keys, initial_data)
+        self._clear_gpu_cache_if_available()
 
 
     def delete_data(self, name: str):
@@ -309,6 +312,7 @@ class RecStoreClient:
         if name not in self._tensor_meta:
             raise RuntimeError(f"Tensor '{name}' has not been initialized.")
         self._require_local_shm_backend("local_lookup_flat")
+        self._ensure_gpu_cache_table(name)
         meta = self._tensor_meta[name]
         embedding_dim = meta['shape'][1]
         ids = self._normalize_ids(ids, preserve_device=True)
@@ -329,6 +333,68 @@ class RecStoreClient:
             "lookup_payload_pin_ms": float(values[4]),
             "lookup_fallback_copy_ms": float(values[5]),
             "lookup_values_h2d_enqueue_ms": float(values[6]),
+        }
+
+    def enable_gpu_cache(self, capacity: int, embedding_dim: int) -> bool:
+        if not isinstance(capacity, int) or isinstance(capacity, bool):
+            raise ValueError("capacity must be an integer")
+        if not isinstance(embedding_dim, int) or isinstance(embedding_dim, bool):
+            raise ValueError("embedding_dim must be an integer")
+        if capacity <= 0:
+            raise ValueError("capacity must be positive")
+        if embedding_dim <= 0:
+            raise ValueError("embedding_dim must be positive")
+        enable = getattr(self.ops, "enable_gpu_cache", None)
+        if not callable(enable):
+            raise RuntimeError(
+                "enable_gpu_cache requires a RecStore ops library exposing enable_gpu_cache()."
+            )
+        return bool(enable(int(capacity), int(embedding_dim)))
+
+    def disable_gpu_cache(self) -> None:
+        disable = getattr(self.ops, "disable_gpu_cache", None)
+        if not callable(disable):
+            raise RuntimeError(
+                "disable_gpu_cache requires a RecStore ops library exposing disable_gpu_cache()."
+            )
+        disable()
+
+    def clear_gpu_cache(self) -> None:
+        clear = getattr(self.ops, "clear_gpu_cache", None)
+        if not callable(clear):
+            raise RuntimeError(
+                "clear_gpu_cache requires a RecStore ops library exposing clear_gpu_cache()."
+            )
+        clear()
+        self._gpu_cache_table_name = None
+
+    def _clear_gpu_cache_if_available(self) -> None:
+        clear = getattr(self.ops, "clear_gpu_cache", None)
+        if callable(clear):
+            clear()
+        self._gpu_cache_table_name = None
+
+    def _ensure_gpu_cache_table(self, name: str) -> None:
+        if self._gpu_cache_table_name is None:
+            self._gpu_cache_table_name = name
+            return
+        if self._gpu_cache_table_name != name:
+            self._clear_gpu_cache_if_available()
+            self._gpu_cache_table_name = name
+
+    def get_last_gpu_cache_profile(self) -> Dict[str, float]:
+        getter = getattr(self.ops, "get_last_gpu_cache_profile", None)
+        if not callable(getter):
+            return {}
+        values = getter()
+        if not isinstance(values, (list, tuple)) or len(values) < 5:
+            return {}
+        return {
+            "gpu_cache_query_ms": float(values[0]),
+            "gpu_cache_backend_lookup_ms": float(values[1]),
+            "gpu_cache_fill_ms": float(values[2]),
+            "gpu_cache_update_ms": float(values[3]),
+            "gpu_cache_hit_count": float(values[4]),
         }
 
     def local_update_flat(self, name: str, ids: torch.Tensor, grads: torch.Tensor) -> None:
@@ -375,6 +441,7 @@ class RecStoreClient:
         if name not in self._tensor_meta:
             raise RuntimeError(f"Tensor '{name}' has not been initialized.")
         self.ops.emb_write(ids, data)
+        self._clear_gpu_cache_if_available()
 
     # ---- Prefetch APIs ----
     def prefetch(self, ids: torch.Tensor) -> int:

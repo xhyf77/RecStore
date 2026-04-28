@@ -43,6 +43,11 @@ target_link_libraries(recstore_torch_ops PRIVATE
     ${TORCH_LIBRARIES}
 )
 
+if(TARGET framework_gpu_cache)
+    target_compile_definitions(recstore_torch_ops PRIVATE RECSTORE_ENABLE_GPU_CACHE)
+    target_link_libraries(recstore_torch_ops PRIVATE framework_gpu_cache)
+endif()
+
 target_link_options(recstore_torch_ops PRIVATE -Wl,--no-as-needed)
 
 # Set the required C++ standard.

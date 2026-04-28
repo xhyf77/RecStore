@@ -2,6 +2,10 @@ option(USE_FAKE_KVCLIENT "Use FakeKVClientOp for testing" OFF)
 
 find_package(Python 3.10 COMPONENTS Interpreter Development REQUIRED)
 
+if(ENABLE_CUDA AND CMAKE_CUDA_COMPILER)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/gpu)
+endif()
+
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/pytorch)
 # add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/tensorflow)
 

@@ -1,0 +1,162 @@
+from __future__ import annotations
+
+import os
+import time
+import unittest
+from pathlib import Path
+
+import torch
+
+from ..KVClient import RecStoreClient
+
+
+class TestGpuTrainingCache(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not torch.cuda.is_available():
+            raise unittest.SkipTest("CUDA is required")
+        cls.repo_root = Path(__file__).resolve().parents[5]
+        cls.library_path = cls.repo_root / "build/lib/lib_recstore_ops.so"
+        cls.config_path = cls.repo_root / "recstore_config.json"
+        if not cls.library_path.exists():
+            raise unittest.SkipTest(f"missing ops library: {cls.library_path}")
+        if not cls.config_path.exists():
+            raise unittest.SkipTest(f"missing config file: {cls.config_path}")
+
+    def setUp(self) -> None:
+        os.environ["RECSTORE_CONFIG"] = str(self.config_path)
+        RecStoreClient._instance = None
+        self.client = RecStoreClient(str(self.library_path))
+        self.client.set_ps_backend("hierkv")
+        if not self.client.enable_gpu_cache(capacity=128, embedding_dim=4):
+            raise unittest.SkipTest("GPU cache ops are not enabled")
+
+    def tearDown(self) -> None:
+        try:
+            self.client.disable_gpu_cache()
+        finally:
+            RecStoreClient._instance = None
+
+    def _new_table_name(self) -> str:
+        return f"gpu_cache_it_{time.time_ns()}"
+
+    def test_lookup_miss_fills_cache_and_second_lookup_hits(self) -> None:
+        table_name = self._new_table_name()
+        self.client.init_data(name=table_name, shape=(64, 4), dtype=torch.float32)
+        ids = torch.tensor([1, 3, 5], dtype=torch.int64, device="cuda")
+
+        first = self.client.local_lookup_flat(table_name, ids)
+        first_profile = self.client.get_last_gpu_cache_profile()
+        second = self.client.local_lookup_flat(table_name, ids)
+        second_profile = self.client.get_last_gpu_cache_profile()
+
+        self.assertEqual(first.device.type, "cuda")
+        self.assertTrue(torch.allclose(first, torch.zeros((3, 4), device="cuda")))
+        self.assertTrue(torch.allclose(second, first))
+        self.assertEqual(first_profile["gpu_cache_hit_count"], 0.0)
+        self.assertEqual(second_profile["gpu_cache_hit_count"], 3.0)
+
+    def test_update_refreshes_cached_rows_before_next_lookup(self) -> None:
+        table_name = self._new_table_name()
+        self.client.init_data(name=table_name, shape=(64, 4), dtype=torch.float32)
+        ids = torch.tensor([7, 9], dtype=torch.int64, device="cuda")
+
+        before = self.client.local_lookup_flat(table_name, ids)
+        self.assertTrue(torch.allclose(before, torch.zeros((2, 4), device="cuda")))
+
+        grads = torch.ones((2, 4), dtype=torch.float32, device="cuda")
+        self.client.local_update_flat(table_name, ids, grads)
+        after = self.client.local_lookup_flat(table_name, ids)
+
+        expected = torch.full((2, 4), -0.01, dtype=torch.float32, device="cuda")
+        self.assertTrue(torch.allclose(after, expected))
+        profile = self.client.get_last_gpu_cache_profile()
+        self.assertEqual(profile["gpu_cache_hit_count"], 2.0)
+
+    def test_push_invalidates_cached_rows_before_next_lookup(self) -> None:
+        table_name = self._new_table_name()
+        self.client.init_data(name=table_name, shape=(64, 4), dtype=torch.float32)
+        ids = torch.tensor([11, 12], dtype=torch.int64, device="cuda")
+        self.client.local_lookup_flat(table_name, ids)
+        self.client.local_lookup_flat(table_name, ids)
+        self.assertEqual(self.client.get_last_gpu_cache_profile()["gpu_cache_hit_count"], 2.0)
+
+        replacement = torch.full((2, 4), 3.0, dtype=torch.float32)
+        self.client.push(table_name, ids.cpu(), replacement)
+        out = self.client.local_lookup_flat(table_name, ids)
+
+        self.assertTrue(torch.allclose(out, replacement.to("cuda")))
+        self.assertEqual(self.client.get_last_gpu_cache_profile()["gpu_cache_hit_count"], 0.0)
+
+    def test_switching_tables_invalidates_cache(self) -> None:
+        table_a = self._new_table_name()
+        table_b = self._new_table_name()
+        self.client.init_data(name=table_a, shape=(64, 4), dtype=torch.float32)
+        self.client.init_data(name=table_b, shape=(64, 4), dtype=torch.float32)
+        ids = torch.tensor([13, 14], dtype=torch.int64, device="cuda")
+        self.client.push(table_b, ids.cpu(), torch.full((2, 4), 5.0, dtype=torch.float32))
+
+        self.client.local_lookup_flat(table_a, ids)
+        self.client.local_lookup_flat(table_a, ids)
+        self.assertEqual(self.client.get_last_gpu_cache_profile()["gpu_cache_hit_count"], 2.0)
+
+        out_b = self.client.local_lookup_flat(table_b, ids)
+
+        self.assertTrue(torch.allclose(out_b, torch.full((2, 4), 5.0, device="cuda")))
+        self.assertEqual(self.client.get_last_gpu_cache_profile()["gpu_cache_hit_count"], 0.0)
+
+    def test_duplicate_ids_preserve_request_order_after_cache_fill(self) -> None:
+        table_name = self._new_table_name()
+        self.client.init_data(name=table_name, shape=(64, 4), dtype=torch.float32)
+        seed_ids = torch.tensor([4, 6, 8, 10], dtype=torch.int64, device="cuda")
+        seed_grads = torch.tensor(
+            [
+                [1.0, 1.0, 1.0, 1.0],
+                [2.0, 2.0, 2.0, 2.0],
+                [3.0, 3.0, 3.0, 3.0],
+                [4.0, 4.0, 4.0, 4.0],
+            ],
+            dtype=torch.float32,
+            device="cuda",
+        )
+        self.client.local_update_flat(table_name, seed_ids, seed_grads)
+        self.client.clear_gpu_cache()
+
+        self.client.local_lookup_flat(
+            table_name, torch.tensor([4, 6], dtype=torch.int64, device="cuda")
+        )
+
+        ids = torch.tensor([4, 8, 6, 10, 8], dtype=torch.int64, device="cuda")
+        out = self.client.local_lookup_flat(table_name, ids)
+        expected = torch.tensor(
+            [
+                [-0.01, -0.01, -0.01, -0.01],
+                [-0.03, -0.03, -0.03, -0.03],
+                [-0.02, -0.02, -0.02, -0.02],
+                [-0.04, -0.04, -0.04, -0.04],
+                [-0.03, -0.03, -0.03, -0.03],
+            ],
+            dtype=torch.float32,
+            device="cuda",
+        )
+        self.assertTrue(torch.allclose(out, expected))
+        profile = self.client.get_last_gpu_cache_profile()
+        self.assertEqual(profile["gpu_cache_hit_count"], 2.0)
+
+        cached = self.client.local_lookup_flat(table_name, ids)
+        cached_expected = torch.tensor(
+            [
+                [-0.01, -0.01, -0.01, -0.01],
+                [-0.03, -0.03, -0.03, -0.03],
+                [-0.02, -0.02, -0.02, -0.02],
+                [-0.04, -0.04, -0.04, -0.04],
+                [-0.03, -0.03, -0.03, -0.03],
+            ],
+            dtype=torch.float32,
+            device="cuda",
+        )
+        self.assertTrue(torch.allclose(cached, cached_expected))
+
+
+if __name__ == "__main__":
+    unittest.main()
