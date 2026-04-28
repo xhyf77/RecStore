@@ -540,6 +540,22 @@ class TestShardedRecstoreClient(unittest.TestCase):
         self.assertEqual(len(fake_client.table_inits), 2)
         self.assertEqual(len(fake_client.updates), 2)
 
+    def test_wait_clears_gpu_cache_after_fallback_update(self) -> None:
+        runtime_dir = self._make_runtime_dir(hash_method="simple_mod", distributed_num_shards=2)
+        fake_client = _FakeClient()
+        client = ShardedRecstoreClient(fake_client, runtime_dir)
+        client.register_tensor_meta("default", shape=(8, 2), dtype=torch.float32)
+
+        handle = client.update_async(
+            "default",
+            torch.arange(0, 4, dtype=torch.int64),
+            torch.ones((4, 2), dtype=torch.float32),
+        )
+        client.wait(handle)
+
+        self.assertEqual(len(fake_client.updates), 2)
+        self.assertEqual(fake_client.ops.clear_gpu_cache_calls, 1)
+
     def test_current_and_set_ps_backend_forward_to_underlying_ops(self) -> None:
         runtime_dir = self._make_runtime_dir()
         fake_client = _FakeClient()

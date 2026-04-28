@@ -12,6 +12,9 @@ struct GpuCacheProfile {
   double fill_ms           = 0.0;
   double update_ms         = 0.0;
   double hit_count         = 0.0;
+  double invalidate_ms     = 0.0;
+  double request_count     = 0.0;
+  double miss_count        = 0.0;
 };
 
 bool EnableGpuCache(int64_t capacity, int64_t embedding_dim);
@@ -40,5 +43,6 @@ void ScatterMissValues(torch::Tensor* output_values,
 void AddGpuCacheBackendLookupMs(double ms);
 void UpdateGpuCache(const torch::Tensor& keys_cuda,
                     const torch::Tensor& values_cuda);
+void InvalidateGpuCache(const torch::Tensor& keys_cuda);
 
 } // namespace recstore::framework::gpu

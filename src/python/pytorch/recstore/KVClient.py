@@ -5,6 +5,16 @@ import ctypes
 from typing import Optional, Tuple, List, Dict, Any, Callable
 
 _LOCAL_FAST_PATH_BACKENDS = {"local_shm", "hierkv"}
+_GPU_CACHE_PROFILE_KEYS = (
+    "gpu_cache_query_ms",
+    "gpu_cache_backend_lookup_ms",
+    "gpu_cache_fill_ms",
+    "gpu_cache_update_ms",
+    "gpu_cache_hit_count",
+    "gpu_cache_invalidate_ms",
+    "gpu_cache_request_count",
+    "gpu_cache_miss_count",
+)
 
 def get_reporter():
     if not hasattr(get_reporter, 'lib'):
@@ -389,13 +399,10 @@ class RecStoreClient:
         values = getter()
         if not isinstance(values, (list, tuple)) or len(values) < 5:
             return {}
-        return {
-            "gpu_cache_query_ms": float(values[0]),
-            "gpu_cache_backend_lookup_ms": float(values[1]),
-            "gpu_cache_fill_ms": float(values[2]),
-            "gpu_cache_update_ms": float(values[3]),
-            "gpu_cache_hit_count": float(values[4]),
-        }
+        profile = {}
+        for index, key in enumerate(_GPU_CACHE_PROFILE_KEYS):
+            profile[key] = float(values[index]) if index < len(values) else 0.0
+        return profile
 
     def local_update_flat(self, name: str, ids: torch.Tensor, grads: torch.Tensor) -> None:
         if name not in self._tensor_meta:
@@ -409,6 +416,8 @@ class RecStoreClient:
         if ids.size(0) != grads.size(0):
             raise ValueError("ids and grads must have the same number of rows")
         self.ops.local_update_flat(name, ids, grads)
+        if ids.device.type == "cpu":
+            self._clear_gpu_cache_if_available()
 
     def get_last_local_shm_update_profile(self) -> Dict[str, float]:
         getter = getattr(self.ops, "get_last_local_update_flat_profile", None)

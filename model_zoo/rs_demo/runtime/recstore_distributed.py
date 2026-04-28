@@ -10,6 +10,16 @@ from typing import Any, Dict, List, Tuple
 import torch
 
 _LOCAL_FAST_PATH_BACKENDS = {"local_shm", "hierkv"}
+_GPU_CACHE_PROFILE_KEYS = (
+    "gpu_cache_query_ms",
+    "gpu_cache_backend_lookup_ms",
+    "gpu_cache_fill_ms",
+    "gpu_cache_update_ms",
+    "gpu_cache_hit_count",
+    "gpu_cache_invalidate_ms",
+    "gpu_cache_request_count",
+    "gpu_cache_miss_count",
+)
 
 
 @dataclass(frozen=True)
@@ -344,13 +354,10 @@ class ShardedRecstoreClient:
         values = getter()
         if not isinstance(values, (list, tuple)) or len(values) < 5:
             return {}
-        return {
-            "gpu_cache_query_ms": float(values[0]),
-            "gpu_cache_backend_lookup_ms": float(values[1]),
-            "gpu_cache_fill_ms": float(values[2]),
-            "gpu_cache_update_ms": float(values[3]),
-            "gpu_cache_hit_count": float(values[4]),
-        }
+        profile = {}
+        for index, key in enumerate(_GPU_CACHE_PROFILE_KEYS):
+            profile[key] = float(values[index]) if index < len(values) else 0.0
+        return profile
 
     def _clear_gpu_cache_if_available(self) -> None:
         clear = getattr(self._client, "clear_gpu_cache", None)
@@ -429,6 +436,8 @@ class ShardedRecstoreClient:
                 f"grads second dimension must match embedding dim {embedding_dim} for tensor '{name}'"
             )
         self._client.ops.local_update_flat(name, normalized_ids, normalized_grads)
+        if normalized_ids.device.type == "cpu":
+            self._clear_gpu_cache_if_available()
 
     def get_last_local_shm_update_profile(self) -> dict[str, float]:
         getter = getattr(self._client.ops, "get_last_local_update_flat_profile", None)
@@ -554,3 +563,4 @@ class ShardedRecstoreClient:
             shard_grads = grads.index_select(0, index_tensor).contiguous()
             self._activate_shard(shard)
             self._client.emb_update_table(name, shard_keys, shard_grads)
+        self._clear_gpu_cache_if_available()

@@ -195,6 +195,8 @@ GpuCacheLookupResult QueryGpuCache(const torch::Tensor& keys,
     g_last_profile.query_ms += MsSince(query_start);
     g_last_profile.hit_count +=
         static_cast<double>(keys.numel() - missing_count);
+    g_last_profile.request_count += static_cast<double>(keys.numel());
+    g_last_profile.miss_count += static_cast<double>(missing_count);
 
     return GpuCacheLookupResult{
         values,
@@ -279,6 +281,29 @@ void UpdateGpuCache(const torch::Tensor& keys_cuda,
                   stream.stream());
   C10_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));
   g_last_profile.update_ms += MsSince(update_start);
+}
+
+void InvalidateGpuCache(const torch::Tensor& keys_cuda) {
+  if (keys_cuda.numel() == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> guard(g_mu);
+  if (!g_cache) {
+    return;
+  }
+  RequireCudaTensor(keys_cuda, "keys_cuda");
+  TORCH_CHECK(keys_cuda.scalar_type() == torch::kInt64,
+              "keys_cuda must have dtype int64");
+  RequireCacheDevice(keys_cuda, "keys_cuda");
+
+  c10::cuda::CUDAGuard device_guard(keys_cuda.device());
+  const auto invalidate_start = Now();
+  const auto stream           = at::cuda::getCurrentCUDAStream();
+  g_cache->Remove(keys_cuda.data_ptr<int64_t>(),
+                  static_cast<size_t>(keys_cuda.numel()),
+                  stream.stream());
+  C10_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));
+  g_last_profile.invalidate_ms += MsSince(invalidate_start);
 }
 
 } // namespace recstore::framework::gpu

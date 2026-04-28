@@ -65,6 +65,9 @@ GPU_CACHE_PROFILE_KEYS = (
     "gpu_cache_fill_ms",
     "gpu_cache_update_ms",
     "gpu_cache_hit_count",
+    "gpu_cache_invalidate_ms",
+    "gpu_cache_request_count",
+    "gpu_cache_miss_count",
 )
 
 

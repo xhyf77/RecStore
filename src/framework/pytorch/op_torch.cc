@@ -90,6 +90,29 @@ void SafeClearGpuCacheNoThrow() {
     LOG(WARNING) << "Failed to clear GPU cache: unknown exception";
   }
 }
+
+void MaintainGpuCacheAfterUpdateNoThrow(const torch::Tensor& keys,
+                                        int64_t embedding_dim) {
+  if (!gpu::IsGpuCacheEnabled()) {
+    return;
+  }
+  if (gpu::CanUseGpuCache(keys, embedding_dim) && keys.is_cuda()) {
+    try {
+      gpu::InvalidateGpuCache(keys);
+      return;
+    } catch (const std::exception& e) {
+      LOG(WARNING) << "GPU cache invalidation failed after backend update "
+                      "succeeded; clearing cache and continuing: "
+                   << e.what();
+    } catch (...) {
+      LOG(WARNING) << "GPU cache invalidation failed after backend update "
+                      "succeeded; clearing cache and continuing: "
+                   << "unknown exception";
+    }
+  }
+  SafeClearGpuCacheNoThrow();
+  gpu::ResetLastGpuCacheProfile();
+}
 #endif
 
 } // namespace
@@ -499,6 +522,9 @@ void emb_update_table_torch(const std::string& table_name,
   base::RecTensor rec_grads = ToRecTensor(cpu_grads, base::DataType::FLOAT32);
 
   op->EmbUpdate(table_name, rec_keys, rec_grads);
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+  MaintainGpuCacheAfterUpdateNoThrow(keys, grads.size(1));
+#endif
 }
 
 void local_update_flat_torch(const std::string& table_name,
@@ -567,38 +593,7 @@ void local_update_flat_torch(const std::string& table_name,
       ElapsedMs(shm_call_start);
 
 #ifdef RECSTORE_ENABLE_GPU_CACHE
-  if (gpu::CanUseGpuCache(keys, grads.size(1)) && keys.is_cuda() &&
-      grads.is_cuda()) {
-    try {
-      const auto refresh_start = SteadyNow();
-      auto refreshed_cpu       = BackendLocalLookupFlat(
-          kv_op,
-          cpu_keys.contiguous(),
-          keys.device(),
-          /*result_on_cuda=*/false,
-          grads.size(1),
-          refresh_start,
-          /*record_profile=*/false);
-      auto refreshed_cuda =
-          refreshed_cpu.to(keys.device(), /*non_blocking=*/false);
-      gpu::UpdateGpuCache(keys, refreshed_cuda);
-    } catch (const std::exception& e) {
-      LOG(WARNING) << "GPU cache update maintenance failed after backend "
-                      "update succeeded; clearing cache and continuing: "
-                   << e.what();
-      SafeClearGpuCacheNoThrow();
-      gpu::ResetLastGpuCacheProfile();
-    } catch (...) {
-      LOG(WARNING) << "GPU cache update maintenance failed after backend "
-                      "update succeeded; clearing cache and continuing: "
-                   << "unknown exception";
-      SafeClearGpuCacheNoThrow();
-      gpu::ResetLastGpuCacheProfile();
-    }
-  } else if (gpu::IsGpuCacheEnabled()) {
-    SafeClearGpuCacheNoThrow();
-    gpu::ResetLastGpuCacheProfile();
-  }
+  MaintainGpuCacheAfterUpdateNoThrow(keys, grads.size(1));
 #endif
 
   g_last_local_update_flat_profile[kUpdateTotalMs] = ElapsedMs(total_start);
@@ -729,6 +724,9 @@ std::vector<double> get_last_gpu_cache_profile_torch() {
       profile.fill_ms,
       profile.update_ms,
       profile.hit_count,
+      profile.invalidate_ms,
+      profile.request_count,
+      profile.miss_count,
   };
 #else
   return {};
