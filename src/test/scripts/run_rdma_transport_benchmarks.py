@@ -27,6 +27,7 @@ BENCHMARK_NOISE_PATTERNS = (
 
 SUMMARY_RE = re.compile(
     r"transport=(?P<transport>\S+) "
+    r"op=(?P<op>\S+) "
     r"phase=(?P<phase>\S+) "
     r"summary "
     r"rounds=(?P<rounds>\d+) "
@@ -147,6 +148,7 @@ def collect_summary_rows(text):
         rows.append(
             {
                 "transport": m.group("transport"),
+                "op": m.group("op"),
                 "rounds": int(m.group("rounds")),
                 "iterations": int(m.group("iterations")),
                 "batch_keys": int(m.group("batch_keys")),
@@ -173,6 +175,7 @@ def print_summary_table(rows):
     rows = sorted(rows, key=lambda r: r["transport"])
     header = [
         "transport",
+        "op",
         "rounds",
         "iterations",
         "batch_keys",
@@ -188,6 +191,7 @@ def print_summary_table(rows):
         table.append(
             [
                 row["transport"],
+                row["op"],
                 str(row["rounds"]),
                 str(row["iterations"]),
                 str(row["batch_keys"]),

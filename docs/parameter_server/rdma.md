@@ -24,6 +24,23 @@ RDMA 模块基于 Mayfly/DSM，提供独立 `petps_server` 数据面。
     若目标是验证 PetPS 传输链路本身，请优先使用 `recstore_config.rdma_test.json`
     或 `recstore_config.rdma_multishard_test.json`。
 
+## 核心实现文件（必读）
+
+本页原本聚焦“怎么跑”，这里补充“实现看哪里”：
+
+| 文件 | 角色 | 重点看点 |
+|------|------|----------|
+| `src/ps/rdma/petps_client.cc` | 单分片 RDMA 客户端主实现 | `GetParameter`、`PutParameter`、`WaitRPCFinish`、PUT-v2(read/push) 路径 |
+| `src/ps/rdma/petps_server.cc` | RDMA 服务端主实现 | `RpcPsGet`、`RpcPsPut`、状态字回写、ready key 发布 |
+| `src/ps/rdma/rdma_protocol.h` | RDMA PUT 协议定义 | `PutPayloadHeader`(v1)、`PutRemotePayloadV2`(v2)、编码/解码与校验 |
+| `src/ps/rdma/allshards_ps_client.cc` | 多分片聚合客户端 | 分片路由、分片 RPC 聚合、按原顺序回填用户缓冲区 |
+| `src/ps/rdma/rdma_ps_client_adapter.cc` | Op-layer 适配层 | `cache_ps.ps_type=RDMA` 时对接 `KVClientOp` 的入口 |
+| `src/ps/rdma/rdma_status.h` | 状态码语义 | `kPending/kOk/kInvalidPayload/kBatchTooLarge/...` 统一错误语义 |
+
+!!! note
+    若你只想先抓主脉络，建议阅读顺序：
+    `rdma_protocol.h -> petps_client.cc -> petps_server.cc -> allshards_ps_client.cc -> rdma_ps_client_adapter.cc`。
+
 ## 配置
 
 RDMA 专项配置位于：

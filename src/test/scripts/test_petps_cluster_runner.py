@@ -36,6 +36,11 @@ class TestPetPSClusterRunner(unittest.TestCase):
         self.assertTrue(
             runner.is_ready_line("[RDMA-DBG] Server polling thread ready 0")
         )
+        self.assertTrue(
+            runner.is_ready_line(
+                "component=rdma_server event=polling_thread_ready thread_id=0"
+            )
+        )
         self.assertFalse(runner.is_ready_line("Starts PS polling thread 0"))
         self.assertFalse(runner.is_ready_line("xmh: finish construct DSM"))
         self.assertFalse(runner.is_ready_line("throughput 0.1234 Mkv/s"))
@@ -47,6 +52,17 @@ class TestPetPSClusterRunner(unittest.TestCase):
             "[RDMA-DBG] Server polling thread ready 0\n"
             "throughput 0.1234 Mkv/s\n"
             "[RDMA-DBG] Server polling thread ready 1\n"
+        )
+
+        runner._monitor(0, pipe)
+
+        self.assertEqual(runner.ready, {0})
+
+    def test_monitor_supports_new_ready_log_format(self):
+        runner = PetPSClusterRunner(num_servers=1, thread_num=2)
+        pipe = StringIO(
+            "component=rdma_server event=polling_thread_ready thread_id=0\n"
+            "component=rdma_server event=polling_thread_ready thread_id=1\n"
         )
 
         runner._monitor(0, pipe)

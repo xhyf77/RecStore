@@ -61,6 +61,58 @@ bool ShouldPrintSummary(const std::string& mode) {
   return mode == "summary" || mode == "both";
 }
 
+void MaybePrintPerRound(const std::string& transport,
+                        const std::string& op,
+                        const std::string& report_mode,
+                        bool is_warmup,
+                        int round,
+                        int warmup_rounds,
+                        int rounds,
+                        int64_t elapsed_us) {
+  if (!ShouldPrintPerRound(report_mode)) {
+    return;
+  }
+  std::cout << "transport=" << transport << " op=" << op
+            << " phase=" << (is_warmup ? "warmup" : "measure") << " round="
+            << (is_warmup ? (round + 1) : (round - warmup_rounds + 1)) << "/"
+            << (is_warmup ? warmup_rounds : rounds)
+            << " elapsed_us=" << elapsed_us << std::endl;
+}
+
+template <typename IterationFn>
+void RunOperationRounds(const std::string& transport,
+                        const std::string& op,
+                        int total_rounds,
+                        int warmup_rounds,
+                        int rounds,
+                        int iterations,
+                        const std::string& report_mode,
+                        IterationFn&& run_iteration,
+                        std::vector<int64_t>* warmup_samples_us,
+                        std::vector<int64_t>* measure_samples_us) {
+  for (int round = 0; round < total_rounds; ++round) {
+    const bool is_warmup = round < warmup_rounds;
+    auto start           = std::chrono::steady_clock::now();
+    for (int i = 0; i < iterations; ++i) {
+      run_iteration(i);
+    }
+    auto end = std::chrono::steady_clock::now();
+    const int64_t elapsed_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(end - start)
+            .count();
+    (is_warmup ? *warmup_samples_us : *measure_samples_us).push_back(elapsed_us);
+    MaybePrintPerRound(
+        transport,
+        op,
+        report_mode,
+        is_warmup,
+        round,
+        warmup_rounds,
+        rounds,
+        elapsed_us);
+  }
+}
+
 double PercentileUs(std::vector<int64_t> samples, double ratio) {
   CHECK(!samples.empty());
   CHECK_GE(ratio, 0.0);
@@ -73,6 +125,7 @@ double PercentileUs(std::vector<int64_t> samples, double ratio) {
 }
 
 void PrintSummary(const std::string& transport,
+                  const std::string& op,
                   const std::string& phase,
                   const std::vector<int64_t>& elapsed_us_samples,
                   int iterations_per_round,
@@ -90,8 +143,7 @@ void PrintSummary(const std::string& transport,
   const double p95_us = PercentileUs(elapsed_us_samples, 0.95);
   const double p99_us = PercentileUs(elapsed_us_samples, 0.99);
 
-  const double ops_per_round =
-      static_cast<double>(iterations_per_round) * 2.0; // put + get
+  const double ops_per_round = static_cast<double>(iterations_per_round);
   const double key_ops_per_round =
       ops_per_round * static_cast<double>(keys_per_iteration);
   const double total_rounds = static_cast<double>(elapsed_us_samples.size());
@@ -99,7 +151,7 @@ void PrintSummary(const std::string& transport,
   const double key_ops_per_sec =
       (key_ops_per_round * total_rounds) / (total_us / 1e6);
 
-  std::cout << "transport=" << transport << " phase=" << phase
+  std::cout << "transport=" << transport << " op=" << op << " phase=" << phase
             << " summary rounds=" << elapsed_us_samples.size()
             << " iterations=" << iterations_per_round
             << " batch_keys=" << batch_keys << " elapsed_us_mean=" << mean_us
@@ -123,10 +175,6 @@ int main(int argc, char** argv) {
   const auto values      = MakeValues(keys);
   const auto key_array   = base::ConstArray<uint64_t>(keys);
   const int total_rounds = FLAGS_warmup_rounds + FLAGS_rounds;
-  std::vector<int64_t> warmup_samples_us;
-  std::vector<int64_t> measure_samples_us;
-  warmup_samples_us.reserve(std::max(0, FLAGS_warmup_rounds));
-  measure_samples_us.reserve(std::max(0, FLAGS_rounds));
 
   if (transport == "RDMA") {
     if (FLAGS_num_shards == 1) {
@@ -134,45 +182,76 @@ int main(int argc, char** argv) {
       client.InitThread();
       void* recv_buffer =
           client.GetReceiveBuffer(client.ResponseBufferBytes(keys.size()));
+      std::vector<int64_t> put_warmup_samples_us;
+      std::vector<int64_t> put_measure_samples_us;
+      put_warmup_samples_us.reserve(std::max(0, FLAGS_warmup_rounds));
+      put_measure_samples_us.reserve(std::max(0, FLAGS_rounds));
+      RunOperationRounds(
+          "RDMA",
+          "put",
+          total_rounds,
+          FLAGS_warmup_rounds,
+          FLAGS_rounds,
+          FLAGS_iterations,
+          report_mode,
+          [&](int iteration) {
+            CHECK_EQ(client.PutParameter(keys, values), 0)
+                << "RDMA PutParameter failed at iteration=" << iteration;
+          },
+          &put_warmup_samples_us,
+          &put_measure_samples_us);
 
-      for (int round = 0; round < total_rounds; ++round) {
-        const bool is_warmup = round < FLAGS_warmup_rounds;
-        auto start           = std::chrono::steady_clock::now();
-        for (int i = 0; i < FLAGS_iterations; ++i) {
-          CHECK_EQ(client.PutParameter(keys, values), 0)
-              << "RDMA PutParameter failed at iteration=" << i;
-          int rpc_id = client.GetParameter(
-              key_array, static_cast<float*>(recv_buffer), false, 0);
-          client.WaitRPCFinish(rpc_id);
-          client.RevokeRPCResource(rpc_id);
-        }
-        auto end = std::chrono::steady_clock::now();
-        const int64_t elapsed_us =
-            std::chrono::duration_cast<std::chrono::microseconds>(end - start)
-                .count();
-        (is_warmup ? warmup_samples_us : measure_samples_us)
-            .push_back(elapsed_us);
-        if (ShouldPrintPerRound(report_mode)) {
-          std::cout
-              << "transport=RDMA phase=" << (is_warmup ? "warmup" : "measure")
-              << " round="
-              << (is_warmup ? (round + 1) : (round - FLAGS_warmup_rounds + 1))
-              << "/" << (is_warmup ? FLAGS_warmup_rounds : FLAGS_rounds)
-              << " elapsed_us=" << elapsed_us << std::endl;
-        }
-      }
+      std::vector<int64_t> get_warmup_samples_us;
+      std::vector<int64_t> get_measure_samples_us;
+      get_warmup_samples_us.reserve(std::max(0, FLAGS_warmup_rounds));
+      get_measure_samples_us.reserve(std::max(0, FLAGS_rounds));
+      RunOperationRounds(
+          "RDMA",
+          "get",
+          total_rounds,
+          FLAGS_warmup_rounds,
+          FLAGS_rounds,
+          FLAGS_iterations,
+          report_mode,
+          [&](int iteration) {
+            int rpc_id = client.GetParameter(
+                key_array, static_cast<float*>(recv_buffer), false, 0);
+            client.WaitRPCFinish(rpc_id);
+            client.RevokeRPCResource(rpc_id);
+            (void)iteration;
+          },
+          &get_warmup_samples_us,
+          &get_measure_samples_us);
       if (ShouldPrintSummary(report_mode)) {
         PrintSummary(
             "RDMA",
+            "put",
             "warmup",
-            warmup_samples_us,
+            put_warmup_samples_us,
             FLAGS_iterations,
             FLAGS_batch_keys,
             keys.size());
         PrintSummary(
             "RDMA",
+            "put",
             "measure",
-            measure_samples_us,
+            put_measure_samples_us,
+            FLAGS_iterations,
+            FLAGS_batch_keys,
+            keys.size());
+        PrintSummary(
+            "RDMA",
+            "get",
+            "warmup",
+            get_warmup_samples_us,
+            FLAGS_iterations,
+            FLAGS_batch_keys,
+            keys.size());
+        PrintSummary(
+            "RDMA",
+            "get",
+            "measure",
+            get_measure_samples_us,
             FLAGS_iterations,
             FLAGS_batch_keys,
             keys.size());
@@ -191,46 +270,78 @@ int main(int argc, char** argv) {
 
     AllShardsParameterClientWrapper client(clients, FLAGS_num_shards);
     client.InitThread();
+    std::vector<int64_t> put_warmup_samples_us;
+    std::vector<int64_t> put_measure_samples_us;
+    put_warmup_samples_us.reserve(std::max(0, FLAGS_warmup_rounds));
+    put_measure_samples_us.reserve(std::max(0, FLAGS_rounds));
+    RunOperationRounds(
+        "RDMA",
+        "put",
+        total_rounds,
+        FLAGS_warmup_rounds,
+        FLAGS_rounds,
+        FLAGS_iterations,
+        report_mode,
+        [&](int iteration) {
+          CHECK_EQ(client.PutParameter(keys, values), 0)
+              << "RDMA(all-shards) PutParameter failed at iteration="
+              << iteration;
+        },
+        &put_warmup_samples_us,
+        &put_measure_samples_us);
 
-    for (int round = 0; round < total_rounds; ++round) {
-      const bool is_warmup = round < FLAGS_warmup_rounds;
-      auto start           = std::chrono::steady_clock::now();
-      for (int i = 0; i < FLAGS_iterations; ++i) {
-        CHECK_EQ(client.PutParameter(keys, values), 0)
-            << "RDMA(all-shards) PutParameter failed at iteration=" << i;
-        std::vector<float> output(
-            keys.size() * (FLAGS_value_size / sizeof(float)) + 1, 0.0f);
-        int rpc_id = client.GetParameter(key_array, output.data(), false, 0);
-        client.WaitRPCFinish(rpc_id);
-        client.RevokeRPCResource(rpc_id);
-      }
-      auto end = std::chrono::steady_clock::now();
-      const int64_t elapsed_us =
-          std::chrono::duration_cast<std::chrono::microseconds>(end - start)
-              .count();
-      (is_warmup ? warmup_samples_us : measure_samples_us)
-          .push_back(elapsed_us);
-      if (ShouldPrintPerRound(report_mode)) {
-        std::cout
-            << "transport=RDMA phase=" << (is_warmup ? "warmup" : "measure")
-            << " round="
-            << (is_warmup ? (round + 1) : (round - FLAGS_warmup_rounds + 1))
-            << "/" << (is_warmup ? FLAGS_warmup_rounds : FLAGS_rounds)
-            << " elapsed_us=" << elapsed_us << std::endl;
-      }
-    }
+    std::vector<int64_t> get_warmup_samples_us;
+    std::vector<int64_t> get_measure_samples_us;
+    get_warmup_samples_us.reserve(std::max(0, FLAGS_warmup_rounds));
+    get_measure_samples_us.reserve(std::max(0, FLAGS_rounds));
+    RunOperationRounds(
+        "RDMA",
+        "get",
+        total_rounds,
+        FLAGS_warmup_rounds,
+        FLAGS_rounds,
+        FLAGS_iterations,
+        report_mode,
+        [&](int iteration) {
+          std::vector<float> output(
+              keys.size() * (FLAGS_value_size / sizeof(float)) + 1, 0.0f);
+          int rpc_id = client.GetParameter(key_array, output.data(), false, 0);
+          client.WaitRPCFinish(rpc_id);
+          client.RevokeRPCResource(rpc_id);
+          (void)iteration;
+        },
+        &get_warmup_samples_us,
+        &get_measure_samples_us);
     if (ShouldPrintSummary(report_mode)) {
       PrintSummary(
           "RDMA",
+          "put",
           "warmup",
-          warmup_samples_us,
+          put_warmup_samples_us,
           FLAGS_iterations,
           FLAGS_batch_keys,
           keys.size());
       PrintSummary(
           "RDMA",
+          "put",
           "measure",
-          measure_samples_us,
+          put_measure_samples_us,
+          FLAGS_iterations,
+          FLAGS_batch_keys,
+          keys.size());
+      PrintSummary(
+          "RDMA",
+          "get",
+          "warmup",
+          get_warmup_samples_us,
+          FLAGS_iterations,
+          FLAGS_batch_keys,
+          keys.size());
+      PrintSummary(
+          "RDMA",
+          "get",
+          "measure",
+          get_measure_samples_us,
           FLAGS_iterations,
           FLAGS_batch_keys,
           keys.size());
@@ -242,48 +353,82 @@ int main(int argc, char** argv) {
   std::unique_ptr<recstore::BasePSClient> client(recstore::CreatePSClient(
       recstore::ResolvePSClientOptionsFromFrameworkConfig(config)));
 
-  for (int round = 0; round < total_rounds; ++round) {
-    const bool is_warmup = round < FLAGS_warmup_rounds;
-    auto start           = std::chrono::steady_clock::now();
-    for (int i = 0; i < FLAGS_iterations; ++i) {
-      CHECK_EQ(client->PutParameter(key_array, values), 0)
-          << transport << " PutParameter failed at iteration=" << i;
-      if (BenchmarkUsesVectorGet(transport)) {
-        auto* brpc_client = dynamic_cast<BRPCParameterClient*>(client.get());
-        CHECK_NE(brpc_client, nullptr);
-        std::vector<std::vector<float>> output;
-        brpc_client->GetParameter(key_array, &output);
-      } else {
-        std::vector<float> output(
-            keys.size() * (FLAGS_value_size / sizeof(float)), 0.0f);
-        client->GetParameter(key_array, output.data());
-      }
-    }
-    auto end = std::chrono::steady_clock::now();
-    const int64_t elapsed_us =
-        std::chrono::duration_cast<std::chrono::microseconds>(end - start)
-            .count();
-    (is_warmup ? warmup_samples_us : measure_samples_us).push_back(elapsed_us);
-    if (ShouldPrintPerRound(report_mode)) {
-      std::cout << "transport=" << transport
-                << " phase=" << (is_warmup ? "warmup" : "measure") << " round="
-                << (is_warmup ? (round + 1) : (round - FLAGS_warmup_rounds + 1))
-                << "/" << (is_warmup ? FLAGS_warmup_rounds : FLAGS_rounds)
-                << " elapsed_us=" << elapsed_us << std::endl;
-    }
-  }
+  std::vector<int64_t> put_warmup_samples_us;
+  std::vector<int64_t> put_measure_samples_us;
+  put_warmup_samples_us.reserve(std::max(0, FLAGS_warmup_rounds));
+  put_measure_samples_us.reserve(std::max(0, FLAGS_rounds));
+  RunOperationRounds(
+      transport,
+      "put",
+      total_rounds,
+      FLAGS_warmup_rounds,
+      FLAGS_rounds,
+      FLAGS_iterations,
+      report_mode,
+      [&](int iteration) {
+        CHECK_EQ(client->PutParameter(key_array, values), 0)
+            << transport << " PutParameter failed at iteration=" << iteration;
+      },
+      &put_warmup_samples_us,
+      &put_measure_samples_us);
+
+  std::vector<int64_t> get_warmup_samples_us;
+  std::vector<int64_t> get_measure_samples_us;
+  get_warmup_samples_us.reserve(std::max(0, FLAGS_warmup_rounds));
+  get_measure_samples_us.reserve(std::max(0, FLAGS_rounds));
+  RunOperationRounds(
+      transport,
+      "get",
+      total_rounds,
+      FLAGS_warmup_rounds,
+      FLAGS_rounds,
+      FLAGS_iterations,
+      report_mode,
+      [&](int iteration) {
+        if (BenchmarkUsesVectorGet(transport)) {
+          auto* brpc_client = dynamic_cast<BRPCParameterClient*>(client.get());
+          CHECK_NE(brpc_client, nullptr);
+          std::vector<std::vector<float>> output;
+          brpc_client->GetParameter(key_array, &output);
+        } else {
+          std::vector<float> output(
+              keys.size() * (FLAGS_value_size / sizeof(float)), 0.0f);
+          client->GetParameter(key_array, output.data());
+        }
+        (void)iteration;
+      },
+      &get_warmup_samples_us,
+      &get_measure_samples_us);
   if (ShouldPrintSummary(report_mode)) {
     PrintSummary(
         transport,
+        "put",
         "warmup",
-        warmup_samples_us,
+        put_warmup_samples_us,
         FLAGS_iterations,
         FLAGS_batch_keys,
         keys.size());
     PrintSummary(
         transport,
+        "put",
         "measure",
-        measure_samples_us,
+        put_measure_samples_us,
+        FLAGS_iterations,
+        FLAGS_batch_keys,
+        keys.size());
+    PrintSummary(
+        transport,
+        "get",
+        "warmup",
+        get_warmup_samples_us,
+        FLAGS_iterations,
+        FLAGS_batch_keys,
+        keys.size());
+    PrintSummary(
+        transport,
+        "get",
+        "measure",
+        get_measure_samples_us,
         FLAGS_iterations,
         FLAGS_batch_keys,
         keys.size());

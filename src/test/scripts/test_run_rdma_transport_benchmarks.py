@@ -91,26 +91,34 @@ class TestRunRDMATransportBenchmarks(unittest.TestCase):
 
     def test_collect_summary_rows_parses_measure_summary(self):
         sample = (
-            "transport=RDMA phase=warmup summary rounds=5 iterations=20 "
+            "transport=RDMA op=put phase=warmup summary rounds=5 iterations=20 "
             "batch_keys=4 "
             "elapsed_us_mean=300 elapsed_us_p50=290 elapsed_us_p95=350 "
             "elapsed_us_p99=360 ops_per_sec=100000 key_ops_per_sec=400000\n"
-            "transport=RDMA phase=measure summary rounds=50 iterations=20 "
+            "transport=RDMA op=put phase=measure summary rounds=50 iterations=20 "
             "batch_keys=4 "
             "elapsed_us_mean=250 elapsed_us_p50=248 elapsed_us_p95=264 "
             "elapsed_us_p99=270 ops_per_sec=159413.35 key_ops_per_sec=637653.4\n"
+            "transport=RDMA op=get phase=measure summary rounds=50 iterations=20 "
+            "batch_keys=4 "
+            "elapsed_us_mean=180 elapsed_us_p50=175 elapsed_us_p95=195 "
+            "elapsed_us_p99=205 ops_per_sec=210000 key_ops_per_sec=840000\n"
         )
         rows = collect_summary_rows(sample)
-        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["transport"], "RDMA")
+        self.assertEqual(rows[0]["op"], "put")
         self.assertEqual(rows[0]["rounds"], 50)
         self.assertEqual(rows[0]["batch_keys"], 4)
         self.assertAlmostEqual(rows[0]["ops"], 159413.35)
+        self.assertEqual(rows[1]["op"], "get")
+        self.assertAlmostEqual(rows[1]["mean"], 180.0)
 
     def test_print_summary_table_renders_markdown_style_table(self):
         rows = [
             {
                 "transport": "RDMA",
+                "op": "put",
                 "rounds": 50,
                 "iterations": 20,
                 "batch_keys": 4,
@@ -120,7 +128,20 @@ class TestRunRDMATransportBenchmarks(unittest.TestCase):
                 "p99": 270.0,
                 "ops": 159413.35,
                 "key_ops": 637653.4,
-            }
+            },
+            {
+                "transport": "RDMA",
+                "op": "get",
+                "rounds": 50,
+                "iterations": 20,
+                "batch_keys": 4,
+                "mean": 180.0,
+                "p50": 175.0,
+                "p95": 195.0,
+                "p99": 205.0,
+                "ops": 210000.0,
+                "key_ops": 840000.0,
+            },
         ]
         out = StringIO()
         with redirect_stdout(out):
@@ -128,7 +149,10 @@ class TestRunRDMATransportBenchmarks(unittest.TestCase):
         text = out.getvalue()
         self.assertIn("=== Benchmark Summary (measure phase) ===", text)
         self.assertIn("| transport", text)
+        self.assertIn("| op ", text)
         self.assertIn("| RDMA", text)
+        self.assertIn("| put", text)
+        self.assertIn("| get", text)
 
     def test_help_contains_rdma_only_switch(self):
         script = Path(__file__).resolve().parent / "run_rdma_transport_benchmarks.py"

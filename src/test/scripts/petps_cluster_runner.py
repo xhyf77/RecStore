@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -253,7 +254,17 @@ class PetPSClusterRunner:
         return cmd
 
     def is_ready_line(self, line):
-        return "[RDMA-DBG] Server polling thread ready" in line
+        return (
+            "[RDMA-DBG] Server polling thread ready" in line
+            or "component=rdma_server event=polling_thread_ready" in line
+        )
+
+    def _extract_ready_thread_token(self, line):
+        if "component=rdma_server event=polling_thread_ready" in line:
+            match = re.search(r"thread_id=(\d+)", line)
+            if match is not None:
+                return match.group(1)
+        return line.rsplit(" ", 1)[-1]
 
     def _monitor(self, global_id, pipe):
         for raw_line in iter(pipe.readline, ""):
@@ -263,7 +274,7 @@ class PetPSClusterRunner:
                 print(f"[petps_server:{global_id}] {line}")
             if self.is_ready_line(line):
                 ready = self.ready_threads.setdefault(global_id, set())
-                ready.add(line.rsplit(" ", 1)[-1])
+                ready.add(self._extract_ready_thread_token(line))
                 if len(ready) >= self.thread_num:
                     self.ready.add(global_id)
 
@@ -494,13 +505,13 @@ class PetPSClusterRunner:
                 raise TimeoutError(
                     f"Timed out waiting for {self.num_servers} petps_server processes"
                 )
-            for process, _thread in self.processes:
+            for idx, (process, _thread) in enumerate(self.processes):
                 if process.poll() is not None:
                     self.emit_status(
                         "startup-crash",
                         f"exit_code={process.returncode}",
                     )
-                    crash_details = self._format_captured_process_output(global_id)
+                    crash_details = self._format_captured_process_output(idx)
                     self.stop()
                     raise RuntimeError(
                         "petps_server exited early with code "
