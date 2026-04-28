@@ -24,6 +24,7 @@ class _FakeOps:
         self.update_calls: list[tuple[int | None, str, list[int], list[list[float]]]] = []
         self.backend_switch_calls: list[str] = []
         self.lookup_region_warmup_calls = 0
+        self.clear_gpu_cache_calls = 0
 
     def set_ps_config(self, host: str, port: int) -> None:
         self.active_port = int(port)
@@ -55,6 +56,19 @@ class _FakeOps:
 
     def warmup_local_lookup_flat_cuda_region(self) -> bool:
         self.lookup_region_warmup_calls += 1
+        return True
+
+    def clear_gpu_cache(self) -> None:
+        self.clear_gpu_cache_calls += 1
+
+
+class _FakeOpsWithGpuCache(_FakeOps):
+    def __init__(self) -> None:
+        super().__init__()
+        self.gpu_cache_calls: list[tuple[int, int]] = []
+
+    def enable_gpu_cache(self, capacity: int, embedding_dim: int) -> bool:
+        self.gpu_cache_calls.append((int(capacity), int(embedding_dim)))
         return True
 
 
@@ -120,6 +134,32 @@ class _FakeClientCollidingPrefetchId(_FakeClient):
         # different shards may return the same id.
         self.prefetch_requests[1] = (self.ops.active_port, [int(v) for v in keys.tolist()])
         return 1
+
+
+class _FakeClientWithGpuCache(_FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.gpu_cache_calls: list[tuple[int, int]] = []
+        self.gpu_cache_profile = {
+            "gpu_cache_query_ms": 1.0,
+            "gpu_cache_backend_lookup_ms": 2.0,
+            "gpu_cache_fill_ms": 3.0,
+            "gpu_cache_update_ms": 4.0,
+            "gpu_cache_hit_count": 5.0,
+        }
+
+    def enable_gpu_cache(self, capacity: int, embedding_dim: int) -> bool:
+        self.gpu_cache_calls.append((int(capacity), int(embedding_dim)))
+        return True
+
+    def get_last_gpu_cache_profile(self) -> dict[str, float]:
+        return self.gpu_cache_profile
+
+
+class _FakeClientWithOpsGpuCache(_FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ops = _FakeOpsWithGpuCache()
 
 
 class TestShardedRecstoreClient(unittest.TestCase):
@@ -512,6 +552,37 @@ class TestShardedRecstoreClient(unittest.TestCase):
         self.assertEqual(client.current_ps_backend(), "brpc")
         self.assertEqual(fake_client.ops.backend_switch_calls, ["brpc"])
 
+    def test_gpu_cache_api_is_exposed_and_forwards_to_underlying_client(self) -> None:
+        runtime_dir = self._make_runtime_dir()
+        fake_client = _FakeClientWithGpuCache()
+        client = ShardedRecstoreClient(fake_client, runtime_dir)
+
+        self.assertTrue(hasattr(ShardedRecstoreClient, "enable_gpu_cache"))
+        self.assertTrue(client.enable_gpu_cache(1024, 4))
+
+        self.assertEqual(fake_client.gpu_cache_calls, [(1024, 4)])
+        self.assertEqual(
+            client.get_last_gpu_cache_profile()["gpu_cache_backend_lookup_ms"],
+            2.0,
+        )
+
+    def test_gpu_cache_enable_falls_back_to_underlying_ops(self) -> None:
+        runtime_dir = self._make_runtime_dir()
+        fake_client = _FakeClientWithOpsGpuCache()
+        client = ShardedRecstoreClient(fake_client, runtime_dir)
+
+        self.assertTrue(client.enable_gpu_cache(2048, 8))
+
+        self.assertEqual(fake_client.ops.gpu_cache_calls, [(2048, 8)])
+
+    def test_gpu_cache_enable_requires_underlying_support(self) -> None:
+        runtime_dir = self._make_runtime_dir()
+        fake_client = _FakeClient()
+        client = ShardedRecstoreClient(fake_client, runtime_dir)
+
+        with self.assertRaisesRegex(RuntimeError, "enable_gpu_cache"):
+            client.enable_gpu_cache(1024, 4)
+
     def test_local_lookup_flat_normalizes_ids_and_forwards_to_active_shard(self) -> None:
         runtime_dir = self._make_runtime_dir()
         fake_client = _FakeClient()
@@ -527,6 +598,21 @@ class TestShardedRecstoreClient(unittest.TestCase):
         self.assertEqual(fake_client.ops.lookup_calls, [(None, [7, 3], 4)])
         self.assertEqual(client._active_shard, 1)
         self.assertEqual(fake_client.ops.port_history, [])
+
+    def test_local_lookup_flat_clears_gpu_cache_when_switching_tables(self) -> None:
+        runtime_dir = self._make_runtime_dir()
+        fake_client = _FakeClient()
+        fake_client.ops.backend = "local_shm"
+        client = ShardedRecstoreClient(fake_client, runtime_dir)
+        client.register_tensor_meta("table0", shape=(16, 4), dtype=torch.float32)
+        client.register_tensor_meta("table1", shape=(16, 4), dtype=torch.float32)
+        client._activate_shard(1)
+
+        client.local_lookup_flat("table0", torch.tensor([1], dtype=torch.int64))
+        client.local_lookup_flat("table0", torch.tensor([2], dtype=torch.int64))
+        client.local_lookup_flat("table1", torch.tensor([1], dtype=torch.int64))
+
+        self.assertEqual(fake_client.ops.clear_gpu_cache_calls, 1)
 
     def test_activate_shard_skips_transport_reconfig_for_shared_local_shm_single_table(self) -> None:
         runtime_dir = self._make_runtime_dir(

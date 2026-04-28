@@ -43,6 +43,9 @@ class _FakeShardedClient:
         self.emb_write_calls = 0
         self.set_ps_backend_calls: list[str] = []
         self.activate_shard_calls: list[int] = []
+        self.enable_gpu_cache_calls: list[tuple[int, int]] = []
+        self.enable_gpu_cache_result = True
+        self.gpu_cache_profile = {}
         self.local_shm_warmup_calls = 0
         self._shared_local_shm_table = False
         self._last_prefetch_keys = torch.empty((0,), dtype=torch.int64)
@@ -52,6 +55,13 @@ class _FakeShardedClient:
 
     def activate_shard(self, shard: int) -> None:
         self.activate_shard_calls.append(int(shard))
+
+    def enable_gpu_cache(self, capacity: int, embedding_dim: int) -> bool:
+        self.enable_gpu_cache_calls.append((int(capacity), int(embedding_dim)))
+        return self.enable_gpu_cache_result
+
+    def get_last_gpu_cache_profile(self):
+        return self.gpu_cache_profile
 
     def init_embedding_table(self, table_name: str, num_embeddings: int, embedding_dim: int) -> bool:
         self.init_embedding_table_calls += 1
@@ -100,6 +110,7 @@ class _FakeRecStoreEmbeddingBagCollection:
     def __init__(self, *args, **kwargs) -> None:
         self.args = args
         self.kwargs = kwargs
+        self.kv_client = kwargs.get("kv_client")
         self.issue_fused_prefetch_calls = 0
         self.reset_perf_stats_calls = 0
         self._single_node_forward_profile = {}
@@ -184,6 +195,14 @@ class _FakeDenseOptimizer:
 
 
 class TestRecStoreRunner(unittest.TestCase):
+    def setUp(self) -> None:
+        self._append_worker_debug_patch = mock.patch(
+            "model_zoo.rs_demo.runners.recstore_runner._append_worker_debug",
+            lambda *args, **kwargs: None,
+        )
+        self._append_worker_debug_patch.start()
+        self.addCleanup(self._append_worker_debug_patch.stop)
+
     def test_warmup_gpu_local_shm_fast_path_runs_only_for_shared_cuda_fast_path(self) -> None:
         cfg = RunConfig(
             backend="recstore",
@@ -389,6 +408,31 @@ class TestRecStoreRunner(unittest.TestCase):
         self.assertFalse(cfg.enable_single_node_distributed_fast_path)
         self.assertEqual(cfg.single_node_ps_backend, "local_shm")
         self.assertEqual(cfg.single_node_owner_policy, "hash_mod_world_size")
+
+    def test_parse_config_accepts_gpu_cache_options(self) -> None:
+        cfg = config.parse_config(
+            [
+                "--backend",
+                "recstore",
+                "--enable-gpu-cache",
+                "--gpu-cache-capacity",
+                "1024",
+            ]
+        )
+
+        self.assertTrue(cfg.enable_gpu_cache)
+        self.assertEqual(cfg.gpu_cache_capacity, 1024)
+
+    def test_validate_recstore_config_rejects_gpu_cache_without_capacity(self) -> None:
+        cfg = RunConfig(backend="recstore")
+        cfg.enable_gpu_cache = True
+        cfg.gpu_cache_capacity = 0
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "--gpu-cache-capacity must be positive",
+        ):
+            config.validate_recstore_config(cfg)
 
     def test_validate_recstore_config_allows_single_node_fast_path(self) -> None:
         cfg = RunConfig(
@@ -689,6 +733,65 @@ class TestRecStoreRunner(unittest.TestCase):
         self.assertEqual(fake_ebc.single_node_distributed_mode, "single_node")
         self.assertEqual(fake_ebc.single_node_ps_backend, "local_shm")
         self.assertEqual(fake_ebc.single_node_owner_policy, "hash_mod_world_size")
+
+    def test_gpu_cache_options_are_forwarded_to_recstore_module(self) -> None:
+        cfg = RunConfig(
+            backend="recstore",
+            steps=1,
+            warmup_steps=0,
+            init_rows=1,
+            batch_size=1,
+            embedding_dim=4,
+            num_embeddings=16,
+            enable_gpu_cache=True,
+            gpu_cache_capacity=1024,
+            recstore_main_csv="/tmp/recstore-gpu-cache.csv",
+        )
+
+        fake_ebc = self._run_local_worker_with_fake_embedding_module(cfg)
+
+        self.assertEqual(fake_ebc.kv_client.enable_gpu_cache_calls, [(1024, 4)])
+
+    def test_gpu_cache_enable_false_fails_loudly(self) -> None:
+        cfg = RunConfig(
+            backend="recstore",
+            steps=1,
+            warmup_steps=0,
+            init_rows=1,
+            batch_size=1,
+            embedding_dim=4,
+            num_embeddings=16,
+            enable_gpu_cache=True,
+            gpu_cache_capacity=1024,
+            recstore_main_csv="/tmp/recstore-gpu-cache-false.csv",
+        )
+        fake_client = _FakeShardedClient()
+        fake_client.enable_gpu_cache_result = False
+        fake_ebc = types.SimpleNamespace(kv_client=fake_client)
+
+        with self.assertRaisesRegex(RuntimeError, "GPU cache"):
+            recstore_runner._configure_gpu_cache(fake_ebc, cfg, embedding_dim=4)
+
+        self.assertEqual(fake_client.enable_gpu_cache_calls, [(1024, 4)])
+
+    def test_gpu_cache_profile_merges_with_stage_prefix(self) -> None:
+        row = {}
+        fake_client = _FakeShardedClient()
+        fake_client.gpu_cache_profile = {
+            "gpu_cache_query_ms": 0.11,
+            "gpu_cache_backend_lookup_ms": 0.22,
+            "gpu_cache_fill_ms": 0.33,
+            "gpu_cache_update_ms": 0.44,
+            "gpu_cache_hit_count": 5,
+        }
+
+        recstore_runner._merge_gpu_cache_profile(row, fake_client, "lookup")
+
+        self.assertEqual(row["lookup_gpu_cache_query_ms"], 0.11)
+        self.assertEqual(row["lookup_gpu_cache_backend_lookup_ms"], 0.22)
+        self.assertEqual(row["lookup_gpu_cache_fill_ms"], 0.33)
+        self.assertEqual(row["lookup_gpu_cache_update_ms"], 0.44)
+        self.assertEqual(row["lookup_gpu_cache_hit_count"], 5.0)
 
     def test_local_worker_switches_client_backend_for_single_node_fast_path(self) -> None:
         cfg = RunConfig(
@@ -1338,6 +1441,7 @@ class TestRecStoreRunner(unittest.TestCase):
             read_before_update=False,
             nnodes=1,
             nproc_per_node=2,
+            output_root=str(runner_runtime),
             recstore_main_csv=str(runner_runtime / "main.csv"),
         )
 

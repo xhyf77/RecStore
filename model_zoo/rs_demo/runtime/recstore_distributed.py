@@ -129,6 +129,7 @@ class ShardedRecstoreClient:
         self._tensor_meta: Dict[str, Dict[str, Any]] = {}
         self._next_async_handle = 1
         self._pending_async_ops: Dict[int, tuple[str, torch.Tensor, torch.Tensor]] = {}
+        self._gpu_cache_table_name: str | None = None
 
     def register_tensor_meta(
         self,
@@ -319,6 +320,55 @@ class ShardedRecstoreClient:
             )
         self._client.ops.set_ps_backend(backend)
 
+    def enable_gpu_cache(self, capacity: int, embedding_dim: int) -> bool:
+        enable = getattr(self._client, "enable_gpu_cache", None)
+        if not callable(enable):
+            ops = getattr(self._client, "ops", None)
+            enable = getattr(ops, "enable_gpu_cache", None)
+        if not callable(enable):
+            raise RuntimeError(
+                "enable_gpu_cache requires a RecStore client or ops library exposing "
+                "enable_gpu_cache()."
+            )
+        return bool(enable(int(capacity), int(embedding_dim)))
+
+    def get_last_gpu_cache_profile(self) -> dict[str, float]:
+        getter = getattr(self._client, "get_last_gpu_cache_profile", None)
+        if callable(getter):
+            profile = getter()
+            return profile if isinstance(profile, dict) else {}
+        ops = getattr(self._client, "ops", None)
+        getter = getattr(ops, "get_last_gpu_cache_profile", None)
+        if not callable(getter):
+            return {}
+        values = getter()
+        if not isinstance(values, (list, tuple)) or len(values) < 5:
+            return {}
+        return {
+            "gpu_cache_query_ms": float(values[0]),
+            "gpu_cache_backend_lookup_ms": float(values[1]),
+            "gpu_cache_fill_ms": float(values[2]),
+            "gpu_cache_update_ms": float(values[3]),
+            "gpu_cache_hit_count": float(values[4]),
+        }
+
+    def _clear_gpu_cache_if_available(self) -> None:
+        clear = getattr(self._client, "clear_gpu_cache", None)
+        if not callable(clear):
+            ops = getattr(self._client, "ops", None)
+            clear = getattr(ops, "clear_gpu_cache", None)
+        if callable(clear):
+            clear()
+        self._gpu_cache_table_name = None
+
+    def _ensure_gpu_cache_table(self, name: str) -> None:
+        if self._gpu_cache_table_name is None:
+            self._gpu_cache_table_name = name
+            return
+        if self._gpu_cache_table_name != name:
+            self._clear_gpu_cache_if_available()
+            self._gpu_cache_table_name = name
+
     def is_shared_local_shm_table(self) -> bool:
         if self._cache_ps_type != "LOCAL_SHM":
             return False
@@ -335,6 +385,7 @@ class ShardedRecstoreClient:
         self._require_local_shm_backend("local_lookup_flat")
         embedding_dim = int(self._tensor_meta[name]["shape"][1])
         normalized_ids = self._normalize_ids(ids, keep_device=True)
+        self._ensure_gpu_cache_table(name)
         return self._client.ops.local_lookup_flat(normalized_ids, embedding_dim)
 
     def warmup_local_lookup_flat_cuda_region(self) -> bool:

@@ -59,6 +59,14 @@ FAST_PATH_UPDATE_PROFILE_KEYS = (
     "local_update_shm_call_ms",
 )
 
+GPU_CACHE_PROFILE_KEYS = (
+    "gpu_cache_query_ms",
+    "gpu_cache_backend_lookup_ms",
+    "gpu_cache_fill_ms",
+    "gpu_cache_update_ms",
+    "gpu_cache_hit_count",
+)
+
 
 @contextmanager
 def stage_timer(row: dict[str, Any], key: str):
@@ -121,6 +129,20 @@ def _merge_numeric_fields(
         row[key] = float(value) if isinstance(value, (int, float)) else 0.0
 
 
+def _merge_gpu_cache_profile(
+    row: dict[str, Any],
+    kv_client: Any,
+    prefix: str,
+) -> None:
+    getter = getattr(kv_client, "get_last_gpu_cache_profile", None)
+    profile = getter() if callable(getter) else {}
+    if not isinstance(profile, dict):
+        profile = {}
+    for key in GPU_CACHE_PROFILE_KEYS:
+        value = profile.get(key, 0.0)
+        row[f"{prefix}_{key}"] = float(value) if isinstance(value, (int, float)) else 0.0
+
+
 def _maybe_warmup_gpu_local_shm_fast_path(
     cfg: RunConfig,
     client: Any,
@@ -145,6 +167,25 @@ def _maybe_warmup_gpu_local_shm_fast_path(
     if not callable(warmup):
         return False
     return bool(warmup())
+
+
+def _configure_gpu_cache(
+    embedding_module: Any,
+    cfg: RunConfig,
+    *,
+    embedding_dim: int,
+) -> None:
+    if not getattr(cfg, "enable_gpu_cache", False):
+        return
+    kv_client = getattr(embedding_module, "kv_client", None)
+    if kv_client is None:
+        raise RuntimeError("GPU cache requires embedding module kv_client")
+    enable = getattr(kv_client, "enable_gpu_cache", None)
+    if not callable(enable):
+        raise RuntimeError("GPU cache requires kv_client.enable_gpu_cache support")
+    enabled = bool(enable(int(cfg.gpu_cache_capacity), int(embedding_dim)))
+    if not enabled:
+        raise RuntimeError("GPU cache enable request returned False")
 
 
 def _pick_socket_ifname() -> str | None:
@@ -398,6 +439,14 @@ class RecStoreRunner(BenchmarkRunner):
                     str(cfg.single_node_owner_policy),
                 ]
             )
+        if cfg.enable_gpu_cache:
+            cmd.extend(
+                [
+                    "--enable-gpu-cache",
+                    "--gpu-cache-capacity",
+                    str(cfg.gpu_cache_capacity),
+                ]
+            )
         if not cfg.read_before_update:
             cmd.append("--no-read-before-update")
         return cmd
@@ -545,6 +594,11 @@ class RecStoreRunner(BenchmarkRunner):
                 embedding_module.single_node_distributed_mode = "single_node"
                 embedding_module.single_node_ps_backend = cfg.single_node_ps_backend
                 embedding_module.single_node_owner_policy = cfg.single_node_owner_policy
+            _configure_gpu_cache(
+                embedding_module,
+                cfg,
+                embedding_dim=cfg.embedding_dim,
+            )
             _append_worker_debug(
                 cfg,
                 rank,
@@ -645,6 +699,7 @@ class RecStoreRunner(BenchmarkRunner):
                     getattr(embedding_module, "_single_node_forward_profile", None),
                     FAST_PATH_LOOKUP_PROFILE_KEYS,
                 )
+                _merge_gpu_cache_profile(row, client, "lookup")
                 if embeddings is None:
                     raise RuntimeError("recstore embedding module returned no embeddings")
                 if step >= cfg.warmup_steps:
@@ -700,11 +755,11 @@ class RecStoreRunner(BenchmarkRunner):
                         time.perf_counter() - replay_start
                     ) * 1e3
 
-                    step_start = time.perf_counter()
+                    optimizer_step_start = time.perf_counter()
                     sparse_optimizer.step()
                     sync_device(torch, device)
                     row["sparse_optimizer_step_ms"] = (
-                        time.perf_counter() - step_start
+                        time.perf_counter() - optimizer_step_start
                     ) * 1e3
 
                     flush_start = time.perf_counter()
@@ -725,6 +780,7 @@ class RecStoreRunner(BenchmarkRunner):
                     getattr(sparse_optimizer, "_last_step_profile", None),
                     FAST_PATH_UPDATE_PROFILE_KEYS,
                 )
+                _merge_gpu_cache_profile(row, client, "update")
 
                 _merge_consumed_perf_stats(row, _consume_perf_stats(embedding_module))
                 _merge_consumed_perf_stats(row, _consume_perf_stats(sparse_optimizer))
