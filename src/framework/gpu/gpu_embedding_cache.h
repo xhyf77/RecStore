@@ -7,11 +7,11 @@
 namespace recstore::framework::gpu {
 
 struct GpuCacheProfile {
-  double query_ms = 0.0;
+  double query_ms          = 0.0;
   double backend_lookup_ms = 0.0;
-  double fill_ms = 0.0;
-  double update_ms = 0.0;
-  double hit_count = 0.0;
+  double fill_ms           = 0.0;
+  double update_ms         = 0.0;
+  double hit_count         = 0.0;
 };
 
 bool EnableGpuCache(int64_t capacity, int64_t embedding_dim);
@@ -30,8 +30,8 @@ struct GpuCacheLookupResult {
   int64_t missing_count = 0;
 };
 
-GpuCacheLookupResult QueryGpuCache(const torch::Tensor& keys,
-                                   int64_t embedding_dim);
+GpuCacheLookupResult
+QueryGpuCache(const torch::Tensor& keys, int64_t embedding_dim);
 void FillGpuCache(const torch::Tensor& keys_cuda,
                   const torch::Tensor& values_cuda);
 void ScatterMissValues(torch::Tensor* output_values,
