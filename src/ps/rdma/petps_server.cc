@@ -331,7 +331,6 @@ private:
   }
 
   void RpcPsGet(RawMessage* recv, int thread_id) {
-    thread_local std::vector<ParameterPack> parameter_packs;
     const bool perf_condition = (thread_id == 0);
     auto& sourcelist          = sourcelists_[thread_id];
 
@@ -359,26 +358,33 @@ private:
     LOG(INFO) << "server batch gets: " << keys.Debug();
 #endif
     CHECK_LE(batch_get_kv_count, FLAGS_max_kv_num_per_request);
-    parameter_packs.clear();
-    parameter_packs.resize(batch_get_kv_count);
+
+    const int embedding_dim = FLAGS_value_size / sizeof(float);
+    const std::size_t response_bytes =
+        petps::FixedSlotResponseBytes(batch_get_kv_count, FLAGS_value_size);
+    auto* buf = dsm_->get_rdma_buffer();
 
     if (perf_condition)
       index_timer_.start();
-    // Use cache_ps to get parameters
-    for (int i = 0; i < batch_get_kv_count; i++) {
-      cache_ps_->GetParameterRun2Completion(
-          keys[i], parameter_packs[i], thread_id);
+    bool flat_get_ok = true;
+    if (response_bytes <= FLAGS_rdma_per_thread_response_limit_bytes) {
+      flat_get_ok = cache_ps_->GetParameterFlat(keys,
+                                                reinterpret_cast<float*>(buf),
+                                                batch_get_kv_count,
+                                                embedding_dim,
+                                                thread_id);
     }
     if (perf_condition)
       index_timer_.end();
 
 #ifdef RPC_DEBUG
-    int emb_dim = FLAGS_value_size / sizeof(float);
-    for (int i = 0; i < batch_get_kv_count; i++) {
-      if (parameter_packs[i].dim > 0) {
+    if (response_bytes <= FLAGS_rdma_per_thread_response_limit_bytes &&
+        flat_get_ok) {
+      for (int i = 0; i < batch_get_kv_count; i++) {
+        float* slot = reinterpret_cast<float*>(buf + i * FLAGS_value_size);
         XDebug::AssertTensorEq(
-            parameter_packs[i].emb_data,
-            emb_dim,
+            slot,
+            embedding_dim,
             keys[i],
             folly::sformat("server embedding check error, key is {}", keys[i]));
       }
@@ -386,10 +392,6 @@ private:
 #endif
     if (perf_condition)
       value_timer_.start();
-
-    const int embedding_dim = FLAGS_value_size / sizeof(float);
-    const std::size_t response_bytes =
-        petps::FixedSlotResponseBytes(batch_get_kv_count, FLAGS_value_size);
 
     if (response_bytes > FLAGS_rdma_per_thread_response_limit_bytes) {
       LOG(ERROR) << "component=rdma_server event=batch_too_large shard="
@@ -410,22 +412,14 @@ private:
       return;
     }
 
-    auto* buf = dsm_->get_rdma_buffer();
-    std::memset(buf, 0, response_bytes);
-
-    for (int i = 0; i < batch_get_kv_count; i++) {
-      float* slot = reinterpret_cast<float*>(buf + i * FLAGS_value_size);
-      if (parameter_packs[i].dim == 0) {
-        std::fill(slot, slot + embedding_dim, 0.0f);
-        continue;
-      }
-      CHECK_EQ(parameter_packs[i].dim, embedding_dim);
-      std::memcpy(slot, parameter_packs[i].emb_data, FLAGS_value_size);
-    }
-
     auto* status_word = reinterpret_cast<std::int32_t*>(
         buf + batch_get_kv_count * FLAGS_value_size);
-    *status_word = static_cast<std::int32_t>(petps::RpcStatus::kOk);
+    if (flat_get_ok) {
+      *status_word = static_cast<std::int32_t>(petps::RpcStatus::kOk);
+    } else {
+      *status_word =
+          static_cast<std::int32_t>(petps::RpcStatus::kValueSizeMismatch);
+    }
 
     epoch_manager_->UnProtect();
     GlobalAddress gaddr = recv->receive_gaddr;

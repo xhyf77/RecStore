@@ -16,7 +16,7 @@ cd "${ROOT_DIR}"
 
 exec python3 "${RUNNER_SCRIPT}" \
   --benchmark-binary "${BENCHMARK_BINARY}" \
-  --iterations 30 \
+  --iterations 300 \
   --batch-keys 500 \
   --rounds 10 \
   --rdma-warmup-rounds 2 \
