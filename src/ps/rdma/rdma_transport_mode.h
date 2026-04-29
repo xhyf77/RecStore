@@ -9,9 +9,8 @@ enum class RdmaTransportMode {
   kDescriptorDoorbell,
 };
 
-inline bool ParseRdmaTransportMode(const std::string& value,
-                                   RdmaTransportMode* mode,
-                                   std::string* error) {
+inline bool ParseRdmaTransportMode(
+    const std::string& value, RdmaTransportMode* mode, std::string* error) {
   if (mode == nullptr) {
     if (error != nullptr) {
       *error = "mode output is null";

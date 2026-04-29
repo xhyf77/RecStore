@@ -46,7 +46,7 @@ struct PutRemotePayloadV2 {
 
 static_assert(sizeof(PutRemotePayloadV2) <= 64, "unexpected v2 control size");
 
-inline constexpr std::uint32_t kRdmaDescriptorMagic    = 0x52444431;
+inline constexpr std::uint32_t kRdmaDescriptorMagic     = 0x52444431;
 inline constexpr std::uint16_t kRdmaDescriptorVersionV1 = 1;
 
 enum class RdmaDescriptorOp : std::uint16_t {
@@ -55,32 +55,32 @@ enum class RdmaDescriptorOp : std::uint16_t {
 };
 
 struct RdmaDescriptorRequest {
-  std::uint32_t magic = kRdmaDescriptorMagic;
-  std::uint16_t version = kRdmaDescriptorVersionV1;
-  std::uint16_t op = 0;
-  std::uint64_t request_id = 0;
-  std::uint16_t client_node_id = 0;
+  std::uint32_t magic            = kRdmaDescriptorMagic;
+  std::uint16_t version          = kRdmaDescriptorVersionV1;
+  std::uint16_t op               = 0;
+  std::uint64_t request_id       = 0;
+  std::uint16_t client_node_id   = 0;
   std::uint16_t client_thread_id = 0;
-  std::uint32_t lane_id = 0;
-  std::uint32_t slot_id = 0;
-  std::uint32_t key_count = 0;
-  std::uint32_t embedding_dim = 0;
+  std::uint32_t lane_id          = 0;
+  std::uint32_t slot_id          = 0;
+  std::uint32_t key_count        = 0;
+  std::uint32_t embedding_dim    = 0;
   GlobalAddress descriptor_gaddr;
   GlobalAddress keys_gaddr;
   GlobalAddress payload_gaddr;
   GlobalAddress response_gaddr;
   GlobalAddress status_gaddr;
-  std::uint32_t payload_bytes = 0;
+  std::uint32_t payload_bytes  = 0;
   std::uint32_t response_bytes = 0;
-  std::uint32_t transfer_mode = 0;
-  std::uint32_t reserved = 0;
+  std::uint32_t transfer_mode  = 0;
+  std::uint32_t reserved       = 0;
 } __attribute__((packed));
 
 struct RdmaDescriptorLaneConfig {
-  std::uint64_t region_offset = 0;
-  std::uint64_t slot_bytes = 0;
+  std::uint64_t region_offset    = 0;
+  std::uint64_t slot_bytes       = 0;
   std::uint32_t slots_per_client = 0;
-  std::uint32_t machine_count = 0;
+  std::uint32_t machine_count    = 0;
 };
 
 static_assert(sizeof(RdmaDescriptorRequest) <= 128,

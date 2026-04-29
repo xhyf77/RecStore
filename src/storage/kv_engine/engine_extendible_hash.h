@@ -327,8 +327,8 @@ private:
           shm_malloc_->GetMallocData(old_shm_data.shm_malloc_offset());
 #ifdef XMH_VARIABLE_SIZE_KV
       const bool can_reuse_old_allocation =
-          old_data != nullptr &&
-          shm_malloc_->GetMallocSize(old_data) == static_cast<int>(value.size());
+          old_data != nullptr && shm_malloc_->GetMallocSize(old_data) ==
+                                     static_cast<int>(value.size());
 #else
       const bool can_reuse_old_allocation =
           old_data != nullptr && value_size_ == static_cast<int>(value.size());

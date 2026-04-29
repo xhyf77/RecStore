@@ -71,12 +71,10 @@ private:
   int SelectServerThreadID() const;
   std::atomic<int32_t>* GetPollSlot(uint64_t rpc_id) const;
   void Init();
-  int GetParameterDescriptor(base::ConstArray<uint64_t> keys,
-                             float* values,
-                             bool isAsync);
-  int PutParameterDescriptor(
-      const std::vector<uint64_t>& keys,
-      const std::vector<std::vector<float>>& values);
+  int GetParameterDescriptor(
+      base::ConstArray<uint64_t> keys, float* values, bool isAsync);
+  int PutParameterDescriptor(const std::vector<uint64_t>& keys,
+                             const std::vector<std::vector<float>>& values);
   DSM* dsm_;
 
   mutable std::mutex rpc_mu_;

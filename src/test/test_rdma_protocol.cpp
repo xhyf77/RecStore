@@ -40,22 +40,22 @@ TEST(RdmaProtocolTest, ComputesFixedSlotResponseBytes) {
 
 TEST(RdmaProtocolTest, EncodesAndDecodesDescriptorDoorbellRequest) {
   RdmaDescriptorRequest req{};
-  req.magic = kRdmaDescriptorMagic;
-  req.version = kRdmaDescriptorVersionV1;
-  req.op = static_cast<std::uint16_t>(RdmaDescriptorOp::kGet);
-  req.request_id = 42;
-  req.client_node_id = 2;
+  req.magic            = kRdmaDescriptorMagic;
+  req.version          = kRdmaDescriptorVersionV1;
+  req.op               = static_cast<std::uint16_t>(RdmaDescriptorOp::kGet);
+  req.request_id       = 42;
+  req.client_node_id   = 2;
   req.client_thread_id = 3;
-  req.lane_id = 9;
-  req.slot_id = 1;
-  req.key_count = 4;
-  req.embedding_dim = 8;
-  req.keys_gaddr = GlobalAddress{2, 4096};
-  req.payload_gaddr = GlobalAddress{0, 0};
-  req.response_gaddr = GlobalAddress{2, 8192};
-  req.status_gaddr = GlobalAddress{2, 16384};
-  req.payload_bytes = 0;
-  req.response_bytes = FixedSlotResponseBytes(4, 8 * sizeof(float));
+  req.lane_id          = 9;
+  req.slot_id          = 1;
+  req.key_count        = 4;
+  req.embedding_dim    = 8;
+  req.keys_gaddr       = GlobalAddress{2, 4096};
+  req.payload_gaddr    = GlobalAddress{0, 0};
+  req.response_gaddr   = GlobalAddress{2, 8192};
+  req.status_gaddr     = GlobalAddress{2, 16384};
+  req.payload_bytes    = 0;
+  req.response_bytes   = FixedSlotResponseBytes(4, 8 * sizeof(float));
 
   std::string payload;
   std::string error;
@@ -73,14 +73,14 @@ TEST(RdmaProtocolTest, EncodesAndDecodesDescriptorDoorbellRequest) {
 
 TEST(RdmaProtocolTest, RejectsInvalidDescriptorRequests) {
   RdmaDescriptorRequest req{};
-  req.magic = kRdmaDescriptorMagic;
-  req.version = kRdmaDescriptorVersionV1;
-  req.op = static_cast<std::uint16_t>(RdmaDescriptorOp::kGet);
-  req.key_count = 1;
-  req.embedding_dim = 4;
-  req.keys_gaddr = GlobalAddress{1, 4096};
+  req.magic          = kRdmaDescriptorMagic;
+  req.version        = kRdmaDescriptorVersionV1;
+  req.op             = static_cast<std::uint16_t>(RdmaDescriptorOp::kGet);
+  req.key_count      = 1;
+  req.embedding_dim  = 4;
+  req.keys_gaddr     = GlobalAddress{1, 4096};
   req.response_gaddr = GlobalAddress{1, 8192};
-  req.status_gaddr = GlobalAddress{1, 12288};
+  req.status_gaddr   = GlobalAddress{1, 12288};
   req.response_bytes = FixedSlotResponseBytes(1, 4 * sizeof(float));
 
   std::string payload;
@@ -95,14 +95,14 @@ TEST(RdmaProtocolTest, RejectsInvalidDescriptorRequests) {
 
 TEST(RdmaProtocolTest, ValidatesDescriptorLaneBounds) {
   RdmaDescriptorLaneConfig cfg{};
-  cfg.region_offset = 64 * 1024 * 1024;
-  cfg.slot_bytes = 4096;
+  cfg.region_offset    = 64 * 1024 * 1024;
+  cfg.slot_bytes       = 4096;
   cfg.slots_per_client = 8;
-  cfg.machine_count = 4;
+  cfg.machine_count    = 4;
 
   RdmaDescriptorRequest req{};
   req.client_node_id = 2;
-  req.slot_id = 3;
+  req.slot_id        = 3;
   req.descriptor_gaddr =
       GlobalAddress{0, cfg.region_offset + (2 * 8 + 3) * 4096};
 
