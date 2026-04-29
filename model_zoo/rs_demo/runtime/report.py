@@ -12,8 +12,9 @@ def setup_local_report_env(jsonl_path: str) -> None:
     Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
     open(jsonl_path, "w", encoding="utf-8").close()
     os.environ["RECSTORE_REPORT_MODE"] = "local"
-    os.environ["RECSTORE_REPORT_LOCAL_SINK"] = "both"
+    os.environ["RECSTORE_REPORT_LOCAL_SINK"] = "jsonl"
     os.environ["RECSTORE_REPORT_JSONL_PATH"] = jsonl_path
+    os.environ.setdefault("RECSTORE_REPORT_FLUSH_EVERY_N", "256")
 
 
 def summarize_us(values: list[float]) -> str:
