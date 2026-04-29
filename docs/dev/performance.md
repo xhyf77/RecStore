@@ -20,8 +20,9 @@ cmake .. \
 
     ```bash title="开启本地结构化事件落盘（JSONL）"
     export RECSTORE_REPORT_MODE=local
-    export RECSTORE_REPORT_LOCAL_SINK=both
+    export RECSTORE_REPORT_LOCAL_SINK=jsonl
     export RECSTORE_REPORT_JSONL_PATH=/tmp/recstore_report_events.jsonl
+    export RECSTORE_REPORT_FLUSH_EVERY_N=256
     ```
 
     接下来启动参数服务器与模型训练，可以使用随机数据集的DLRM：

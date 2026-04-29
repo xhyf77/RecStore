@@ -9,9 +9,13 @@
 #include <queue>
 #include <condition_variable>
 #include <filesystem>
-#include <fstream>
 #include <cstdlib>
 #include <algorithm>
+#include <cctype>
+#include <charconv>
+#include <cstring>
+#include <system_error>
+#include <fstream>
 
 #include <chrono>
 
@@ -62,14 +66,22 @@ enum class LocalSinkMode {
   kBoth,
 };
 
+struct LocalReportConfig {
+  LocalSinkMode sink_mode;
+  std::string jsonl_path;
+  size_t flush_every_n;
+};
+
 struct StructuredReportEvent {
-  std::string table_name;
-  std::string unique_id;
-  std::string metric_name;
+  const char* table_name;
+  const char* unique_id;
+  const char* metric_name;
   double metric_value;
   uint64_t timestamp_us;
-  std::string source;
+  const char* source;
 };
+
+const LocalReportConfig& ResolveLocalReportConfig();
 
 std::string ToLower(std::string value) {
   std::transform(
@@ -92,10 +104,14 @@ bool ParseRemoteReportMode(const std::string& value) {
          normalized == "on" || normalized == "true" || normalized == "1";
 }
 
-LocalSinkMode ResolveLocalSinkMode() {
-  if (const char* env_mode = std::getenv("RECSTORE_REPORT_LOCAL_SINK");
-      env_mode != nullptr) {
-    const std::string mode = ToLower(env_mode);
+bool IsLocalJsonlEnabled() {
+  const auto mode = ResolveLocalReportConfig().sink_mode;
+  return mode == LocalSinkMode::kJsonl || mode == LocalSinkMode::kBoth;
+}
+
+LocalSinkMode ResolveLocalSinkModeFromEnvValue(const char* value) {
+  if (value[0] != '\0') {
+    const std::string mode = ToLower(value);
     if (mode == "jsonl") {
       return LocalSinkMode::kJsonl;
     }
@@ -106,17 +122,47 @@ LocalSinkMode ResolveLocalSinkMode() {
   return LocalSinkMode::kGlog;
 }
 
-bool IsLocalJsonlEnabled() {
-  const auto mode = ResolveLocalSinkMode();
-  return mode == LocalSinkMode::kJsonl || mode == LocalSinkMode::kBoth;
+size_t ResolveLocalFlushEveryNFromEnvValue(const char* value) {
+  if (value[0] != '\0') {
+    char* end                  = nullptr;
+    const unsigned long parsed = std::strtoul(value, &end, 10);
+    if (end != value && *end == '\0' && parsed > 0) {
+      return static_cast<size_t>(parsed);
+    }
+    LOG(WARNING) << "Invalid RECSTORE_REPORT_FLUSH_EVERY_N=" << value
+                 << ", fallback to 1.";
+  }
+  return 1;
 }
 
-std::string GetLocalJsonlPath() {
-  if (const char* env_path = std::getenv("RECSTORE_REPORT_JSONL_PATH");
-      env_path != nullptr) {
-    return env_path;
+const LocalReportConfig& ResolveLocalReportConfig() {
+  thread_local bool initialized = false;
+  thread_local std::string cached_sink_env;
+  thread_local std::string cached_path_env;
+  thread_local std::string cached_flush_env;
+  thread_local LocalReportConfig cached_config{
+      LocalSinkMode::kGlog, "recstore_report_events.jsonl", 1};
+
+  const char* sink_env    = std::getenv("RECSTORE_REPORT_LOCAL_SINK");
+  const char* path_env    = std::getenv("RECSTORE_REPORT_JSONL_PATH");
+  const char* flush_env   = std::getenv("RECSTORE_REPORT_FLUSH_EVERY_N");
+  const char* sink_value  = sink_env == nullptr ? "" : sink_env;
+  const char* path_value  = path_env == nullptr ? "" : path_env;
+  const char* flush_value = flush_env == nullptr ? "" : flush_env;
+
+  if (!initialized || cached_sink_env != sink_value ||
+      cached_path_env != path_value || cached_flush_env != flush_value) {
+    cached_config.sink_mode = ResolveLocalSinkModeFromEnvValue(sink_value);
+    cached_config.jsonl_path =
+        path_value[0] == '\0' ? "recstore_report_events.jsonl" : path_value;
+    cached_config.flush_every_n =
+        ResolveLocalFlushEveryNFromEnvValue(flush_value);
+    cached_sink_env  = sink_value;
+    cached_path_env  = path_value;
+    cached_flush_env = flush_value;
+    initialized      = true;
   }
-  return "recstore_report_events.jsonl";
+  return cached_config;
 }
 
 uint64_t GetTimestampUs() {
@@ -125,63 +171,215 @@ uint64_t GetTimestampUs() {
       .count();
 }
 
-json ToJson(const StructuredReportEvent& event) {
-  return {{"table_name", event.table_name},
-          {"unique_id", event.unique_id},
-          {"metric_name", event.metric_name},
-          {"metric_value", event.metric_value},
-          {"timestamp_us", event.timestamp_us},
-          {"source", event.source}};
+void AppendJsonString(std::string& output, const char* value) {
+  output.push_back('"');
+  for (const unsigned char* p = reinterpret_cast<const unsigned char*>(value);
+       *p != '\0';
+       ++p) {
+    switch (*p) {
+    case '"':
+      output.append("\\\"");
+      break;
+    case '\\':
+      output.append("\\\\");
+      break;
+    case '\b':
+      output.append("\\b");
+      break;
+    case '\f':
+      output.append("\\f");
+      break;
+    case '\n':
+      output.append("\\n");
+      break;
+    case '\r':
+      output.append("\\r");
+      break;
+    case '\t':
+      output.append("\\t");
+      break;
+    default:
+      if (*p < 0x20) {
+        static constexpr char kHex[] = "0123456789abcdef";
+        output.append("\\u00");
+        output.push_back(kHex[*p >> 4]);
+        output.push_back(kHex[*p & 0x0F]);
+      } else {
+        output.push_back(static_cast<char>(*p));
+      }
+      break;
+    }
+  }
+  output.push_back('"');
 }
 
-void WriteLocalStructuredEvent(const StructuredReportEvent& event) {
-  const json event_json        = ToJson(event);
-  const std::string serialized = event_json.dump();
-  const auto sink_mode         = ResolveLocalSinkMode();
+template <typename T>
+void AppendNumber(std::string& output, T value) {
+  char buffer[64];
+  auto result = std::to_chars(buffer, buffer + sizeof(buffer), value);
+  if (result.ec == std::errc()) {
+    output.append(buffer, result.ptr);
+  } else {
+    output.append(std::to_string(value));
+  }
+}
 
-  if (sink_mode == LocalSinkMode::kGlog || sink_mode == LocalSinkMode::kBoth) {
-    LOG(INFO) << "REPORT_LOCAL_EVENT " << serialized;
+std::string ToJsonLine(const StructuredReportEvent& event) {
+  std::string output;
+  output.reserve(
+      160 + std::strlen(event.table_name) + std::strlen(event.unique_id) +
+      std::strlen(event.metric_name) + std::strlen(event.source));
+  output.append("{\"table_name\":");
+  AppendJsonString(output, event.table_name);
+  output.append(",\"unique_id\":");
+  AppendJsonString(output, event.unique_id);
+  output.append(",\"metric_name\":");
+  AppendJsonString(output, event.metric_name);
+  output.append(",\"metric_value\":");
+  AppendNumber(output, event.metric_value);
+  output.append(",\"timestamp_us\":");
+  AppendNumber(output, event.timestamp_us);
+  output.append(",\"source\":");
+  AppendJsonString(output, event.source);
+  output.push_back('}');
+  return output;
+}
+
+bool IsJsonlSinkMode(LocalSinkMode mode) {
+  return mode == LocalSinkMode::kJsonl || mode == LocalSinkMode::kBoth;
+}
+
+bool IsGlogSinkMode(LocalSinkMode mode) {
+  return mode == LocalSinkMode::kGlog || mode == LocalSinkMode::kBoth;
+}
+
+class LocalJsonlSink {
+public:
+  static LocalJsonlSink& GetInstance() {
+    static LocalJsonlSink instance;
+    return instance;
   }
 
-  if (sink_mode == LocalSinkMode::kJsonl || sink_mode == LocalSinkMode::kBoth) {
-    const std::filesystem::path output_path(GetLocalJsonlPath());
+  void WriteLine(const LocalReportConfig& config, const std::string& line) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    ConfigureIfNeeded(config);
+    if (!ofs_.is_open()) {
+      return;
+    }
+    ofs_ << line << '\n';
+    ++writes_since_flush_;
+    if (writes_since_flush_ >= config.flush_every_n) {
+      ofs_.flush();
+      writes_since_flush_ = 0;
+    }
+  }
+
+private:
+  LocalJsonlSink() = default;
+
+  ~LocalJsonlSink() {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (ofs_.is_open()) {
+      ofs_.flush();
+      ofs_.close();
+    }
+  }
+
+  void ConfigureIfNeeded(const LocalReportConfig& config) {
+    if (configured_ && jsonl_path_ == config.jsonl_path &&
+        flush_every_n_ == config.flush_every_n) {
+      return;
+    }
+
+    if (ofs_.is_open()) {
+      ofs_.flush();
+      ofs_.close();
+    }
+    writes_since_flush_ = 0;
+
+    const std::filesystem::path output_path(config.jsonl_path);
     const auto parent = output_path.parent_path();
     if (!parent.empty()) {
       std::filesystem::create_directories(parent);
     }
-    std::ofstream ofs(output_path, std::ios::app);
-    ofs << serialized << '\n';
+    ofs_.open(output_path, std::ios::app);
+    if (!ofs_.is_open()) {
+      LOG(ERROR) << "Failed to open local report JSONL sink: "
+                 << config.jsonl_path;
+    }
+
+    configured_    = true;
+    jsonl_path_    = config.jsonl_path;
+    flush_every_n_ = config.flush_every_n;
+  }
+
+  std::mutex mtx_;
+  std::ofstream ofs_;
+  bool configured_ = false;
+  std::string jsonl_path_;
+  size_t flush_every_n_      = 1;
+  size_t writes_since_flush_ = 0;
+};
+
+void WriteLocalStructuredEvent(const std::string& serialized) {
+  const auto config = ResolveLocalReportConfig();
+
+  if (IsGlogSinkMode(config.sink_mode)) {
+    LOG(INFO) << "REPORT_LOCAL_EVENT " << serialized;
+  }
+
+  if (IsJsonlSinkMode(config.sink_mode)) {
+    LocalJsonlSink::GetInstance().WriteLine(config, serialized);
   }
 }
 
 bool TryRecordLatencyMetricToTimer(const StructuredReportEvent& event) {
   double value_ns = 0.0;
-  if (event.metric_name == "duration_ns" || event.metric_name == "latency_ns") {
+  if (std::strcmp(event.metric_name, "duration_ns") == 0 ||
+      std::strcmp(event.metric_name, "latency_ns") == 0) {
     value_ns = event.metric_value;
-  } else if (event.metric_name == "duration_us" ||
-             event.metric_name == "latency_us") {
+  } else if (std::strcmp(event.metric_name, "duration_us") == 0 ||
+             std::strcmp(event.metric_name, "latency_us") == 0) {
     value_ns = event.metric_value * 1000.0;
   } else {
     return false;
   }
 
-  xmh::Timer::ManualRecordNs(
-      event.table_name + "." + event.metric_name, value_ns);
+  thread_local std::string cached_table;
+  thread_local std::string cached_metric;
+  thread_local std::string cached_timer_name;
+  if (cached_table != event.table_name || cached_metric != event.metric_name) {
+    cached_table      = event.table_name;
+    cached_metric     = event.metric_name;
+    cached_timer_name = cached_table + "." + cached_metric;
+  }
+  xmh::Timer::ManualRecordNs(cached_timer_name, value_ns);
   return true;
 }
 
 ReportMode ResolveReportMode() {
   if (const char* env_mode = std::getenv("RECSTORE_REPORT_MODE");
       env_mode != nullptr) {
-    const std::string mode(env_mode);
-    if (ParseLocalReportMode(mode)) {
-      return ReportMode::kLocal;
+    thread_local bool initialized = false;
+    thread_local std::string cached_env_mode;
+    thread_local ReportMode cached_mode = ReportMode::kRemote;
+    if (!initialized || cached_env_mode != env_mode) {
+      const std::string mode = env_mode;
+      if (ParseLocalReportMode(mode)) {
+        cached_env_mode = env_mode;
+        cached_mode     = ReportMode::kLocal;
+      } else if (ParseRemoteReportMode(mode)) {
+        cached_env_mode = env_mode;
+        cached_mode     = ReportMode::kRemote;
+      } else {
+        LOG(WARNING) << "Unknown RECSTORE_REPORT_MODE=" << mode
+                     << ", fallback to report_API based behavior.";
+        const std::string api_url = GetApiUrl();
+        return api_url.empty() ? ReportMode::kLocal : ReportMode::kRemote;
+      }
+      initialized = true;
     }
-    if (ParseRemoteReportMode(mode)) {
-      return ReportMode::kRemote;
-    }
-    LOG(WARNING) << "Unknown RECSTORE_REPORT_MODE=" << mode
-                 << ", fallback to report_API based behavior.";
+    return cached_mode;
   }
 
   const std::string api_url = GetApiUrl();
@@ -329,11 +527,10 @@ report(const char* table_name,
       .timestamp_us = GetTimestampUs(),
       .source       = "report"};
 
-  WriteLocalStructuredEvent(event);
-  TryRecordLatencyMetricToTimer(event);
+  std::string json_payload = ToJsonLine(event);
 
-  const json j             = ToJson(event);
-  std::string json_payload = j.dump();
+  WriteLocalStructuredEvent(json_payload);
+  TryRecordLatencyMetricToTimer(event);
 
   bool success = send_json_request(json_payload);
   if (success) {
