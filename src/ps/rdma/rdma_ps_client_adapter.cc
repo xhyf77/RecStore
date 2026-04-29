@@ -1,6 +1,7 @@
 #include "ps/rdma/rdma_ps_client_adapter.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
@@ -15,6 +16,7 @@
 DECLARE_int32(global_id);
 DECLARE_int32(num_server_processes);
 DECLARE_int32(num_client_processes);
+DECLARE_string(rdma_transport_mode);
 
 namespace recstore {
 
@@ -97,6 +99,9 @@ void RDMAPSClientAdapter::EnsureClientInitialized() {
           : FLAGS_value_size;
   FLAGS_max_kv_num_per_request =
       dist_cfg.value("max_keys_per_request", FLAGS_max_kv_num_per_request);
+  if (const char* mode = std::getenv("RECSTORE_RDMA_TRANSPORT_MODE")) {
+    FLAGS_rdma_transport_mode = mode;
+  }
 
   if (num_shards <= 1) {
     shard_clients_.push_back(std::make_unique<petps::PetPSClient>(

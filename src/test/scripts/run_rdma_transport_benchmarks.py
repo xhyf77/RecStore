@@ -88,6 +88,8 @@ def build_rdma_runner(args):
             args, "rdma_put_server_scratch_bytes", None
         ),
         rdma_wait_timeout_ms=getattr(args, "rdma_wait_timeout_ms", None),
+        rdma_transport_mode=getattr(args, "rdma_transport_mode", None),
+        rdma_transport_mode_client_flag=False,
         validate_routing=getattr(args, "validate_routing", False),
     )
 
@@ -181,6 +183,7 @@ def print_summary_table(rows):
     rows = sorted(rows, key=lambda r: r["transport"])
     header = [
         "transport",
+        "mode",
         "op",
         "rounds",
         "iterations",
@@ -195,6 +198,7 @@ def print_summary_table(rows):
         table.append(
             [
                 row["transport"],
+                row.get("transport_mode", ""),
                 row["op"],
                 str(row["rounds"]),
                 str(row["iterations"]),
@@ -279,6 +283,11 @@ def main():
     parser.add_argument("--rdma-put-server-scratch-bytes", type=int)
     parser.add_argument("--rdma-wait-timeout-ms", type=int)
     parser.add_argument(
+        "--rdma-transport-mode",
+        choices=["raw_message", "descriptor_doorbell"],
+        default=None,
+    )
+    parser.add_argument(
         "--rdma-client-timeout-sec",
         type=int,
         default=120,
@@ -317,7 +326,10 @@ def main():
         )
         print_filtered_output(completed.stdout, args.show_runner_logs)
         print_filtered_output(completed.stderr, args.show_runner_logs)
-        summary_rows.extend(collect_summary_rows(completed.stdout))
+        rows = collect_summary_rows(completed.stdout)
+        for row in rows:
+            row["transport_mode"] = args.rdma_transport_mode or "raw_message"
+        summary_rows.extend(rows)
         rc = completed.returncode
         if rc != 0:
             return rc

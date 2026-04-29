@@ -1,108 +1,207 @@
-# RDMA 模块
+# RDMA 模块运行手册
 
-## 概述
-
-!!! warning "边界说明"
-    本仓库当前同时存在两条 RDMA 使用路径：
-    1) PetPS 直连路径：`BaseParameterClient`（`PetPSClient` / `AllShardsParameterClientWrapper`）
-    2) Framework Op-layer 路径：`BasePSClient`（`RDMAPSClientAdapter`，通过 `cache_ps.ps_type=RDMA` 进入）
-    两条路径复用同一套 PetPS/RDMA 数据面，但初始化与调用入口不同。
-
-RDMA 模块基于 Mayfly/DSM，提供独立 `petps_server` 数据面。  
-本页聚焦“怎么启动、怎么测、怎么排障”，不展开实现细节。
-
-## 路径选择
-
-| 路径 | 入口 | 典型用途 |
-|------|------|----------|
-| PetPS 直连 | `src/ps/rdma/petps_client.cc`、`src/ps/rdma/allshards_ps_client.cc` | RDMA 协议/传输专项验证、integration 测试 |
-| Op-layer RDMA | `src/ps/rdma/rdma_ps_client_adapter.cc` + `KVClientOp` | 通过统一框架接口验证 init/write/read/update/prefetch |
-
-!!! note
-    若目标是验证 framework 侧切换，请使用 `cache_ps.ps_type=RDMA` 与
-    `src/test/configs/recstore_config.op_rdma.json`。
-    若目标是验证 PetPS 传输链路本身，请优先使用 `recstore_config.rdma_test.json`
-    或 `recstore_config.rdma_multishard_test.json`。
-
-## 核心实现文件（必读）
-
-本页原本聚焦“怎么跑”，这里补充“实现看哪里”：
-
-| 文件 | 角色 | 重点看点 |
-|------|------|----------|
-| `src/ps/rdma/petps_client.cc` | 单分片 RDMA 客户端主实现 | `GetParameter`、`PutParameter`、`WaitRPCFinish`、PUT-v2(read/push) 路径 |
-| `src/ps/rdma/petps_server.cc` | RDMA 服务端主实现 | `RpcPsGet`、`RpcPsPut`、状态字回写、ready key 发布 |
-| `src/ps/rdma/rdma_protocol.h` | RDMA PUT 协议定义 | `PutPayloadHeader`(v1)、`PutRemotePayloadV2`(v2)、编码/解码与校验 |
-| `src/ps/rdma/allshards_ps_client.cc` | 多分片聚合客户端 | 分片路由、分片 RPC 聚合、按原顺序回填用户缓冲区 |
-| `src/ps/rdma/rdma_ps_client_adapter.cc` | Op-layer 适配层 | `cache_ps.ps_type=RDMA` 时对接 `KVClientOp` 的入口 |
-| `src/ps/rdma/rdma_status.h` | 状态码语义 | `kPending/kOk/kInvalidPayload/kBatchTooLarge/...` 统一错误语义 |
-
-!!! note
-    若你只想先抓主脉络，建议阅读顺序：
-    `rdma_protocol.h -> petps_client.cc -> petps_server.cc -> allshards_ps_client.cc -> rdma_ps_client_adapter.cc`。
-
-## 配置
-
-RDMA 专项配置位于：
-
-| 配置文件 | 用途 |
-|----------|------|
-| `src/test/configs/recstore_config.rdma_test.json` | 单分片测试 |
-| `src/test/configs/recstore_config.rdma_multishard_test.json` | 多分片测试 |
-
-!!! note
-    `recstore_config.rdma_test.json` / `recstore_config.rdma_multishard_test.json`
-    主要用于 PetPS 专项链路测试；Op-layer 验证请使用
-    `recstore_config.op_rdma.json`（其中 `cache_ps.ps_type` 为 `RDMA`）。
-
-## 快速验证
-
-!!! note
-    本节命令默认在仓库根目录（`/app/RecStore`）执行。
-
-### memcached
+本文档记录当前 RecStore RDMA 路径的启动、验证、benchmark 和排障方式。默认工作目录为仓库根目录：
 
 ```bash
-memcached -l 127.0.0.1 -p 21211 -c 10000 -vv
+cd /app/RecStore
 ```
 
-`--use-local-memcached` 控制 memcached 来源：
+## 当前边界
 
-| 参数值 | 行为 |
-|--------|------|
-| `auto` | 先尝试外部 memcached；如果不可用或 reset 失败，则启动系统 `memcached` 二进制（推荐默认模式） |
-| `never` | 只使用已在 `127.0.0.1:21211` 启动的外部 memcached，适用于你需要严格绑定外部 memcached 的场景 |
-| `always` | 直接启动系统 `memcached` 二进制 |
+RecStore 里有两层 RDMA 入口：
 
-!!! note
-    推荐优先使用 `--use-local-memcached=auto`，由脚本统一管理 memcached 生命周期。
-    如需完整 runner 日志，可追加 `--show-runner-logs`。
+| 层级 | 入口 | 作用 |
+|------|------|------|
+| PetPS RDMA | `petps_server` + `PetPSClient` | RDMA 数据面、协议、benchmark、PetPS integration |
+| Framework Op-layer RDMA | `RDMAPSClientAdapter` + `KVClientOp` | 通过统一 op 接口测试 RDMA 后端 |
 
-### 启动 RDMA Server
+两层最终都会复用 PetPS/RDMA 数据面，但初始化入口不同。不要把两者的命令行参数混用。
 
-为降低 `petps_server` 直接启动时的参数复杂度（`global_id` /
-`num_server_processes` / `num_client_processes` 等），推荐使用：
+## Transport Mode
+
+当前 RDMA 支持两种 transport mode：
+
+| mode | 状态 | 说明 |
+|------|------|------|
+| `raw_message` | 默认稳定路径 | 继续使用 Mayfly/DSM RawMessage 控制面 |
+| `descriptor_doorbell` | 新增实验路径 | 使用 RecStore descriptor + raw verbs doorbell 控制面 |
+
+默认不显式传参时就是 `raw_message`。
+
+### 参数传播规则
+
+`petps_server` 和 `PetPSClient` 支持 gflag：
 
 ```bash
-python3 src/test/scripts/run_petps_server.py \
-  --config-path ./src/test/configs/recstore_config.rdma_test.json \
-  --use-local-memcached=auto
+--rdma_transport_mode=raw_message
+--rdma_transport_mode=descriptor_doorbell
 ```
 
-当前脚本实际支持的常用调优参数只有：
-`--rdma-per-thread-response-limit-bytes`、
-`--rdma-server-ready-timeout-sec`、
-`--rdma-server-ready-poll-ms`、
-`--rdma-client-receive-arena-bytes`、
-`--validate-routing`。
+但 `ps_transport_benchmark` 本身不支持这个 gflag。benchmark runner 必须避免把 `--rdma_transport_mode` 直接传给 benchmark binary，否则会失败：
 
-该入口会：
+```text
+ERROR: unknown command line flag 'rdma_transport_mode'
+```
 
-- 根据配置推断 `server-count`（也可显式传 `--server-count`）
-- 自动注入 RDMA 所需运行参数
-- 统一处理 memcached（`auto/always/never`）
+当前脚本约定：
 
-### 单分片 integration
+- server 进程通过 `--rdma_transport_mode=...` 接收模式。
+- benchmark client 通过环境变量 `RECSTORE_RDMA_TRANSPORT_MODE` 传给 op/client 初始化路径。
+- raw-message 默认 benchmark 不传任何 transport mode 参数，保持旧行为。
+
+## 快速基线：run.sh
+
+`run.sh` 是当前最直接的 RDMA benchmark 基线入口：
+
+```bash
+bash run.sh
+```
+
+它会执行：
+
+- 启动或复用本地 memcached
+- 启动 1 个 `petps_server`
+- 运行 `ps_transport_benchmark`
+- 只跑 RDMA lane，跳过 GRPC/BRPC
+- 默认使用 `raw_message` transport mode
+
+当前已验证过的输出应包含类似内容：
+
+```text
+I open mlx5_0 :)
+I connect server 0
+transport=RDMA op=put phase=measure ...
+transport=RDMA op=get phase=measure ...
+```
+
+如果输出 `I open mlx5_0 :)`，说明实际走到了 RDMA verbs 设备，不应再把问题归因成“环境没有 RDMA”。
+
+## 构建
+
+常用 RDMA 相关目标：
+
+```bash
+cmake --build ./build --target \
+  ps_transport_benchmark \
+  petps_server \
+  petps_integration_test \
+  recstore_torch_ops \
+  test_rdma_protocol \
+  test_allshards_ps_client \
+  -j
+```
+
+如果只跑 `run.sh`，至少需要：
+
+```bash
+cmake --build ./build --target ps_transport_benchmark petps_server -j
+```
+
+## Benchmark
+
+`run.sh` 当前展开后等价于：
+
+```bash
+python3 src/test/scripts/run_rdma_transport_benchmarks.py \
+  --benchmark-binary ./build/bin/ps_transport_benchmark \
+  --iterations 300 \
+  --batch-keys 500 \
+  --rounds 20 \
+  --rdma-warmup-rounds 10 \
+  --report-mode summary \
+  --rdma-only \
+  --rdma-thread-num 1 \
+  --rdma-put-protocol-version 2 \
+  --rdma-put-v2-transfer-mode read \
+  --rdma-wait-timeout-ms 20000 \
+  --rdma-client-timeout-sec 60 \
+  --show-runner-logs \
+  --use-local-memcached auto
+```
+
+### raw_message 基线
+
+raw-message 是默认模式。不要额外传 `--rdma-transport-mode raw_message`，除非你正在验证 runner 的 mode plumbing。
+
+推荐基线：
+
+```bash
+python3 src/test/scripts/run_rdma_transport_benchmarks.py \
+  --benchmark-binary ./build/bin/ps_transport_benchmark \
+  --iterations 300 \
+  --batch-keys 500 \
+  --rounds 20 \
+  --rdma-warmup-rounds 10 \
+  --report-mode summary \
+  --rdma-only \
+  --rdma-thread-num 1 \
+  --rdma-put-protocol-version 2 \
+  --rdma-put-v2-transfer-mode read \
+  --rdma-wait-timeout-ms 20000 \
+  --rdma-client-timeout-sec 60 \
+  --show-runner-logs \
+  --use-local-memcached auto
+```
+
+当前一次本地验证结果示例：
+
+```text
+transport=RDMA op=put phase=measure summary rounds=20 iterations=300 batch_keys=500 ...
+transport=RDMA op=get phase=measure summary rounds=20 iterations=300 batch_keys=500 ...
+
+| transport | mode        | op  | rounds | iterations | batch_keys | mean_req_us | key_ops/s    |
+| RDMA      | raw_message | put | 20     | 300        | 500        | 71.58       | 6,985,310.00 |
+| RDMA      | raw_message | get | 20     | 300        | 500        | 56.70       | 8,818,390.00 |
+```
+
+数值会随机器、负载和 RDMA 设备状态变化。这里的重点是命令能完整跑通并产生 put/get measure summary。
+
+### descriptor_doorbell 实验路径
+
+descriptor mode 仍是实验路径。运行方式：
+
+```bash
+python3 src/test/scripts/run_rdma_transport_benchmarks.py \
+  --benchmark-binary ./build/bin/ps_transport_benchmark \
+  --rdma-only \
+  --rdma-transport-mode descriptor_doorbell \
+  --iterations 100 \
+  --batch-keys 128 \
+  --rounds 5 \
+  --rdma-warmup-rounds 2 \
+  --report-mode summary \
+  --use-local-memcached auto
+```
+
+注意：
+
+- `--rdma-transport-mode descriptor_doorbell` 是 runner 参数，不是 benchmark binary 参数。
+- runner 会把 mode 传给 server，并通过环境变量传给 client 初始化路径。
+- 当前 descriptor mode 目标是先保持正确性闭环，不应把它当成已证明有 async overlap 收益的路径。
+
+### descriptor_doorbell 当前实现约束
+
+descriptor mode 使用 raw verbs RDMA write 写 descriptor slot，再用 send-with-imm 作为 doorbell。服务端收到 doorbell 后从本地 slot 解码 descriptor，再根据 descriptor 中的 remote address 读取请求 payload 或写回 response/status。
+
+当前必须满足这些约束：
+
+- raw verbs 的本地 read/write buffer 必须来自 `RawVerbsTransport::AllocateRegistered()`，不能用栈变量或普通 `std::vector` 作为 verbs local buffer。
+- descriptor mode 服务端只允许一个线程 poll raw verbs CQ。当前由 `thread_id == 0` 负责 `PublishAndConnect()`、doorbell poll 和 descriptor 处理；其他 polling threads 不参与 raw CQ。
+- descriptor basic 目前覆盖同步 write/read 正确性。async GET 在第一阶段未启用。
+- descriptor mode 与 raw-message 共享 PetPS/RDMA 数据面配置，但控制面不同；不要混合排障结论。
+
+如果 descriptor 测试表现为卡住，优先检查 server 是否提前崩溃或是否有 CQ completion 被错误线程消费。典型日志包括：
+
+```text
+raw verbs CQ error: local protection error
+PetPSClient::PutParameterDescriptor
+```
+
+这通常说明某个 raw verbs local buffer 没有落在 registered MR 内，或者多个线程同时 poll 同一个 CQ。
+
+## PetPS Integration
+
+### 单分片
 
 ```bash
 python3 src/test/scripts/run_petps_integration.py \
@@ -111,150 +210,311 @@ python3 src/test/scripts/run_petps_integration.py \
   --test-binary ./build/bin/petps_integration_test \
   --gtest-filter=PetPSIntegrationTest.PutGetRoundTripSingleShard:PetPSIntegrationTest.MissingKeysReturnZeroSlots \
   --client-timeout 15 \
-  --use-local-memcached=auto
+  --use-local-memcached auto
 ```
 
-!!! note
-    这条命令已经按当前代码实际验证通过。
+descriptor mode：
 
-### 多分片 integration
+```bash
+python3 src/test/scripts/run_petps_integration.py \
+  --server-count 1 \
+  --config-path ./src/test/configs/recstore_config.rdma_test.json \
+  --test-binary ./build/bin/petps_integration_test \
+  --gtest-filter=PetPSIntegrationTest.PutGetRoundTripSingleShard:PetPSIntegrationTest.MissingKeysReturnZeroSlots \
+  --rdma-transport-mode descriptor_doorbell \
+  --client-timeout 15 \
+  --use-local-memcached auto
+```
+
+### 多分片
 
 ```bash
 python3 src/test/scripts/run_petps_integration.py \
   --server-count 2 \
+  --client-count 1 \
   --config-path ./src/test/configs/recstore_config.rdma_multishard_test.json \
   --test-binary ./build/bin/petps_integration_test \
   --gtest-filter=PetPSIntegrationTest.PutGetRoundTripMultiShard \
   --client-timeout 30 \
-  --use-local-memcached=auto
+  --use-local-memcached auto
 ```
 
-### RDMA transport benchmark
+多分片排障时优先检查：
 
-```bash
-python3 src/test/scripts/run_rdma_transport_benchmarks.py \
-  --benchmark-binary ./build/bin/ps_transport_benchmark \
-  --iterations 300 \
-  --batch-keys 500 \
-  --rounds 10 \
-  --rdma-warmup-rounds 2 \
-  --report-mode summary \
-  --rdma-only \
-  --rdma-thread-num 1 \
-  --rdma-put-protocol-version 2 \
-  --rdma-put-v2-transfer-mode read \
-  --rdma-wait-timeout-ms 10000 \
-  --rdma-client-timeout-sec 60 \
-  --use-local-memcached=auto
-```
+- `distributed_client.num_shards`
+- `distributed_client.servers`
+- `server-count`
+- `num_server_processes`
+- key 到 shard 的路由是否一致
 
-!!! note
-    `run_petps_integration.py` 中 `--client-timeout` 与 `--cluster-timeout`
-    会按你传入的值生效（要求 > 0）。
-    `--report-mode` 支持：
-    `summary`（默认，输出聚合延迟与吞吐，日志最少）、
-    `per_round`（逐轮延迟）、
-    `both`（逐轮 + 聚合）。
-    `run_rdma_transport_benchmarks.py` 在三种 transport 全部完成后，
-    会额外打印一张 `measure` 阶段汇总表（包含延迟与吞吐）。
-    仅关注 RDMA 时可加 `--rdma-only`，跳过 GRPC/BRPC 阶段。
-    当前默认 PUT 协议为 v2，benchmark 脚本默认 `--rdma-put-v2-transfer-mode=push`。
-    但按当前实现的稳定性，建议优先使用 `read` 模式做基线压测。
+## Op-layer RDMA
 
-### 建议基线
-
-推荐先固定以下组合：
-
-- `--batch-keys=500`
-- `--rdma-thread-num=4`
-- `--rdma-put-protocol-version=2`
-- `--rdma-put-v2-transfer-mode=read`
-
-已知现象（`value_size=16`）：
-
-- 将 `batch-keys` 提升到 `1000` 时，可能触发 Mayfly `MESSAGE_SIZE` 上限并报错
-  `messeage size too large`。
-- 建议在默认消息大小配置下，将 `batch-keys` 控制在 `500` 附近进行稳定压测。
-
-### benchmark 输出解读
-
-`report-mode=summary` 或 `both` 时，脚本末尾会输出：
-
-- `mean_us / p50_us / p95_us / p99_us`：单轮（一个 round）总耗时统计
-- `batch_keys`：单个 Put/Get RPC 内携带的 key 数
-- `ops/s`：每秒完成的请求对数量（`Put + Get` 合并统计）
-- `key_ops/s`：每秒处理的 key 数量（按每次请求 key 数折算）
-
-当前 `ps_transport_benchmark` 的单轮工作量是：
-
-- 每轮执行 `iterations` 次循环
-- 每次循环执行 `1 Put + 1 Get`
-- 每次请求处理 `batch_keys` 个 key（默认 4，可通过 `--batch-keys` 调整）
-
-因此吞吐计算可写为：
+Op-layer RDMA 使用：
 
 ```text
-ops/s = (iterations * 2) / (mean_us / 1e6)
-key_ops/s = (iterations * 2 * batch_keys) / (mean_us / 1e6)
+src/test/configs/recstore_config.op_rdma.json
 ```
 
-### ctest 入口
-
-推荐按“冒烟 -> 集成”顺序执行：
+核心入口：
 
 ```bash
-# 1) RDMA 单测冒烟（快）
+ctest --test-dir ./build -R "^pytorch_client_test_rdma_basic$" -VV
+```
+
+完整 raw-message op-layer：
+
+```bash
+ctest --test-dir ./build -R "^pytorch_client_test_rdma$|^pytorch_client_test_rdma_auto$" -VV
+```
+
+descriptor mode 入口：
+
+```bash
+ctest --test-dir ./build -R "^pytorch_client_test_rdma_descriptor_basic$" -VV
+```
+
+也可以手工指定：
+
+```bash
+RECSTORE_CONFIG=./src/test/configs/recstore_config.op_rdma.json \
+RECSTORE_CLIENT_TEST_PHASE=basic \
+RECSTORE_USE_LOCAL_MEMCACHED=auto \
+RECSTORE_RDMA_TRANSPORT_MODE=descriptor_doorbell \
+python3 src/test/framework/pytorch/test_client.py ./build/lib/lib_recstore_ops.so
+```
+
+Op-layer RDMA 测试会在 reexec 后追加 C++ gflags，例如：
+
+```text
+--global_id=1
+--num_server_processes=1
+--num_client_processes=1
+--value_size=512
+--max_kv_num_per_request=500
+```
+
+这些参数需要保留给 C++/gflags 初始化，但不能交给 Python `unittest` 解析。若看到：
+
+```text
+test_client.py: error: unrecognized arguments: --global_id=1 ...
+```
+
+说明 Python 测试入口没有正确过滤 C++ gflags。
+
+注意：某些 ctest helper 会先检查 `/dev/infiniband` 并返回 skip code 77。skip 只说明该 helper 的前置检查没有通过，不等价于 `run.sh` 真实 RDMA benchmark 不可运行。判断 RDMA 是否可用时，应优先跑 `bash run.sh` 或直接看 `I open mlx5_0 :)` / benchmark summary。
+
+## 当前已验证的 RDMA 测试
+
+以下命令在真实 RDMA 环境中用于确认当前修复后的状态：
+
+```bash
+python3 src/test/scripts/run_petps_integration.py \
+  --server-count 1 \
+  --config-path ./src/test/configs/recstore_config.rdma_test.json \
+  --test-binary ./build/bin/petps_integration_test \
+  --gtest-filter=PetPSIntegrationTest.PutGetRoundTripSingleShard:PetPSIntegrationTest.MissingKeysReturnZeroSlots \
+  --client-timeout 15 \
+  --cluster-timeout 15 \
+  --use-local-memcached auto
+```
+
+```bash
+python3 src/test/scripts/run_petps_integration.py \
+  --server-count 2 \
+  --client-count 1 \
+  --config-path ./src/test/configs/recstore_config.rdma_multishard_test.json \
+  --test-binary ./build/bin/petps_integration_test \
+  --gtest-filter=PetPSIntegrationTest.PutGetRoundTripMultiShard \
+  --client-timeout 30 \
+  --cluster-timeout 20 \
+  --use-local-memcached auto
+```
+
+```bash
+ctest --test-dir ./build -R "^pytorch_client_test_rdma_basic$" -VV
+ctest --test-dir ./build -R "^pytorch_client_test_rdma$|^pytorch_client_test_rdma_auto$" -VV
+ctest --test-dir ./build -R "^pytorch_client_test_rdma_descriptor_basic$" -VV
+```
+
+结果矩阵：
+
+| 测试 | mode | 覆盖点 | 当前状态 |
+|------|------|--------|----------|
+| PetPS single-shard integration | `raw_message` | Put/Get 单分片、missing key | 通过 |
+| PetPS multi-shard integration | `raw_message` | 多分片 Put/Get 路由 | 通过 |
+| `pytorch_client_test_rdma_basic` | `raw_message` | Op-layer init/write/read basic | 通过 |
+| `pytorch_client_test_rdma` | `raw_message` | Op-layer full phase | 通过 |
+| `pytorch_client_test_rdma_auto` | `raw_message` | Op-layer full phase + memcached auto | 通过 |
+| `pytorch_client_test_rdma_descriptor_basic` | `descriptor_doorbell` | Op-layer descriptor basic | 通过 |
+
+这些结果只说明当前 correctness smoke/integration 已闭环，不代表 descriptor mode 已有稳定性能收益。
+
+## 单元测试
+
+快速检查协议和 wrapper：
+
+```bash
 ctest --test-dir ./build -R "^test_rdma_protocol$|^test_allshards_ps_client$" -VV
-
-# 2) Op-layer RDMA 集成（当前 CI 默认覆盖的核心）
-ctest --test-dir ./build -L rdma_integration -VV
 ```
 
-!!! note
-    `rdma_integration` 标签当前至少包含：
-    `pytorch_client_test_rdma_basic`、
-    `pytorch_client_test_rdma`、
-    `pytorch_client_test_rdma_auto`。
-
-若构建时额外启用 `ENABLE_RDMA_INTEGRATION_TESTS=ON`，还可以运行 PetPS 专项集成：
+脚本 plumbing：
 
 ```bash
-ctest --test-dir ./build -R "petps_single_shard_test|petps_multi_shard_test" -VV
+python3 -m unittest src/test/scripts/test_petps_cluster_runner.py
+python3 -m unittest src/test/scripts/test_run_rdma_transport_benchmarks.py
 ```
 
-### Op-layer 验证
+这些测试不证明真实 RDMA 数据面可用，只证明协议 helper、分片 wrapper 和 runner 参数拼接没有明显回归。
 
-当 `cache_ps.ps_type` 设置为 `RDMA` 时，framework op layer 会通过
-`RDMAPSClientAdapter` 复用 PetPS/RDMA 数据面。可使用现有 PyTorch client
-测试验证该配置切换路径：
+## memcached
+
+RDMA 脚本默认通过 memcached 交换 Mayfly/DSM 元数据。
+
+推荐使用：
 
 ```bash
-ctest --test-dir ./build -R "^pytorch_client_test_rdma_auto$" -VV
+--use-local-memcached auto
 ```
 
-上述测试使用 `src/test/configs/recstore_config.op_rdma.json`，覆盖
-init、write、read、update 与 prefetch 正确性。
+模式说明：
 
-如需手工指定 memcached 策略：
+| 值 | 行为 |
+|----|------|
+| `auto` | 优先复用外部 memcached；不可用时启动本地 memcached |
+| `always` | 总是启动本地 memcached |
+| `never` | 只使用已经存在的外部 memcached |
+
+手工启动：
 
 ```bash
-export RECSTORE_USE_LOCAL_MEMCACHED=auto   # 或 always / never
-ctest --test-dir ./build -R "^pytorch_client_test_rdma$" -VV
+memcached -u root -l 127.0.0.1 -p 21211 -c 10000
 ```
 
-## 排障
-
-常见问题优先看这几项：
-
-- 如果卡在 `memcached-wait`，先检查 `127.0.0.1:21211` 是否可达。
-- 如果卡在 `startup-wait`，优先看 `petps_server` 是否已启动、是否有残留旧进程。
-- 多分片失败时，先核对 `recstore_config.rdma_multishard_test.json` 中的 `num_shards/servers` 与测试参数是否一致。
-- 如需看完整 runner 状态日志，可在命令后追加 `--show-runner-logs`。
-
-常用检查命令：
+检查端口：
 
 ```bash
-ss -tnp | grep ':21211'
-lsof -nP -iTCP:21211
-fuser -v 21211/tcp
+ss -ltnp | grep ':21211'
 ```
+
+## 排障顺序
+
+### 1. 先确认是不是命令行 flag 问题
+
+如果看到：
+
+```text
+ERROR: unknown command line flag 'rdma_transport_mode'
+```
+
+说明 `--rdma_transport_mode` 被传给了不支持该 gflag 的 binary，常见是 `ps_transport_benchmark`。
+
+修正方向：
+
+- benchmark runner 使用 `--rdma-transport-mode` 作为脚本参数。
+- 不要把 `--rdma_transport_mode` 直接加到 `ps_transport_benchmark` 命令后。
+- raw-message 基线不要显式传 mode。
+
+### 2. 再确认 RDMA 设备是否真的打开
+
+真实 benchmark 输出中应看到：
+
+```text
+I open mlx5_0 :)
+I connect server 0
+```
+
+如果没有，检查：
+
+```bash
+ls -l /dev/infiniband
+ibv_devices
+```
+
+### 3. 检查 memcached
+
+常见卡点：
+
+```text
+[petps-status] phase=memcached-wait
+```
+
+检查：
+
+```bash
+ss -ltnp | grep ':21211'
+```
+
+必要时杀掉旧 memcached 或改用 `--use-local-memcached always`。
+
+### 4. 检查 server ready
+
+常见卡点：
+
+```text
+[petps-status] phase=startup-wait
+```
+
+优先看 server 日志，确认是否出现：
+
+```text
+component=rdma_server event=polling_thread_ready thread_id=0
+```
+
+如果 server 提前退出，runner 会打印：
+
+```text
+petps_server exited early
+Captured output from petps_server[0]
+```
+
+先读这段日志，不要先猜测 RDMA 不可用。
+
+### 5. 检查请求大小
+
+默认 `MESSAGE_SIZE` 下，`batch-keys=1000` 可能触发：
+
+```text
+messeage size too large
+```
+
+建议先用：
+
+```text
+batch-keys=500
+```
+
+做稳定基线。
+
+### 6. descriptor mode 卡住但 server 已退出
+
+descriptor mode 如果在 ctest 中看起来卡住，先检查实际日志：
+
+```bash
+tail -200 build/Testing/Temporary/LastTest.log
+ps -eo pid,ppid,stat,wchan:32,cmd | rg 'ctest|test_client.py|petps_server|memcached'
+```
+
+如果只剩 Python 父进程，而 `petps_server` 或 `memcached` 是 `<defunct>`，通常不是网络卡住，而是子进程已经崩溃，父进程没有干净回收。下一步应看 server/client stack trace。
+
+descriptor mode 的重点排查项：
+
+- server 端 raw verbs local buffer 是否都来自 `AllocateRegistered()`。
+- 是否只有一个线程 poll raw verbs CQ。
+- client 端 `unittest` 是否过滤了 reexec 追加的 C++ gflags。
+- `RECSTORE_RDMA_TRANSPORT_MODE=descriptor_doorbell` 是否传到了 client，同时 `--rdma_transport_mode=descriptor_doorbell` 是否传到了 server。
+
+## 当前建议
+
+日常验证按这个顺序：
+
+```bash
+cmake --build ./build --target ps_transport_benchmark petps_server -j
+bash run.sh
+ctest --test-dir ./build -R "^pytorch_client_test_rdma_basic$" -VV
+ctest --test-dir ./build -R "^pytorch_client_test_rdma_descriptor_basic$" -VV
+python3 -m unittest src/test/scripts/test_petps_cluster_runner.py
+python3 -m unittest src/test/scripts/test_run_rdma_transport_benchmarks.py
+ctest --test-dir ./build -R "^test_rdma_protocol$|^test_allshards_ps_client$" -VV
+```
+
+如果 `bash run.sh` 通过，但某个 ctest RDMA helper skipped，不要直接判定 RDMA 环境不可用；应检查该 helper 的 skip 条件和启动路径。

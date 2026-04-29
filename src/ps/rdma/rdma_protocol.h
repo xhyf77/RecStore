@@ -46,6 +46,46 @@ struct PutRemotePayloadV2 {
 
 static_assert(sizeof(PutRemotePayloadV2) <= 64, "unexpected v2 control size");
 
+inline constexpr std::uint32_t kRdmaDescriptorMagic    = 0x52444431;
+inline constexpr std::uint16_t kRdmaDescriptorVersionV1 = 1;
+
+enum class RdmaDescriptorOp : std::uint16_t {
+  kGet = 1,
+  kPut = 2,
+};
+
+struct RdmaDescriptorRequest {
+  std::uint32_t magic = kRdmaDescriptorMagic;
+  std::uint16_t version = kRdmaDescriptorVersionV1;
+  std::uint16_t op = 0;
+  std::uint64_t request_id = 0;
+  std::uint16_t client_node_id = 0;
+  std::uint16_t client_thread_id = 0;
+  std::uint32_t lane_id = 0;
+  std::uint32_t slot_id = 0;
+  std::uint32_t key_count = 0;
+  std::uint32_t embedding_dim = 0;
+  GlobalAddress descriptor_gaddr;
+  GlobalAddress keys_gaddr;
+  GlobalAddress payload_gaddr;
+  GlobalAddress response_gaddr;
+  GlobalAddress status_gaddr;
+  std::uint32_t payload_bytes = 0;
+  std::uint32_t response_bytes = 0;
+  std::uint32_t transfer_mode = 0;
+  std::uint32_t reserved = 0;
+} __attribute__((packed));
+
+struct RdmaDescriptorLaneConfig {
+  std::uint64_t region_offset = 0;
+  std::uint64_t slot_bytes = 0;
+  std::uint32_t slots_per_client = 0;
+  std::uint32_t machine_count = 0;
+};
+
+static_assert(sizeof(RdmaDescriptorRequest) <= 128,
+              "descriptor request must fit a small doorbell slot");
+
 inline std::size_t
 FixedSlotResponseBytes(std::size_t key_count, std::size_t value_size_bytes) {
   return key_count * value_size_bytes + sizeof(std::int32_t);
@@ -54,6 +94,110 @@ FixedSlotResponseBytes(std::size_t key_count, std::size_t value_size_bytes) {
 inline std::size_t
 PutPayloadBytes(std::size_t key_count, std::size_t value_size_bytes) {
   return key_count * (sizeof(std::uint64_t) + value_size_bytes);
+}
+
+inline bool IsValidDescriptorOp(std::uint16_t op) {
+  return op == static_cast<std::uint16_t>(RdmaDescriptorOp::kGet) ||
+         op == static_cast<std::uint16_t>(RdmaDescriptorOp::kPut);
+}
+
+inline bool EncodeRdmaDescriptorRequest(const RdmaDescriptorRequest& request,
+                                        std::string* payload,
+                                        std::string* error) {
+  if (payload == nullptr) {
+    if (error != nullptr) {
+      *error = "payload is null";
+    }
+    return false;
+  }
+  if (request.magic != kRdmaDescriptorMagic) {
+    if (error != nullptr) {
+      *error = "bad descriptor magic";
+    }
+    return false;
+  }
+  if (request.version != kRdmaDescriptorVersionV1) {
+    if (error != nullptr) {
+      *error = "bad descriptor version";
+    }
+    return false;
+  }
+  if (!IsValidDescriptorOp(request.op)) {
+    if (error != nullptr) {
+      *error = "bad descriptor op";
+    }
+    return false;
+  }
+  if (request.key_count == 0 || request.embedding_dim == 0) {
+    if (error != nullptr) {
+      *error = "empty descriptor shape";
+    }
+    return false;
+  }
+  payload->resize(sizeof(RdmaDescriptorRequest));
+  std::memcpy(payload->data(), &request, sizeof(request));
+  return true;
+}
+
+inline bool DecodeRdmaDescriptorRequest(std::string_view payload,
+                                        RdmaDescriptorRequest* request,
+                                        std::string* error) {
+  if (request == nullptr) {
+    if (error != nullptr) {
+      *error = "descriptor is null";
+    }
+    return false;
+  }
+  if (payload.size() != sizeof(RdmaDescriptorRequest)) {
+    if (error != nullptr) {
+      *error = "descriptor size mismatch";
+    }
+    return false;
+  }
+  RdmaDescriptorRequest decoded{};
+  std::memcpy(&decoded, payload.data(), sizeof(decoded));
+  std::string tmp_payload;
+  if (!EncodeRdmaDescriptorRequest(decoded, &tmp_payload, error)) {
+    return false;
+  }
+  *request = decoded;
+  return true;
+}
+
+inline bool ValidateDescriptorLane(const RdmaDescriptorRequest& request,
+                                   const RdmaDescriptorLaneConfig& config,
+                                   std::string* error) {
+  if (config.slot_bytes == 0 || config.slots_per_client == 0) {
+    if (error != nullptr) {
+      *error = "invalid descriptor lane config";
+    }
+    return false;
+  }
+  if (request.client_node_id >= config.machine_count) {
+    if (error != nullptr) {
+      *error = "client node outside descriptor region";
+    }
+    return false;
+  }
+  if (request.slot_id >= config.slots_per_client) {
+    if (error != nullptr) {
+      *error = "slot outside descriptor lane";
+    }
+    return false;
+  }
+  const std::uint64_t expected_offset =
+      config.region_offset +
+      (static_cast<std::uint64_t>(request.client_node_id) *
+           config.slots_per_client +
+       request.slot_id) *
+          config.slot_bytes;
+  if (request.descriptor_gaddr.offset != expected_offset) {
+    if (error != nullptr) {
+      *error = "descriptor not in sender lane";
+    }
+    return false;
+  }
+  return true;
 }
 
 inline std::string

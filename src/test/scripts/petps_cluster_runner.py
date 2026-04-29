@@ -56,6 +56,8 @@ class PetPSClusterRunner:
         rdma_put_client_send_arena_bytes=None,
         rdma_put_server_scratch_bytes=None,
         rdma_wait_timeout_ms=None,
+        rdma_transport_mode=None,
+        rdma_transport_mode_client_flag=True,
         validate_routing=False,
     ):
         self.server_path = Path(server_path)
@@ -99,6 +101,8 @@ class PetPSClusterRunner:
         self.rdma_put_client_send_arena_bytes = rdma_put_client_send_arena_bytes
         self.rdma_put_server_scratch_bytes = rdma_put_server_scratch_bytes
         self.rdma_wait_timeout_ms = rdma_wait_timeout_ms
+        self.rdma_transport_mode = rdma_transport_mode
+        self.rdma_transport_mode_client_flag = rdma_transport_mode_client_flag
         self.validate_routing = validate_routing
         self.processes = []
         self.process_logs = {}
@@ -134,6 +138,8 @@ class PetPSClusterRunner:
         env["RECSTORE_MEMCACHED_TEXT_PROTOCOL"] = "1"
         if self.memcached_namespace:
             env["RECSTORE_MEMCACHED_NAMESPACE"] = self.memcached_namespace
+        if self.rdma_transport_mode is not None:
+            env["RECSTORE_RDMA_TRANSPORT_MODE"] = self.rdma_transport_mode
         if self.validate_routing:
             env["RECSTORE_RDMA_VALIDATE_ROUTING"] = "1"
         return env
@@ -196,6 +202,8 @@ class PetPSClusterRunner:
                 "--rdma_put_v2_push_region_offset="
                 f"{self.rdma_put_v2_push_region_offset}"
             )
+        if self.rdma_transport_mode is not None:
+            cmd.append(f"--rdma_transport_mode={self.rdma_transport_mode}")
         return cmd
 
     def build_client_cmd(self, argv, client_index=0):
@@ -251,6 +259,11 @@ class PetPSClusterRunner:
             )
         if self.rdma_wait_timeout_ms is not None:
             cmd.append(f"--rdma_wait_timeout_ms={self.rdma_wait_timeout_ms}")
+        if (
+            self.rdma_transport_mode is not None
+            and self.rdma_transport_mode_client_flag
+        ):
+            cmd.append(f"--rdma_transport_mode={self.rdma_transport_mode}")
         return cmd
 
     def is_ready_line(self, line):

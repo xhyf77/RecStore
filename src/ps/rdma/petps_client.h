@@ -11,8 +11,10 @@
 #include "base/factory.h"
 #include "base/log.h"
 #include "base_client.h"
+#include "raw_verbs_transport.h"
 #include "rdma_protocol.h"
 #include "rdma_status.h"
+#include "rdma_transport_mode.h"
 #include "third_party/Mayfly-main/include/DSM.h"
 
 namespace petps {
@@ -31,7 +33,9 @@ public:
     LOG(INFO) << "dsm_->registerThread()";
     dsm_->registerThread();
     WaitForServerReady();
-    serverThreadIdsRoutedTo_ = GetServerThreadIDs();
+    if (transport_mode_ == RdmaTransportMode::kRawMessage) {
+      serverThreadIdsRoutedTo_ = GetServerThreadIDs();
+    }
   }
 
   int GetParameter(base::ConstArray<uint64_t> keys,
@@ -67,6 +71,12 @@ private:
   int SelectServerThreadID() const;
   std::atomic<int32_t>* GetPollSlot(uint64_t rpc_id) const;
   void Init();
+  int GetParameterDescriptor(base::ConstArray<uint64_t> keys,
+                             float* values,
+                             bool isAsync);
+  int PutParameterDescriptor(
+      const std::vector<uint64_t>& keys,
+      const std::vector<std::vector<float>>& values);
   DSM* dsm_;
 
   mutable std::mutex rpc_mu_;
@@ -76,6 +86,10 @@ private:
 
   std::vector<int> serverThreadIdsRoutedTo_;
   std::unordered_map<uint64_t, std::atomic<int32_t>*> rpcId2PollMap_;
+  RdmaTransportMode transport_mode_ = RdmaTransportMode::kRawMessage;
+  std::unique_ptr<RawVerbsTransport> raw_transport_;
+  std::atomic<std::uint64_t> descriptor_request_id_{1};
+  std::atomic<std::uint64_t> descriptor_slot_cursor_{0};
 };
 
 FACTORY_REGISTER(BaseParameterClient,
