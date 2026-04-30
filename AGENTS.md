@@ -22,6 +22,10 @@ This document applies repository-wide unless the current conversation gives a mo
 - Do not amend commits unless the user explicitly asks for it.
 - Never use destructive git commands such as `git reset --hard` or `git checkout --` unless explicitly requested.
 - Assume the worktree may be dirty. Do not revert unrelated user changes.
+- Do not commit transient AI planning files, scratch specs, or intermediate
+  workflow artifacts such as `docs/superpowers/specs/*`. Keep them untracked,
+  place them under `/tmp`, or convert them into intentional project
+  documentation before committing.
 
 ## Default Development Workflow
 
