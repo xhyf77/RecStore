@@ -85,7 +85,56 @@ inline void ResetLocalUpdateFlatProfile() {
 }
 
 #ifdef RECSTORE_ENABLE_GPU_CACHE
-constexpr double kGpuCacheSgdLearningRate = 0.01;
+constexpr int64_t kGpuCacheBypassMinRows      = 1024;
+constexpr int kGpuCacheLowHitLimit            = 1;
+constexpr double kGpuCacheLowHitRatio         = 0.05;
+thread_local int g_gpu_cache_low_hit_streak   = 0;
+thread_local bool g_gpu_cache_lookup_bypassed = false;
+
+void SafeClearGpuCacheNoThrow();
+
+void ResetGpuCacheBypassState() {
+  g_gpu_cache_low_hit_streak  = 0;
+  g_gpu_cache_lookup_bypassed = false;
+}
+
+bool ShouldBypassGpuCacheLookup(int64_t num_keys) {
+  return num_keys >= kGpuCacheBypassMinRows &&
+         g_gpu_cache_low_hit_streak >= kGpuCacheLowHitLimit;
+}
+
+void RecordGpuCacheLookupOutcome(
+    int64_t num_keys, double hit_count, double request_count) {
+  if (num_keys < kGpuCacheBypassMinRows || request_count <= 0.0) {
+    return;
+  }
+  const double hit_ratio = hit_count / request_count;
+  if (hit_ratio < kGpuCacheLowHitRatio) {
+    ++g_gpu_cache_low_hit_streak;
+  } else {
+    g_gpu_cache_low_hit_streak  = 0;
+    g_gpu_cache_lookup_bypassed = false;
+  }
+}
+
+bool ShouldBypassGpuCacheMaintenance(int64_t num_keys) {
+  return num_keys >= kGpuCacheBypassMinRows && g_gpu_cache_lookup_bypassed;
+}
+
+void MarkGpuCacheLookupBypassed() {
+  if (!g_gpu_cache_lookup_bypassed) {
+    SafeClearGpuCacheNoThrow();
+    g_gpu_cache_low_hit_streak = kGpuCacheLowHitLimit;
+  }
+  g_gpu_cache_lookup_bypassed = true;
+}
+
+void EnsureGpuCacheSafeForLookup() {
+  if (g_gpu_cache_lookup_bypassed) {
+    SafeClearGpuCacheNoThrow();
+    ResetGpuCacheBypassState();
+  }
+}
 
 void SafeClearGpuCacheNoThrow() {
   try {
@@ -100,19 +149,24 @@ void SafeClearGpuCacheNoThrow() {
 void MaintainGpuCacheAfterUpdateNoThrow(const torch::Tensor& keys,
                                         const torch::Tensor& grads,
                                         int64_t embedding_dim) {
+  (void)grads;
   if (!gpu::IsGpuCacheEnabled()) {
     return;
   }
-  if (gpu::CanUseGpuCache(keys, embedding_dim) && keys.is_cuda()) {
+  if (ShouldBypassGpuCacheMaintenance(keys.numel())) {
+    gpu::ResetLastGpuCacheProfile();
+    return;
+  }
+  if (gpu::CanUseGpuCache(keys, embedding_dim)) {
     try {
-      gpu::ApplySgdUpdateGpuCache(keys, grads, kGpuCacheSgdLearningRate);
+      gpu::InvalidateGpuCache(keys);
       return;
     } catch (const std::exception& e) {
-      LOG(WARNING) << "GPU cache refresh failed after backend update "
+      LOG(WARNING) << "GPU cache invalidation failed after backend update "
                       "succeeded; clearing cache and continuing: "
                    << e.what();
     } catch (...) {
-      LOG(WARNING) << "GPU cache refresh failed after backend update "
+      LOG(WARNING) << "GPU cache invalidation failed after backend update "
                       "succeeded; clearing cache and continuing: "
                    << "unknown exception";
     }
@@ -410,9 +464,20 @@ local_lookup_flat_torch(const torch::Tensor& keys, int64_t embedding_dim) {
   }
 
 #ifdef RECSTORE_ENABLE_GPU_CACHE
-  if (gpu::CanUseGpuCache(keys, embedding_dim)) {
+  const bool can_use_gpu_cache = gpu::CanUseGpuCache(keys, embedding_dim);
+  const bool bypass_gpu_cache_lookup =
+      can_use_gpu_cache && ShouldBypassGpuCacheLookup(num_keys);
+  if (bypass_gpu_cache_lookup) {
+    MarkGpuCacheLookupBypassed();
+  }
+  if (can_use_gpu_cache && !bypass_gpu_cache_lookup) {
+    EnsureGpuCacheSafeForLookup();
     try {
       auto cache_result = gpu::QueryGpuCache(keys, embedding_dim);
+      RecordGpuCacheLookupOutcome(
+          num_keys,
+          static_cast<double>(num_keys - cache_result.missing_count),
+          static_cast<double>(num_keys));
       if (cache_result.missing_count == 0) {
         g_last_local_lookup_flat_profile[kLookupTotalMs] =
             ElapsedMs(total_start);
@@ -743,7 +808,11 @@ std::string current_ps_backend_torch() {
 
 bool enable_gpu_cache_torch(int64_t capacity, int64_t embedding_dim) {
 #ifdef RECSTORE_ENABLE_GPU_CACHE
-  return gpu::EnableGpuCache(capacity, embedding_dim);
+  const bool enabled = gpu::EnableGpuCache(capacity, embedding_dim);
+  if (enabled) {
+    ResetGpuCacheBypassState();
+  }
+  return enabled;
 #else
   (void)capacity;
   (void)embedding_dim;
@@ -754,12 +823,14 @@ bool enable_gpu_cache_torch(int64_t capacity, int64_t embedding_dim) {
 void disable_gpu_cache_torch() {
 #ifdef RECSTORE_ENABLE_GPU_CACHE
   gpu::DisableGpuCache();
+  ResetGpuCacheBypassState();
 #endif
 }
 
 void clear_gpu_cache_torch() {
 #ifdef RECSTORE_ENABLE_GPU_CACHE
   gpu::ClearGpuCache();
+  ResetGpuCacheBypassState();
 #endif
 }
 

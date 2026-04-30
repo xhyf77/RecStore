@@ -58,6 +58,7 @@ FAST_PATH_UPDATE_PROFILE_KEYS = (
     "local_update_keys_stage_ms",
     "local_update_grads_stage_ms",
     "local_update_shm_call_ms",
+    "local_update_backend_call_ms",
     "local_update_stage_wait_ms",
 )
 
@@ -154,6 +155,8 @@ def _maybe_warmup_gpu_local_shm_fast_path(
     device: torch.device,
 ) -> bool:
     if not cfg.enable_single_node_distributed_fast_path:
+        return False
+    if cfg.single_node_ps_backend != "local_shm":
         return False
     if device.type != "cuda":
         return False
@@ -676,13 +679,12 @@ class RecStoreRunner(BenchmarkRunner):
                     "dist_mode": "multi_node" if cfg.nnodes > 1 else "single_node",
                 }
                 step_start = time.perf_counter()
-                try:
-                    raw_dense_batch, sparse_batch, labels_batch = next(data_iter)
-                except StopIteration:
-                    data_iter = iter(dataloader)
-                    raw_dense_batch, sparse_batch, labels_batch = next(data_iter)
-
                 with stage_timer(row, "batch_prepare_ms"):
+                    try:
+                        raw_dense_batch, sparse_batch, labels_batch = next(data_iter)
+                    except StopIteration:
+                        data_iter = iter(dataloader)
+                        raw_dense_batch, sparse_batch, labels_batch = next(data_iter)
                     dense_batch = raw_dense_batch
 
                 with stage_timer(row, "input_pack_ms"):
