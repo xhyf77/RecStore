@@ -147,8 +147,8 @@ static torch::Tensor StageCudaTensorToPinnedCpu(const torch::Tensor& tensor,
   return cpu_tensor;
 }
 
-static torch::Tensor StageCudaTensorToPinnedCpuAsyncNoCast(
-    const torch::Tensor& tensor) {
+static torch::Tensor
+StageCudaTensorToPinnedCpuAsyncNoCast(const torch::Tensor& tensor) {
   auto cpu_tensor =
       torch::empty(tensor.sizes(), PinnedCpuOptions(tensor.scalar_type()));
   cpu_tensor.copy_(tensor, /*non_blocking=*/true);
@@ -161,7 +161,8 @@ static void SynchronizeCurrentCudaStreamForTensor(const torch::Tensor& tensor) {
     return;
   }
   c10::cuda::CUDAGuard device_guard(tensor.device());
-  C10_CUDA_CHECK(cudaStreamSynchronize(at::cuda::getCurrentCUDAStream().stream()));
+  C10_CUDA_CHECK(
+      cudaStreamSynchronize(at::cuda::getCurrentCUDAStream().stream()));
 #else
   (void)tensor;
 #endif
@@ -594,7 +595,7 @@ void local_update_flat_torch(const std::string& table_name,
   if (keys.is_cuda()) {
     const auto keys_stage_start = SteadyNow();
     if (can_async_stage_cuda) {
-      cpu_keys = StageCudaTensorToPinnedCpuAsyncNoCast(keys);
+      cpu_keys          = StageCudaTensorToPinnedCpuAsyncNoCast(keys);
       staged_cuda_async = true;
     } else {
       cpu_keys = StageCudaTensorToPinnedCpu(keys, torch::kInt64);
@@ -606,7 +607,7 @@ void local_update_flat_torch(const std::string& table_name,
   if (grads.is_cuda()) {
     const auto grads_stage_start = SteadyNow();
     if (can_async_stage_cuda) {
-      cpu_grads = StageCudaTensorToPinnedCpuAsyncNoCast(grads);
+      cpu_grads         = StageCudaTensorToPinnedCpuAsyncNoCast(grads);
       staged_cuda_async = true;
     } else {
       cpu_grads = StageCudaTensorToPinnedCpu(grads, torch::kFloat32);
