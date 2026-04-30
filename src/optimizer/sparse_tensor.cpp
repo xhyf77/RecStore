@@ -40,3 +40,15 @@ void SparseTensor::BatchGet(const std::vector<uint64_t>& keys,
   }
   kv->BatchGet(base::ConstArray<uint64_t>(hashed_keys), values, tid);
 }
+
+bool SparseTensor::ApplySgdUpdateFlat(
+    const base::ConstArray<uint64_t>& keys,
+    const float* grads,
+    int64_t num_rows,
+    int64_t embedding_dim,
+    float learning_rate,
+    unsigned tid) {
+  return kv != nullptr &&
+         kv->ApplySgdUpdateFlat(
+             keys, grads, num_rows, embedding_dim, learning_rate, tag, tid);
+}

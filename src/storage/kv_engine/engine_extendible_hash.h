@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <shared_mutex>
 #include <vector>
@@ -217,19 +218,18 @@ public:
 
     const size_t row_bytes = static_cast<size_t>(embedding_dim) * sizeof(float);
     std::atomic<bool> ok{true};
-    std::vector<uint64_t> key_snapshot(keys.Data(), keys.Data() + keys.Size());
 
 #pragma omp parallel for num_threads(8) if (keys.Size() > 1024)
     for (int64_t row = 0; row < num_rows; ++row) {
-      const uint64_t key = key_snapshot[static_cast<size_t>(row)];
+      const uint64_t key = keys[static_cast<size_t>(row)];
       float* row_ptr     = values + row * embedding_dim;
-      std::memset(row_ptr, 0, row_bytes);
       std::shared_lock<std::shared_mutex> lk(KeyMutex(key));
       Key_t hash_key = key;
       Value_t read_value;
       hash_table_->Get(hash_key, read_value, tid);
 
       if (read_value == NONE) {
+        std::memset(row_ptr, 0, row_bytes);
         continue;
       }
 
@@ -237,6 +237,7 @@ public:
       shmkv_data.data_value = read_value;
       char* data = shm_malloc_->GetMallocData(shmkv_data.shm_malloc_offset());
       if (data == nullptr) {
+        std::memset(row_ptr, 0, row_bytes);
         continue;
       }
 
@@ -244,6 +245,7 @@ public:
       const int size =
           shm_malloc_->GetMallocSize(shmkv_data.shm_malloc_offset());
       if (size != static_cast<int>(row_bytes)) {
+        std::memset(row_ptr, 0, row_bytes);
         ok.store(false, std::memory_order_relaxed);
         continue;
       }
@@ -253,6 +255,123 @@ public:
     }
 
     return ok.load(std::memory_order_relaxed);
+  }
+
+  bool ApplySgdUpdateFlat(base::ConstArray<uint64_t> keys,
+                          const float* grads,
+                          int64_t num_rows,
+                          int64_t embedding_dim,
+                          float learning_rate,
+                          uint8_t tag,
+                          unsigned tid) override {
+    if (grads == nullptr || num_rows < 0 || embedding_dim <= 0) {
+      return false;
+    }
+    if (keys.Size() != static_cast<size_t>(num_rows)) {
+      return false;
+    }
+
+#ifndef XMH_VARIABLE_SIZE_KV
+    if (static_cast<int64_t>(value_size_) !=
+        embedding_dim * static_cast<int64_t>(sizeof(float))) {
+      return false;
+    }
+#endif
+
+    const int tag_bits = static_cast<int>(sizeof(tag) * 8);
+    const int shift    = static_cast<int>(sizeof(uint64_t) * 8) - tag_bits;
+    const uint64_t key_mask = ~0ULL >> tag_bits;
+    const size_t row_bytes  = static_cast<size_t>(embedding_dim) * sizeof(float);
+    std::atomic<bool> ok{true};
+
+#pragma omp parallel for num_threads(8) if (keys.Size() > 1024)
+    for (int64_t row = 0; row < num_rows; ++row) {
+      const uint64_t key =
+          (static_cast<uint64_t>(tag) << shift) |
+          (keys[static_cast<size_t>(row)] & key_mask);
+      const float* row_grad = grads + row * embedding_dim;
+      Key_t hash_key = key;
+      Value_t read_value;
+      {
+        std::shared_lock<std::shared_mutex> lk(KeyMutex(key));
+        hash_table_->Get(hash_key, read_value, tid);
+
+        if (read_value != NONE) {
+          base::PetKVData shmkv_data;
+          shmkv_data.data_value = read_value;
+          char* data =
+              shm_malloc_->GetMallocData(shmkv_data.shm_malloc_offset());
+          if (data == nullptr) {
+            ok.store(false, std::memory_order_relaxed);
+            continue;
+          }
+
+#ifdef XMH_VARIABLE_SIZE_KV
+          const int size =
+              shm_malloc_->GetMallocSize(shmkv_data.shm_malloc_offset());
+          if (size != static_cast<int>(row_bytes)) {
+            ok.store(false, std::memory_order_relaxed);
+            continue;
+          }
+#endif
+
+          float* out = reinterpret_cast<float*>(data);
+#pragma omp simd
+          for (int64_t col = 0; col < embedding_dim; ++col) {
+            out[col] -= learning_rate * row_grad[col];
+          }
+          continue;
+        }
+      }
+
+      std::unique_lock<std::shared_mutex> lk(KeyMutex(key));
+      hash_table_->Get(hash_key, read_value, tid);
+      if (read_value != NONE) {
+        base::PetKVData shmkv_data;
+        shmkv_data.data_value = read_value;
+        char* data = shm_malloc_->GetMallocData(shmkv_data.shm_malloc_offset());
+        if (data == nullptr) {
+          ok.store(false, std::memory_order_relaxed);
+          continue;
+        }
+#ifdef XMH_VARIABLE_SIZE_KV
+        const int size =
+            shm_malloc_->GetMallocSize(shmkv_data.shm_malloc_offset());
+        if (size != static_cast<int>(row_bytes)) {
+          ok.store(false, std::memory_order_relaxed);
+          continue;
+        }
+#endif
+        float* out = reinterpret_cast<float*>(data);
+#pragma omp simd
+        for (int64_t col = 0; col < embedding_dim; ++col) {
+          out[col] -= learning_rate * row_grad[col];
+        }
+        continue;
+      }
+
+      char* data = shm_malloc_->New(row_bytes);
+      if (data == nullptr) {
+        ok.store(false, std::memory_order_relaxed);
+        continue;
+      }
+      float* out = reinterpret_cast<float*>(data);
+#pragma omp simd
+      for (int64_t col = 0; col < embedding_dim; ++col) {
+        out[col] = -learning_rate * row_grad[col];
+      }
+      base::PetKVData shmkv_data;
+      shmkv_data.SetShmMallocOffset(shm_malloc_->GetMallocOffset(data));
+      _mm_mfence();
+      asm volatile("" ::: "memory");
+      hash_table_->Put(hash_key, shmkv_data.data_value, tid);
+    }
+
+    if (!ok.load(std::memory_order_relaxed)) {
+      throw std::runtime_error(
+          "KVEngineExtendibleHash::ApplySgdUpdateFlat failed during update");
+    }
+    return true;
   }
 
   ~KVEngineExtendibleHash() {
