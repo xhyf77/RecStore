@@ -23,7 +23,7 @@ on:
 
 permissions:
   actions: read
-  contents: read
+  contents: write
   packages: read
 
 jobs:
@@ -37,6 +37,7 @@ jobs:
     env:
       IMAGE_REPO: ghcr.io/${{ github.repository }}/recstore-devel
       TEST_CONTAINER: recstore-image-test-${{ github.run_id }}-${{ github.run_attempt }}
+      PUBLISH_COVERAGE: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -171,7 +172,9 @@ jobs:
       - name: Build project inside container
         run: |
           set -euo pipefail
-          docker exec "${TEST_CONTAINER}" bash -lc '
+          docker exec \
+            -e PUBLISH_COVERAGE="${PUBLISH_COVERAGE}" \
+            "${TEST_CONTAINER}" bash -lc '
             set -euo pipefail
             export CI=true
             export GITHUB_ACTIONS=true
@@ -185,17 +188,49 @@ jobs:
             echo "Verifying bRPC test source version in container..."
             grep -n "kBrpcTestPort0\|kDistBrpcPort0" src/test/ps/brpc/*_test.cpp || true
             mkdir -p runner/logs
-            rm -rf build
-            mkdir -p build
-            cd build
-            cmake -DENABLE_CUDA=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ..
+
+            if [ "${PUBLISH_COVERAGE}" = "true" ]; then
+              BUILD_DIR=build_coverage
+              rm -rf "${BUILD_DIR}"
+              mkdir -p "${BUILD_DIR}"
+              cd "${BUILD_DIR}"
+              CMAKE_ARGS=(
+                -DENABLE_CUDA=OFF
+                -DCMAKE_BUILD_TYPE=Debug
+                -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+                -DCMAKE_C_FLAGS=--coverage\ -O0\ -g
+                -DCMAKE_CXX_FLAGS=--coverage\ -O0\ -g
+              )
+              if [ -x /usr/local/cuda/bin/nvcc ]; then
+                CMAKE_ARGS+=(
+                  -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc
+                  -DCUDAToolkit_ROOT=/usr/local/cuda
+                )
+              fi
+              cmake "${CMAKE_ARGS[@]}" ..
+            else
+              BUILD_DIR=build
+              rm -rf "${BUILD_DIR}"
+              mkdir -p "${BUILD_DIR}"
+              cd "${BUILD_DIR}"
+              cmake -DENABLE_CUDA=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ..
+            fi
+
             make -j4
+
+            if [ "${PUBLISH_COVERAGE}" = "true" ]; then
+              cd /workspace
+              rm -rf build
+              ln -s build_coverage build
+            fi
           '
 
       - name: Run ctest
         run: |
           set -euo pipefail
-          docker exec "${TEST_CONTAINER}" bash -lc '
+          docker exec \
+            -e PUBLISH_COVERAGE="${PUBLISH_COVERAGE}" \
+            "${TEST_CONTAINER}" bash -lc '
             set -euo pipefail
 
             CTEST_EXCLUDE_REGEX="test_cceh|test_engine_cceh|test_io_backend"
@@ -204,7 +239,13 @@ jobs:
               CTEST_EXCLUDE_REGEX="${CTEST_EXCLUDE_REGEX}|pytorch_client_test_rdma_basic|pytorch_client_test_rdma|pytorch_client_test_rdma_auto"
             fi
 
-            cd /workspace/build
+            BUILD_DIR=build
+            if [ "${PUBLISH_COVERAGE}" = "true" ]; then
+              BUILD_DIR=build_coverage
+              export PS_SERVER_PATH="/workspace/${BUILD_DIR}/bin/ps_server"
+            fi
+
+            cd "/workspace/${BUILD_DIR}"
             # Docker default seccomp in GitHub Actions blocks io_uring syscalls.
             # Skip io_uring-dependent tests in this containerized lane.
             ctest --output-on-failure \
@@ -212,6 +253,78 @@ jobs:
               2>&1 | tee /workspace/runner/logs/ctest.log
             exit ${PIPESTATUS[0]}
           '
+
+      - name: Generate and publish coverage
+        if: env.PUBLISH_COVERAGE == 'true'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          docker exec "${TEST_CONTAINER}" bash -lc '
+            set -euo pipefail
+            cd /workspace
+            export CI=true
+            export GITHUB_ACTIONS=true
+            export DEBIAN_FRONTEND=noninteractive
+            export PATH="${HOME}/.local/bin:/usr/local/cuda/bin:${PATH}"
+            python3 -m pip install --user gcovr coverage
+
+            CPP_REPORT_DIR=/workspace/build_coverage/coverage/cpp
+            PY_REPORT_DIR=/workspace/build_coverage/coverage/python
+            mkdir -p "${CPP_REPORT_DIR}" "${PY_REPORT_DIR}"
+
+            eval "$(python3 /workspace/ci/test/coverage_scope.py --labeler /workspace/.github/labeler.yml --format gcovr)"
+            gcovr \
+              --root /workspace \
+              --object-directory /workspace/build_coverage \
+              "${COVERAGE_SCOPE_ARGS[@]}" \
+              --exclude ".*third_party/.*" \
+              --exclude "build_coverage/.*" \
+              --exclude ".*/build_coverage/.*" \
+              --exclude "build/.*" \
+              --exclude ".*/build/.*" \
+              --exclude-directories ".*/CMakeFiles/[0-9.]+/CompilerId.*" \
+              --xml-pretty --xml "${CPP_REPORT_DIR}/coverage.xml" \
+              --html-details "${CPP_REPORT_DIR}/index.html" \
+              --txt "${CPP_REPORT_DIR}/coverage.txt" \
+              --print-summary
+
+            export LD_LIBRARY_PATH="/workspace/build_coverage/lib:${LD_LIBRARY_PATH:-}"
+            export PYTHONPATH="/workspace/src/python/pytorch:${PYTHONPATH:-}"
+            export PS_SERVER_PATH="/workspace/build_coverage/bin/ps_server"
+
+            python3 -m coverage erase
+            (
+              cd /workspace/src/test/framework/pytorch
+              python3 -m coverage run --parallel-mode test_client.py /workspace/build_coverage/lib/lib_recstore_ops.so
+            )
+            (
+              cd /workspace/src/python/pytorch
+              python3 -m coverage run --parallel-mode -m unittest recstore.unittest.test_dist_emb
+            )
+            python3 -m coverage combine \
+              /workspace/src/test/framework/pytorch \
+              /workspace/src/python/pytorch
+            eval "$(python3 /workspace/ci/test/coverage_scope.py --labeler /workspace/.github/labeler.yml --format coverage)"
+            python3 -m coverage html "${COVERAGE_SCOPE_ARGS[@]}" -d "${PY_REPORT_DIR}"
+            python3 -m coverage xml "${COVERAGE_SCOPE_ARGS[@]}" -o "${PY_REPORT_DIR}/coverage.xml"
+            python3 -m coverage report "${COVERAGE_SCOPE_ARGS[@]}" -m | tee "${PY_REPORT_DIR}/coverage.txt"
+          '
+
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          bash ci/pages/update_gh_pages.sh \
+            --source build_coverage/coverage \
+            --mode coverage \
+            --message "ci: deploy coverage reports"
+
+      - name: Upload coverage reports
+        if: always() && env.PUBLISH_COVERAGE == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: build_coverage/coverage/
+          if-no-files-found: ignore
 
       - name: Print ctest log summary
         if: always()
@@ -234,6 +347,7 @@ jobs:
           mkdir -p runner/logs build
           docker cp "${TEST_CONTAINER}:/workspace/runner/logs" runner/ || true
           docker cp "${TEST_CONTAINER}:/workspace/build/CMakeCache.txt" build/CMakeCache.txt || true
+          docker cp "${TEST_CONTAINER}:/workspace/build_coverage/CMakeCache.txt" build/CMakeCache.coverage.txt || true
           docker rm -f "${TEST_CONTAINER}" || true
 
       - name: Upload docker image test logs
@@ -245,3 +359,4 @@ jobs:
             runner/logs/
             init_env_*.log
             build/CMakeCache.txt
+            build/CMakeCache.coverage.txt
