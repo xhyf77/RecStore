@@ -107,6 +107,7 @@ nav:
       - Python客户端: dev/tests/client_test.md
       - EBC精度对齐: dev/tests/ebc_precision.md
       - DistEmbedding: dev/tests/dist_emb_test.md
+      - 覆盖率: dev/tests/coverage.md
 
 extra:
   social:
