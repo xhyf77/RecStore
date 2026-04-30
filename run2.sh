@@ -16,17 +16,17 @@ cd "${ROOT_DIR}"
 
 exec python3 "${RUNNER_SCRIPT}" \
   --benchmark-binary "${BENCHMARK_BINARY}" \
-  --iterations 300 \
+  --rdma-only \
+  --rdma-transport-mode descriptor_doorbell \
+  --iterations 500 \
   --batch-keys 500 \
   --rounds 20 \
   --rdma-warmup-rounds 10 \
-  --report-mode summary \
-  --rdma-only \
-  --rdma-thread-num 1 \
   --rdma-put-protocol-version 2 \
-  --rdma-put-v2-transfer-mode read \
+  --rdma-put-v2-transfer-mode push \
   --rdma-wait-timeout-ms 20000 \
-  --rdma-client-timeout-sec 60 \
+  --rdma-client-timeout-sec 300 \
+  --report-mode summary \
   --show-runner-logs \
   --use-local-memcached auto \
   "$@"

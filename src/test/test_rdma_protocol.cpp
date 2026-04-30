@@ -50,11 +50,9 @@ TEST(RdmaProtocolTest, EncodesAndDecodesDescriptorDoorbellRequest) {
   req.slot_id = 1;
   req.key_count = 4;
   req.embedding_dim = 8;
-  req.keys_gaddr = GlobalAddress{2, 4096};
-  req.payload_gaddr = GlobalAddress{0, 0};
   req.response_gaddr = GlobalAddress{2, 8192};
   req.status_gaddr = GlobalAddress{2, 16384};
-  req.payload_bytes = 0;
+  req.payload_bytes = 4 * sizeof(std::uint64_t);
   req.response_bytes = FixedSlotResponseBytes(4, 8 * sizeof(float));
 
   std::string payload;
@@ -78,9 +76,9 @@ TEST(RdmaProtocolTest, RejectsInvalidDescriptorRequests) {
   req.op = static_cast<std::uint16_t>(RdmaDescriptorOp::kGet);
   req.key_count = 1;
   req.embedding_dim = 4;
-  req.keys_gaddr = GlobalAddress{1, 4096};
   req.response_gaddr = GlobalAddress{1, 8192};
   req.status_gaddr = GlobalAddress{1, 12288};
+  req.payload_bytes = sizeof(std::uint64_t);
   req.response_bytes = FixedSlotResponseBytes(1, 4 * sizeof(float));
 
   std::string payload;

@@ -66,14 +66,10 @@ struct RdmaDescriptorRequest {
   std::uint32_t key_count = 0;
   std::uint32_t embedding_dim = 0;
   GlobalAddress descriptor_gaddr;
-  GlobalAddress keys_gaddr;
-  GlobalAddress payload_gaddr;
   GlobalAddress response_gaddr;
   GlobalAddress status_gaddr;
   std::uint32_t payload_bytes = 0;
   std::uint32_t response_bytes = 0;
-  std::uint32_t transfer_mode = 0;
-  std::uint32_t reserved = 0;
 } __attribute__((packed));
 
 struct RdmaDescriptorLaneConfig {

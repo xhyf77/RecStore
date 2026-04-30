@@ -109,7 +109,8 @@ std::string MetaKey(int publisher_node_id, int receiver_node_id) {
 
 struct RawVerbsTransport::Impl {
   explicit Impl(const RawVerbsConfig& c)
-      : config(c), allocator(c.local_region_bytes) {}
+      : config(c),
+        allocator(c.local_region_bytes, c.allocation_start_offset) {}
 
   RawVerbsConfig config;
   ibv_context* context = nullptr;

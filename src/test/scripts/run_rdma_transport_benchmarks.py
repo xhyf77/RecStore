@@ -53,6 +53,7 @@ def build_rdma_runner(args):
         num_clients=1,
         thread_num=getattr(args, "rdma_thread_num", 1),
         max_kv_num_per_request=max_kv_num_per_request,
+        verbose=args.show_runner_logs,
         use_local_memcached=args.use_local_memcached,
         memcached_host=args.memcached_host,
         memcached_port=args.memcached_port,
@@ -321,11 +322,12 @@ def main():
                 report_mode=args.report_mode,
                 batch_keys=args.batch_keys,
             ),
-            stream_output=False,
+            stream_output=args.show_runner_logs,
             timeout=(args.rdma_client_timeout_sec if args.rdma_client_timeout_sec > 0 else None),
         )
-        print_filtered_output(completed.stdout, args.show_runner_logs)
-        print_filtered_output(completed.stderr, args.show_runner_logs)
+        if not args.show_runner_logs:
+            print_filtered_output(completed.stdout, args.show_runner_logs)
+            print_filtered_output(completed.stderr, args.show_runner_logs)
         rows = collect_summary_rows(completed.stdout)
         for row in rows:
             row["transport_mode"] = args.rdma_transport_mode or "raw_message"

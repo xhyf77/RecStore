@@ -20,6 +20,7 @@ struct RawVerbsConfig {
   int numa_id = 0;
   std::size_t local_region_bytes = 128 * 1024 * 1024;
   std::uint64_t local_base_addr = 0;
+  std::uint64_t allocation_start_offset = 0;
   std::uint64_t reserved_region_offset = 0;
   std::uint64_t reserved_region_bytes = 0;
 };
@@ -31,8 +32,15 @@ struct RawVerbsReservedRegion {
 
 class RawVerbsRegionAllocator {
 public:
-  explicit RawVerbsRegionAllocator(std::uint64_t limit_bytes)
-      : limit_bytes_(limit_bytes) {}
+  explicit RawVerbsRegionAllocator(std::uint64_t limit_bytes,
+                                   std::uint64_t allocation_start_offset = 0)
+      : limit_bytes_(limit_bytes),
+        allocation_offset_(allocation_start_offset) {
+    if (allocation_start_offset > limit_bytes) {
+      throw std::runtime_error(
+          "raw verbs allocation start outside local memory");
+    }
+  }
 
   void SetReservedRegion(RawVerbsReservedRegion reserved) {
     if (reserved.bytes != 0) {

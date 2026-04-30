@@ -194,7 +194,13 @@ python3 src/test/scripts/run_rdma_transport_benchmarks.py \
 
 ### descriptor_doorbell 当前实现约束
 
-descriptor mode 使用 raw verbs RDMA write 写 descriptor slot，再用 send-with-imm 作为 doorbell。服务端收到 doorbell 后从本地 slot 解码 descriptor，再根据 descriptor 中的 remote address 读取请求 payload 或写回 response/status。
+descriptor mode 使用 raw verbs RDMA write 写 descriptor slot，再用 send-with-imm 作为 doorbell。服务端收到 doorbell 后从本地 slot 解码 descriptor，并把 slot 内联 payload 作为 raw-message 等价请求处理。
+
+当前 descriptor slot 承载的是 raw-message style request：
+
+- GET：descriptor 后紧跟 keys payload，服务端复用与 raw-message GET 相同的 `CachePS::GetParameterFlat` 处理逻辑，并把 values/status 写回客户端 response buffer。
+- PUT：descriptor 后紧跟 PUT control payload，服务端复用与 raw-message PUT 相同的 v1/v2 decode、校验和 `CachePS` 写入逻辑。
+- PUT-v2 大 payload 仍按 `read|push` transfer mode 处理；descriptor 只替代控制面通知，不改变 payload 所有权语义。
 
 当前必须满足这些约束：
 

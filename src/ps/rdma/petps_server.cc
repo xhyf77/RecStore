@@ -76,6 +76,27 @@ bool ShouldValidateRouting() {
   const char* env = std::getenv("RECSTORE_RDMA_VALIDATE_ROUTING");
   return env != nullptr && std::string(env) != "0";
 }
+
+struct RequestView {
+  RpcType type;
+  NodeIDType node_id;
+  ThreadIDType t_id;
+  GlobalAddress receive_gaddr;
+  Slice payload;
+  bool descriptor_doorbell;
+};
+
+RequestView RequestViewFromRawMessage(RawMessage* recv) {
+  Cursor cursor;
+  return RequestView{
+      recv->type,
+      recv->node_id,
+      recv->t_id,
+      recv->receive_gaddr,
+      recv->get_string(cursor),
+      false,
+  };
+}
 } // namespace
 
 namespace recstore {
@@ -165,6 +186,30 @@ public:
   }
 
 private:
+  void WriteMayflyResponse(const RequestView& request,
+                           const char* buffer,
+                           GlobalAddress gaddr,
+                           std::size_t size,
+                           bool signal,
+                           std::uint64_t wr_id,
+                           int thread_id) {
+    if (!request.descriptor_doorbell) {
+      dsm_->write(buffer, gaddr, size, signal, wr_id);
+      return;
+    }
+
+    auto& counter = descriptor_dsm_write_counters_[thread_id];
+    const bool should_poll =
+        (counter & kDescriptorDsmWriteSignalBatchMask) ==
+        kDescriptorDsmWriteSignalBatchMask;
+    ++counter;
+    if (should_poll) {
+      dsm_->write_sync(buffer, gaddr, size);
+    } else {
+      dsm_->write(buffer, gaddr, size, false, wr_id);
+    }
+  }
+
   void RpcGetServerServingThreadIDs(RawMessage* recv) {
     CHECK_EQ(recv->type, GET_SERVER_THREADIDS);
     VLOG(1) << "component=rdma_server event=get_server_threadids_recv node_id="
@@ -189,13 +234,10 @@ private:
             << static_cast<int>(recv->t_id) << " threads=" << thread_ids.size();
   }
 
-  void RpcPsPut(RawMessage* recv, int thread_id) {
-    Cursor cursor;
-    Slice extra_data = recv->get_string(cursor);
-
+  void HandlePsPut(const RequestView& request, int thread_id) {
     std::string error;
     petps::RpcStatus status = petps::RpcStatus::kOk;
-    const std::string_view payload_view(extra_data.s, extra_data.len);
+    const std::string_view payload_view(request.payload.s, request.payload.len);
 
     petps::PutRemotePayloadV2 control{};
     if (petps::DecodePutRemoteControlV2(payload_view, &control, &error)) {
@@ -264,8 +306,8 @@ private:
                 static_cast<std::uint64_t>(control.payload_bytes);
             const std::uint64_t sender_lane_begin =
                 region_begin +
-                static_cast<std::uint64_t>(recv->node_id) * slots_per_client *
-                    FLAGS_rdma_put_v2_push_slot_bytes;
+                static_cast<std::uint64_t>(request.node_id) *
+                slots_per_client * FLAGS_rdma_put_v2_push_slot_bytes;
             const std::uint64_t sender_lane_end =
                 sender_lane_begin +
                 slots_per_client * FLAGS_rdma_put_v2_push_slot_bytes;
@@ -294,7 +336,7 @@ private:
                        sender_lane_end < sender_lane_begin) {
               LOG(ERROR)
                   << "RpcPsPut(v2-push) payload not in sender lane: sender="
-                  << static_cast<int>(recv->node_id) << " payload=["
+                  << static_cast<int>(request.node_id) << " payload=["
                   << payload_begin << "," << payload_end << ") sender_lane=["
                   << sender_lane_begin << "," << sender_lane_end << ")";
               status = petps::RpcStatus::kInvalidPayload;
@@ -360,11 +402,20 @@ private:
     const std::int32_t code = static_cast<std::int32_t>(status);
     auto* ack_buf           = dsm_->get_rdma_buffer();
     std::memcpy(ack_buf, &code, sizeof(code));
-    dsm_->write(
-        ack_buf, recv->receive_gaddr, sizeof(code), true, petps::WR_ID_PUT);
+    WriteMayflyResponse(request,
+                        ack_buf,
+                        request.receive_gaddr,
+                        sizeof(code),
+                        true,
+                        petps::WR_ID_PUT,
+                        thread_id);
   }
 
-  void RpcPsGet(RawMessage* recv, int thread_id) {
+  void RpcPsPut(RawMessage* recv, int thread_id) {
+    HandlePsPut(RequestViewFromRawMessage(recv), thread_id);
+  }
+
+  void HandlePsGet(const RequestView& request, int thread_id) {
     const bool perf_condition = (thread_id == 0);
     auto& sourcelist          = sourcelists_[thread_id];
 
@@ -372,8 +423,7 @@ private:
 
     if (perf_condition)
       get_parameter_timer_.start();
-    Cursor cursor;
-    Slice extra_data = recv->get_string(cursor);
+    Slice extra_data = request.payload;
 
     int batch_get_kv_count = extra_data.len / sizeof(uint64_t);
     tp[thread_id][0] += batch_get_kv_count;
@@ -384,7 +434,7 @@ private:
         CHECK_EQ(XPostoffice::GetInstance()->ServerID(),
                  ShardManager::KeyPartition(each))
             << each << " not belong to this PS; "
-            << "sended from client node_id = " << (int)recv->node_id;
+            << "sended from client node_id = " << (int)request.node_id;
       }
     }
 #ifdef RPC_DEBUG
@@ -437,11 +487,13 @@ private:
           reinterpret_cast<std::int32_t*>(dsm_->get_rdma_buffer());
       *status_word =
           static_cast<std::int32_t>(petps::RpcStatus::kBatchTooLarge);
-      dsm_->write(reinterpret_cast<const char*>(status_word),
-                  recv->receive_gaddr,
-                  sizeof(std::int32_t),
-                  true,
-                  petps::WR_ID_GET);
+      WriteMayflyResponse(request,
+                          reinterpret_cast<const char*>(status_word),
+                          request.receive_gaddr,
+                          sizeof(std::int32_t),
+                          true,
+                          petps::WR_ID_GET,
+                          thread_id);
       epoch_manager_->UnProtect();
       return;
     }
@@ -456,8 +508,9 @@ private:
     }
 
     epoch_manager_->UnProtect();
-    GlobalAddress gaddr = recv->receive_gaddr;
-    dsm_->write(buf, gaddr, response_bytes, true, petps::WR_ID_GET);
+    GlobalAddress gaddr = request.receive_gaddr;
+    WriteMayflyResponse(
+        request, buf, gaddr, response_bytes, true, petps::WR_ID_GET, thread_id);
     if (perf_condition)
       value_timer_.end();
 
@@ -468,118 +521,35 @@ private:
       get_parameter_timer_.end();
   }
 
+  void RpcPsGet(RawMessage* recv, int thread_id) {
+    HandlePsGet(RequestViewFromRawMessage(recv), thread_id);
+  }
+
   void RpcPsDescriptorDoorbell(const petps::RdmaDescriptorRequest& request,
+                               Slice inline_payload,
                                int thread_id) {
-    petps::RawVerbsTransportAllocationScope allocation_scope(
-        raw_transport_.get());
     if (request.op ==
         static_cast<std::uint16_t>(petps::RdmaDescriptorOp::kGet)) {
-      const int key_count = static_cast<int>(request.key_count);
-      const int embedding_dim = static_cast<int>(request.embedding_dim);
-      const std::size_t key_bytes =
-          static_cast<std::size_t>(key_count) * sizeof(std::uint64_t);
-      auto* keys = static_cast<std::uint64_t*>(
-          raw_transport_->AllocateRegistered(key_bytes));
-      raw_transport_->Read(keys,
-                           request.keys_gaddr,
-                           key_bytes,
-                           request.request_id,
-                           true);
-      petps::RawVerbsCompletion completion{};
-      while (!raw_transport_->Poll(&completion, FLAGS_rdma_wait_timeout_ms)) {
-        std::this_thread::yield();
-      }
-
-      const std::size_t value_bytes =
-          static_cast<std::size_t>(key_count) * FLAGS_value_size;
-      auto* values =
-          static_cast<float*>(raw_transport_->AllocateRegistered(value_bytes));
-      std::memset(values, 0, value_bytes);
-      petps::RpcStatus status = petps::RpcStatus::kOk;
-      if (embedding_dim * static_cast<int>(sizeof(float)) != FLAGS_value_size) {
-        status = petps::RpcStatus::kValueSizeMismatch;
-      } else if (key_count > FLAGS_max_kv_num_per_request) {
-        status = petps::RpcStatus::kBatchTooLarge;
-      } else {
-        const bool ok = cache_ps_->GetParameterFlat(
-            base::ConstArray<std::uint64_t>(keys, key_count),
-            values,
-            key_count,
-            embedding_dim,
-            thread_id);
-        if (!ok) {
-          status = petps::RpcStatus::kValueSizeMismatch;
-        }
-      }
-
-      if (status == petps::RpcStatus::kOk) {
-        raw_transport_->Write(values,
-                              request.response_gaddr,
-                              value_bytes,
-                              request.request_id,
-                              true);
-        while (!raw_transport_->Poll(&completion, FLAGS_rdma_wait_timeout_ms)) {
-          std::this_thread::yield();
-        }
-      }
-      auto* code =
-          static_cast<std::int32_t*>(raw_transport_->AllocateRegistered(
-              sizeof(std::int32_t)));
-      *code = static_cast<std::int32_t>(status);
-      raw_transport_->Write(code,
-                            request.status_gaddr,
-                            sizeof(*code),
-                            request.request_id,
-                            true);
-      while (!raw_transport_->Poll(&completion, FLAGS_rdma_wait_timeout_ms)) {
-        std::this_thread::yield();
-      }
+      HandlePsGet(RequestView{
+                      RpcType::GET,
+                      static_cast<NodeIDType>(request.client_node_id),
+                      static_cast<ThreadIDType>(request.client_thread_id),
+                      request.response_gaddr,
+                      inline_payload,
+                      true,
+                  },
+                  thread_id);
     } else if (request.op ==
                static_cast<std::uint16_t>(petps::RdmaDescriptorOp::kPut)) {
-      const int key_count = static_cast<int>(request.key_count);
-      const int embedding_dim = static_cast<int>(request.embedding_dim);
-      auto* payload =
-          static_cast<char*>(raw_transport_->AllocateRegistered(
-              request.payload_bytes));
-      petps::RpcStatus status = petps::RpcStatus::kOk;
-      if (embedding_dim * static_cast<int>(sizeof(float)) != FLAGS_value_size) {
-        status = petps::RpcStatus::kValueSizeMismatch;
-      } else if (key_count > FLAGS_max_kv_num_per_request) {
-        status = petps::RpcStatus::kBatchTooLarge;
-      } else if (request.payload_bytes !=
-                 petps::PutPayloadBytes(key_count, FLAGS_value_size)) {
-        status = petps::RpcStatus::kInvalidPayload;
-      } else {
-        raw_transport_->Read(payload,
-                             request.payload_gaddr,
-                             request.payload_bytes,
-                             request.request_id,
-                             true);
-        petps::RawVerbsCompletion completion{};
-        while (!raw_transport_->Poll(&completion, FLAGS_rdma_wait_timeout_ms)) {
-          std::this_thread::yield();
-        }
-        const auto* keys =
-            reinterpret_cast<const std::uint64_t*>(payload);
-        const auto* values = reinterpret_cast<const float*>(
-            payload + static_cast<std::size_t>(key_count) *
-                          sizeof(std::uint64_t));
-        cache_ps_->PutDenseParameterBatch(
-            keys, values, key_count, embedding_dim, thread_id);
-      }
-      auto* code =
-          static_cast<std::int32_t*>(raw_transport_->AllocateRegistered(
-              sizeof(std::int32_t)));
-      *code = static_cast<std::int32_t>(status);
-      raw_transport_->Write(code,
-                            request.status_gaddr,
-                            sizeof(*code),
-                            request.request_id,
-                            true);
-      petps::RawVerbsCompletion completion{};
-      while (!raw_transport_->Poll(&completion, FLAGS_rdma_wait_timeout_ms)) {
-        std::this_thread::yield();
-      }
+      HandlePsPut(RequestView{
+                      RpcType::PUT,
+                      static_cast<NodeIDType>(request.client_node_id),
+                      static_cast<ThreadIDType>(request.client_thread_id),
+                      request.status_gaddr,
+                      inline_payload,
+                      true,
+                  },
+                  thread_id);
     } else {
       LOG(ERROR) << "unknown descriptor op=" << request.op;
     }
@@ -652,7 +622,24 @@ private:
           LOG(ERROR) << "descriptor decode error: " << error;
           continue;
         }
-        RpcPsDescriptorDoorbell(request, thread_id);
+        if (!petps::ValidateDescriptorLane(request, lane_config, &error)) {
+          LOG(ERROR) << "decoded descriptor lane mismatch: " << error;
+          continue;
+        }
+        if (request.payload_bytes >
+            FLAGS_rdma_put_v2_push_slot_bytes -
+                sizeof(petps::RdmaDescriptorRequest)) {
+          LOG(ERROR) << "descriptor inline payload too large request_id="
+                     << request.request_id
+                     << " payload_bytes=" << request.payload_bytes
+                     << " slot_bytes=" << FLAGS_rdma_put_v2_push_slot_bytes;
+          continue;
+        }
+        RpcPsDescriptorDoorbell(
+            request,
+            Slice(payload + sizeof(petps::RdmaDescriptorRequest),
+                  request.payload_bytes),
+            thread_id);
       }
     }
     auto msg = RawMessage::get_new_msg();
@@ -701,7 +688,9 @@ private:
   std::atomic<bool> raw_connected_{false};
 
   constexpr static int kMaxThread = 128;
+  constexpr static std::uint64_t kDescriptorDsmWriteSignalBatchMask = 31;
   uint64_t tp[kMaxThread][8];
+  std::uint64_t descriptor_dsm_write_counters_[kMaxThread] = {};
 };
 } // namespace recstore
 
