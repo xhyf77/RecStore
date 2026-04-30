@@ -10,9 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
   group: "pages"
@@ -46,18 +44,9 @@ jobs:
       - name: Build with MkDocs
         run: mkdocs build
 
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./site
-
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Deploy documentation to gh-pages
+        run: |
+          bash ci/pages/update_gh_pages.sh \
+            --source ./site \
+            --mode docs \
+            --message "docs: deploy documentation"
