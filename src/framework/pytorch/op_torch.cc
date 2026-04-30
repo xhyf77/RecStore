@@ -14,6 +14,10 @@
 // Log level: 0=ERROR, 1=WARNING, 2=INFO, 3=DEBUG
 #include <glog/logging.h>
 
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+#  include "framework/gpu/gpu_embedding_cache.h"
+#endif
+
 #if __has_include(<cuda_runtime_api.h>)
 #  include <cuda_runtime_api.h>
 #  define RECSTORE_HAS_CUDA_RUNTIME_API 1
@@ -75,6 +79,44 @@ inline void ResetLocalUpdateFlatProfile() {
             g_last_local_update_flat_profile.end(),
             0.0);
 }
+
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+constexpr double kGpuCacheSgdLearningRate = 0.01;
+
+void SafeClearGpuCacheNoThrow() {
+  try {
+    gpu::ClearGpuCache();
+  } catch (const std::exception& e) {
+    LOG(WARNING) << "Failed to clear GPU cache: " << e.what();
+  } catch (...) {
+    LOG(WARNING) << "Failed to clear GPU cache: unknown exception";
+  }
+}
+
+void MaintainGpuCacheAfterUpdateNoThrow(const torch::Tensor& keys,
+                                        const torch::Tensor& grads,
+                                        int64_t embedding_dim) {
+  if (!gpu::IsGpuCacheEnabled()) {
+    return;
+  }
+  if (gpu::CanUseGpuCache(keys, embedding_dim) && keys.is_cuda()) {
+    try {
+      gpu::ApplySgdUpdateGpuCache(keys, grads, kGpuCacheSgdLearningRate);
+      return;
+    } catch (const std::exception& e) {
+      LOG(WARNING) << "GPU cache refresh failed after backend update "
+                      "succeeded; clearing cache and continuing: "
+                   << e.what();
+    } catch (...) {
+      LOG(WARNING) << "GPU cache refresh failed after backend update "
+                      "succeeded; clearing cache and continuing: "
+                   << "unknown exception";
+    }
+  }
+  SafeClearGpuCacheNoThrow();
+  gpu::ResetLastGpuCacheProfile();
+}
+#endif
 
 } // namespace
 
@@ -188,42 +230,19 @@ static std::shared_ptr<KVClientOp> GetConcreteKVClientOp() {
   return kv_op;
 }
 
-torch::Tensor
-local_lookup_flat_torch(const torch::Tensor& keys, int64_t embedding_dim) {
-  ResetLocalLookupFlatProfile();
-  const auto total_start = SteadyNow();
-  bool is_cuda           = keys.is_cuda();
-  auto orig_device       = keys.device();
-  torch::Tensor cpu_keys = keys;
-  if (is_cuda) {
-    const auto stage_start = SteadyNow();
-    cpu_keys               = StageCudaTensorToPinnedCpu(keys, torch::kInt64);
-    g_last_local_lookup_flat_profile[kLookupKeysStageMs] =
-        ElapsedMs(stage_start);
-  }
-
-  TORCH_CHECK(cpu_keys.dim() == 1, "Keys tensor must be 1-dimensional");
-  TORCH_CHECK(cpu_keys.scalar_type() == torch::kInt64,
-              "Keys tensor must have dtype int64");
-  TORCH_CHECK(cpu_keys.is_contiguous(), "Keys tensor must be contiguous");
-  TORCH_CHECK(embedding_dim > 0, "Embedding dimension must be positive");
-
-  auto kv_op = GetConcreteKVClientOp();
-  TORCH_CHECK(IsLocalFastPathBackend(kv_op->CurrentPSBackend()),
-              "local_lookup_flat requires local_shm or hierkv backend, but "
-              "current backend is ",
-              kv_op->CurrentPSBackend());
-
-  const int64_t num_keys = cpu_keys.size(0);
-  if (num_keys == 0) {
-    return torch::empty(
-        {0, embedding_dim}, torch::TensorOptions().dtype(torch::kFloat32));
-  }
-
+static torch::Tensor BackendLocalLookupFlat(
+    const std::shared_ptr<KVClientOp>& kv_op,
+    const torch::Tensor& cpu_keys,
+    const torch::Device& result_device,
+    bool result_on_cuda,
+    int64_t embedding_dim,
+    const std::chrono::steady_clock::time_point& total_start,
+    bool record_profile = true) {
+  const int64_t num_keys   = cpu_keys.size(0);
   base::RecTensor rec_keys = ToRecTensor(cpu_keys, base::DataType::UINT64);
   if (kv_op->CurrentPSBackend() != "local_shm") {
     auto cpu_values =
-        is_cuda
+        result_on_cuda
             ? torch::empty({num_keys, embedding_dim},
                            PinnedCpuOptions(torch::kFloat32))
             : torch::empty({num_keys, embedding_dim},
@@ -233,20 +252,25 @@ local_lookup_flat_torch(const torch::Tensor& keys, int64_t embedding_dim) {
     base::RecTensor rec_values =
         ToRecTensor(cpu_values, base::DataType::FLOAT32);
     kv_op->LocalLookupFlat(rec_keys, rec_values);
-    if (is_cuda) {
-      return cpu_values.to(orig_device, /*non_blocking=*/true);
+    if (record_profile) {
+      g_last_local_lookup_flat_profile[kLookupTotalMs] = ElapsedMs(total_start);
+    }
+    if (result_on_cuda) {
+      return cpu_values.to(result_device, /*non_blocking=*/true);
     }
     return cpu_values;
   }
 
-  if (!is_cuda) {
+  if (!result_on_cuda) {
     auto cpu_values = torch::empty(
         {num_keys, embedding_dim},
         torch::TensorOptions().device(torch::kCPU).dtype(torch::kFloat32));
     base::RecTensor rec_values =
         ToRecTensor(cpu_values, base::DataType::FLOAT32);
     kv_op->LocalLookupFlat(rec_keys, rec_values);
-    g_last_local_lookup_flat_profile[kLookupTotalMs] = ElapsedMs(total_start);
+    if (record_profile) {
+      g_last_local_lookup_flat_profile[kLookupTotalMs] = ElapsedMs(total_start);
+    }
     return cpu_values;
   }
 
@@ -255,10 +279,14 @@ local_lookup_flat_torch(const torch::Tensor& keys, int64_t embedding_dim) {
   TORCH_CHECK(
       kv_op->SubmitLocalLookupFlat(rec_keys, embedding_dim, &handle) == 0,
       "Failed to submit local_shm flat lookup.");
-  g_last_local_lookup_flat_profile[kLookupSubmitMs] = ElapsedMs(submit_start);
-  const auto wait_start                             = SteadyNow();
-  const int wait_ret = kv_op->WaitLocalLookupFlat(&handle);
-  g_last_local_lookup_flat_profile[kLookupWaitMs] = ElapsedMs(wait_start);
+  if (record_profile) {
+    g_last_local_lookup_flat_profile[kLookupSubmitMs] = ElapsedMs(submit_start);
+  }
+  const auto wait_start = SteadyNow();
+  const int wait_ret    = kv_op->WaitLocalLookupFlat(&handle);
+  if (record_profile) {
+    g_last_local_lookup_flat_profile[kLookupWaitMs] = ElapsedMs(wait_start);
+  }
   if (wait_ret != 0) {
     kv_op->ReleaseLocalLookupFlat(&handle);
     TORCH_CHECK(false, "Failed to wait for local_shm flat lookup.");
@@ -280,7 +308,10 @@ local_lookup_flat_torch(const torch::Tensor& keys, int64_t embedding_dim) {
   const auto pin_start = SteadyNow();
   const bool payload_is_pinned =
       EnsurePinnedLocalShmPayload(payload_values, payload_bytes);
-  g_last_local_lookup_flat_profile[kLookupPayloadPinMs] = ElapsedMs(pin_start);
+  if (record_profile) {
+    g_last_local_lookup_flat_profile[kLookupPayloadPinMs] =
+        ElapsedMs(pin_start);
+  }
   if (payload_is_pinned) {
     try {
       LocalShmFlatGetHandle handle_for_release = handle;
@@ -292,10 +323,13 @@ local_lookup_flat_torch(const torch::Tensor& keys, int64_t embedding_dim) {
           },
           PinnedCpuOptions(torch::kFloat32));
       const auto h2d_start = SteadyNow();
-      auto result          = cpu_view.to(orig_device, /*non_blocking=*/true);
-      g_last_local_lookup_flat_profile[kLookupValuesH2DEnqueueMs] =
-          ElapsedMs(h2d_start);
-      g_last_local_lookup_flat_profile[kLookupTotalMs] = ElapsedMs(total_start);
+      auto result          = cpu_view.to(result_device, /*non_blocking=*/true);
+      if (record_profile) {
+        g_last_local_lookup_flat_profile[kLookupValuesH2DEnqueueMs] =
+            ElapsedMs(h2d_start);
+        g_last_local_lookup_flat_profile[kLookupTotalMs] =
+            ElapsedMs(total_start);
+      }
       return result;
     } catch (...) {
       kv_op->ReleaseLocalLookupFlat(&handle);
@@ -307,15 +341,105 @@ local_lookup_flat_torch(const torch::Tensor& keys, int64_t embedding_dim) {
       {num_keys, embedding_dim}, PinnedCpuOptions(torch::kFloat32));
   const auto fallback_copy_start = SteadyNow();
   std::memcpy(cpu_values.data_ptr<float>(), payload_values, payload_bytes);
-  g_last_local_lookup_flat_profile[kLookupFallbackCopyMs] =
-      ElapsedMs(fallback_copy_start);
+  if (record_profile) {
+    g_last_local_lookup_flat_profile[kLookupFallbackCopyMs] =
+        ElapsedMs(fallback_copy_start);
+  }
   kv_op->ReleaseLocalLookupFlat(&handle);
   const auto h2d_start = SteadyNow();
-  auto result          = cpu_values.to(orig_device, /*non_blocking=*/true);
-  g_last_local_lookup_flat_profile[kLookupValuesH2DEnqueueMs] =
-      ElapsedMs(h2d_start);
-  g_last_local_lookup_flat_profile[kLookupTotalMs] = ElapsedMs(total_start);
+  auto result          = cpu_values.to(result_device, /*non_blocking=*/true);
+  if (record_profile) {
+    g_last_local_lookup_flat_profile[kLookupValuesH2DEnqueueMs] =
+        ElapsedMs(h2d_start);
+    g_last_local_lookup_flat_profile[kLookupTotalMs] = ElapsedMs(total_start);
+  }
   return result;
+}
+
+torch::Tensor
+local_lookup_flat_torch(const torch::Tensor& keys, int64_t embedding_dim) {
+  ResetLocalLookupFlatProfile();
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+  gpu::ResetLastGpuCacheProfile();
+#endif
+  const auto total_start = SteadyNow();
+  const bool is_cuda     = keys.is_cuda();
+  auto orig_device       = keys.device();
+
+  TORCH_CHECK(keys.dim() == 1, "Keys tensor must be 1-dimensional");
+  TORCH_CHECK(keys.scalar_type() == torch::kInt64,
+              "Keys tensor must have dtype int64");
+  TORCH_CHECK(keys.is_contiguous(), "Keys tensor must be contiguous");
+  TORCH_CHECK(embedding_dim > 0, "Embedding dimension must be positive");
+
+  auto kv_op = GetConcreteKVClientOp();
+  TORCH_CHECK(IsLocalFastPathBackend(kv_op->CurrentPSBackend()),
+              "local_lookup_flat requires local_shm or hierkv backend, but "
+              "current backend is ",
+              kv_op->CurrentPSBackend());
+
+  const int64_t num_keys = keys.size(0);
+  if (num_keys == 0) {
+    return torch::empty(
+        {0, embedding_dim}, torch::TensorOptions().dtype(torch::kFloat32));
+  }
+
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+  if (gpu::CanUseGpuCache(keys, embedding_dim)) {
+    try {
+      auto cache_result = gpu::QueryGpuCache(keys, embedding_dim);
+      if (cache_result.missing_count == 0) {
+        g_last_local_lookup_flat_profile[kLookupTotalMs] =
+            ElapsedMs(total_start);
+        return cache_result.values;
+      }
+
+      const auto backend_start = SteadyNow();
+      auto miss_values         = BackendLocalLookupFlat(
+          kv_op,
+          cache_result.missing_keys_cpu.contiguous(),
+          orig_device,
+          /*result_on_cuda=*/false,
+          embedding_dim,
+          total_start);
+      const double backend_ms = ElapsedMs(backend_start);
+      gpu::AddGpuCacheBackendLookupMs(backend_ms);
+      auto miss_keys_cuda =
+          cache_result.missing_keys_cpu.to(orig_device, /*non_blocking=*/false);
+      auto miss_values_cuda =
+          miss_values.to(orig_device, /*non_blocking=*/false);
+      gpu::FillGpuCache(miss_keys_cuda, miss_values_cuda);
+      gpu::ScatterMissValues(&cache_result.values,
+                             cache_result.missing_positions_cpu,
+                             miss_values_cuda);
+      g_last_local_lookup_flat_profile[kLookupTotalMs] = ElapsedMs(total_start);
+      return cache_result.values;
+    } catch (const std::exception& e) {
+      LOG(WARNING)
+          << "GPU cache lookup failed; clearing cache and falling back: "
+          << e.what();
+      SafeClearGpuCacheNoThrow();
+      gpu::ResetLastGpuCacheProfile();
+    } catch (...) {
+      LOG(WARNING)
+          << "GPU cache lookup failed; clearing cache and falling back: "
+          << "unknown exception";
+      SafeClearGpuCacheNoThrow();
+      gpu::ResetLastGpuCacheProfile();
+    }
+  }
+#endif
+
+  torch::Tensor cpu_keys = keys;
+  if (is_cuda) {
+    const auto stage_start = SteadyNow();
+    cpu_keys               = StageCudaTensorToPinnedCpu(keys, torch::kInt64);
+    g_last_local_lookup_flat_profile[kLookupKeysStageMs] =
+        ElapsedMs(stage_start);
+  }
+
+  return BackendLocalLookupFlat(
+      kv_op, cpu_keys, orig_device, is_cuda, embedding_dim, total_start);
 }
 
 // Async prefetch: returns a unique prefetch id (uint64_t)
@@ -401,12 +525,18 @@ void emb_update_table_torch(const std::string& table_name,
   base::RecTensor rec_grads = ToRecTensor(cpu_grads, base::DataType::FLOAT32);
 
   op->EmbUpdate(table_name, rec_keys, rec_grads);
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+  MaintainGpuCacheAfterUpdateNoThrow(keys, grads, grads.size(1));
+#endif
 }
 
 void local_update_flat_torch(const std::string& table_name,
                              const torch::Tensor& keys,
                              const torch::Tensor& grads) {
   ResetLocalUpdateFlatProfile();
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+  gpu::ResetLastGpuCacheProfile();
+#endif
   const auto total_start = SteadyNow();
   TORCH_CHECK(!table_name.empty(), "table_name must be non-empty");
   TORCH_CHECK(keys.dim() == 1, "Keys tensor must be 1-dimensional");
@@ -451,9 +581,24 @@ void local_update_flat_torch(const std::string& table_name,
   base::RecTensor rec_grads = ToRecTensor(cpu_grads, base::DataType::FLOAT32);
 
   const auto shm_call_start = SteadyNow();
-  kv_op->LocalUpdateFlat(table_name, rec_keys, rec_grads);
+  try {
+    kv_op->LocalUpdateFlat(table_name, rec_keys, rec_grads);
+  } catch (...) {
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+    if (gpu::IsGpuCacheEnabled()) {
+      SafeClearGpuCacheNoThrow();
+      gpu::ResetLastGpuCacheProfile();
+    }
+#endif
+    throw;
+  }
   g_last_local_update_flat_profile[kUpdateShmCallMs] =
       ElapsedMs(shm_call_start);
+
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+  MaintainGpuCacheAfterUpdateNoThrow(keys, grads, grads.size(1));
+#endif
+
   g_last_local_update_flat_profile[kUpdateTotalMs] = ElapsedMs(total_start);
 }
 
@@ -486,8 +631,15 @@ bool init_embedding_table_torch(const std::string& table_name,
   cfg.num_embeddings = static_cast<uint64_t>(num_embeddings);
   cfg.embedding_dim  = static_cast<uint64_t>(embedding_dim);
 
-  auto op = GetKVClientOp();
-  return op->InitEmbeddingTable(table_name, cfg);
+  auto op       = GetKVClientOp();
+  const bool ok = op->InitEmbeddingTable(table_name, cfg);
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+  if (ok && gpu::IsGpuCacheEnabled()) {
+    SafeClearGpuCacheNoThrow();
+    gpu::ResetLastGpuCacheProfile();
+  }
+#endif
+  return ok;
 }
 
 void emb_write_torch(const torch::Tensor& keys, const torch::Tensor& values) {
@@ -521,6 +673,12 @@ void emb_write_torch(const torch::Tensor& keys, const torch::Tensor& values) {
   base::RecTensor rec_values = ToRecTensor(cpu_values, base::DataType::FLOAT32);
 
   op->EmbWrite(rec_keys, rec_values);
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+  if (gpu::IsGpuCacheEnabled()) {
+    SafeClearGpuCacheNoThrow();
+    gpu::ResetLastGpuCacheProfile();
+  }
+#endif
 }
 
 void set_ps_config_torch(const std::string& host, int64_t port) {
@@ -536,6 +694,46 @@ void set_ps_backend_torch(const std::string& backend) {
 std::string current_ps_backend_torch() {
   auto kv_op = GetConcreteKVClientOp();
   return kv_op->CurrentPSBackend();
+}
+
+bool enable_gpu_cache_torch(int64_t capacity, int64_t embedding_dim) {
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+  return gpu::EnableGpuCache(capacity, embedding_dim);
+#else
+  (void)capacity;
+  (void)embedding_dim;
+  return false;
+#endif
+}
+
+void disable_gpu_cache_torch() {
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+  gpu::DisableGpuCache();
+#endif
+}
+
+void clear_gpu_cache_torch() {
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+  gpu::ClearGpuCache();
+#endif
+}
+
+std::vector<double> get_last_gpu_cache_profile_torch() {
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+  const auto profile = gpu::GetLastGpuCacheProfile();
+  return {
+      profile.query_ms,
+      profile.backend_lookup_ms,
+      profile.fill_ms,
+      profile.update_ms,
+      profile.hit_count,
+      profile.invalidate_ms,
+      profile.request_count,
+      profile.miss_count,
+  };
+#else
+  return {};
+#endif
 }
 
 TORCH_LIBRARY(recstore_ops, m) {
@@ -557,6 +755,10 @@ TORCH_LIBRARY(recstore_ops, m) {
         get_last_local_update_flat_profile_torch);
   m.def("warmup_local_lookup_flat_cuda_region",
         warmup_local_lookup_flat_cuda_region_torch);
+  m.def("enable_gpu_cache", enable_gpu_cache_torch);
+  m.def("disable_gpu_cache", disable_gpu_cache_torch);
+  m.def("clear_gpu_cache", clear_gpu_cache_torch);
+  m.def("get_last_gpu_cache_profile", get_last_gpu_cache_profile_torch);
 }
 
 } // namespace framework

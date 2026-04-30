@@ -54,6 +54,8 @@ class RunConfig:
     enable_single_node_distributed_fast_path: bool = False
     single_node_ps_backend: str = "local_shm"
     single_node_owner_policy: str = "hash_mod_world_size"
+    enable_gpu_cache: bool = False
+    gpu_cache_capacity: int = 0
     master_addr: str = "127.0.0.1"
     master_port: int = 29500
     rdzv_backend: str = "c10d"
@@ -101,6 +103,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="hash_mod_world_size",
         choices=["hash_mod_world_size"],
+    )
+    parser.add_argument(
+        "--enable-gpu-cache",
+        action="store_true",
+        default=False,
+        help="Enable RecStore GPU read/write training cache for local fast path.",
+    )
+    parser.add_argument(
+        "--gpu-cache-capacity",
+        type=int,
+        default=0,
+        help="Number of embedding rows to keep in the RecStore GPU cache.",
     )
     parser.add_argument("--master-addr", type=str, default="127.0.0.1")
     parser.add_argument("--master-port", type=int, default=29500)
@@ -248,6 +262,10 @@ def validate_recstore_config(cfg: RunConfig) -> None:
         raise RuntimeError("--nproc-per-node must be greater than 0.")
     if cfg.node_rank < 0 or cfg.node_rank >= cfg.nnodes:
         raise RuntimeError("--node-rank must be within [0, nnodes).")
+    if cfg.enable_gpu_cache and cfg.gpu_cache_capacity <= 0:
+        raise RuntimeError(
+            "--gpu-cache-capacity must be positive when --enable-gpu-cache is set"
+        )
     if cfg.enable_single_node_distributed_fast_path:
         if cfg.nnodes != 1:
             raise RuntimeError(

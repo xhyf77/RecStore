@@ -117,17 +117,18 @@ def build_runtime_config(
     cfg["client"]["shard"] = 0
 
     cfg.setdefault("distributed_client", {})
-    cfg["distributed_client"]["num_shards"] = 2
-    cfg["distributed_client"]["servers"] = [
-        {"host": host, "port": port0, "shard": 0},
-        {"host": host, "port": port1, "shard": 1},
-    ]
+    if cfg["cache_ps"]["ps_type"] == "LOCAL_SHM":
+        servers = [{"host": host, "port": port0, "shard": 0}]
+    else:
+        servers = [
+            {"host": host, "port": port0, "shard": 0},
+            {"host": host, "port": port1, "shard": 1},
+        ]
+    cfg["distributed_client"]["num_shards"] = len(servers)
+    cfg["distributed_client"]["servers"] = list(servers)
 
-    cfg["cache_ps"]["num_shards"] = 2
-    cfg["cache_ps"]["servers"] = [
-        {"host": host, "port": port0, "shard": 0},
-        {"host": host, "port": port1, "shard": 1},
-    ]
+    cfg["cache_ps"]["num_shards"] = len(servers)
+    cfg["cache_ps"]["servers"] = list(servers)
     if cfg["cache_ps"]["ps_type"] == "LOCAL_SHM":
         cfg["local_shm"] = {
             "region_name": f"recstore_rs_demo_{run_id}_{path_suffix}",
