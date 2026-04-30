@@ -46,6 +46,7 @@ EMBED_METRICS = (
     MetricSpec("local_update_keys_stage_ms", "main_csv", "local_update_keys_stage_ms"),
     MetricSpec("local_update_grads_stage_ms", "main_csv", "local_update_grads_stage_ms"),
     MetricSpec("local_update_shm_call_ms", "main_csv", "local_update_shm_call_ms"),
+    MetricSpec("local_update_stage_wait_ms", "main_csv", "local_update_stage_wait_ms"),
     MetricSpec("dense_fwd_ms", "main_csv", "dense_fwd_ms"),
     MetricSpec("backward_ms", "main_csv", "backward_ms"),
     MetricSpec("optimizer_ms", "main_csv", "optimizer_ms"),
