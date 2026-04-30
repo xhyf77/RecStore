@@ -1,4 +1,3 @@
-cmake_minimum_required(VERSION 2.8.5 FATAL_ERROR)
 project(Mayfly)
 
 option (SANITIZE "Turn on sanitization" OFF)
