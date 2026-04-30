@@ -83,24 +83,26 @@ private:
             size_t length,
             const Options& options,
             bool read_only_existing) {
-    path_ = path;
+    path_          = path;
     int open_flags = options.writable ? O_RDWR | O_CREAT : O_RDONLY;
     fd_            = ::open(path.c_str(), open_flags, 0666);
     if (fd_ < 0) {
-      throw std::runtime_error("open failed: " + std::string(std::strerror(errno)));
+      throw std::runtime_error(
+          "open failed: " + std::string(std::strerror(errno)));
     }
 
     if (read_only_existing) {
       struct stat st {};
       if (fstat(fd_, &st) != 0) {
-        throw std::runtime_error("fstat failed: " + std::string(std::strerror(errno)));
+        throw std::runtime_error(
+            "fstat failed: " + std::string(std::strerror(errno)));
       }
       length = static_cast<size_t>(st.st_size);
     } else if (options.writable && length > 0) {
       const off_t required_size = static_cast<off_t>(offset + length);
       if (ftruncate(fd_, required_size) != 0) {
-        throw std::runtime_error("ftruncate failed: " +
-                                 std::string(std::strerror(errno)));
+        throw std::runtime_error(
+            "ftruncate failed: " + std::string(std::strerror(errno)));
       }
     }
 
@@ -117,10 +119,12 @@ private:
     }
 #endif
 
-    data_ = ::mmap(nullptr, size_, prot, flags, fd_, static_cast<off_t>(offset));
+    data_ =
+        ::mmap(nullptr, size_, prot, flags, fd_, static_cast<off_t>(offset));
     if (data_ == MAP_FAILED) {
       data_ = nullptr;
-      throw std::runtime_error("mmap failed: " + std::string(std::strerror(errno)));
+      throw std::runtime_error(
+          "mmap failed: " + std::string(std::strerror(errno)));
     }
   }
 

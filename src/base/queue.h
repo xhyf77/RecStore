@@ -181,11 +181,9 @@ private:
   T* const records_;
 
   alignas(base::kHardwareDestructiveInterferenceSize) AtomicIndex readIndex_;
-  alignas(base::kHardwareDestructiveInterferenceSize)
-      AtomicIndex writeIndex_;
+  alignas(base::kHardwareDestructiveInterferenceSize) AtomicIndex writeIndex_;
 
-  char pad1_[base::kHardwareDestructiveInterferenceSize -
-             sizeof(AtomicIndex)];
+  char pad1_[base::kHardwareDestructiveInterferenceSize - sizeof(AtomicIndex)];
 };
 
 } // namespace base

@@ -34,12 +34,12 @@ private:
 
 } // namespace base::detail
 
-#define FB_LOG_EVERY_MS(level, interval_ms)                                   \
-  static ::base::detail::LogEveryMsState                                      \
-      BASE_LOG_CONCAT(_fb_log_every_ms_state_, __LINE__);                     \
-  for (bool BASE_LOG_CONCAT(_fb_log_every_ms_once_, __LINE__) =               \
-           BASE_LOG_CONCAT(_fb_log_every_ms_state_, __LINE__)                 \
-               .ShouldLog(interval_ms);                                       \
-       BASE_LOG_CONCAT(_fb_log_every_ms_once_, __LINE__);                     \
-       BASE_LOG_CONCAT(_fb_log_every_ms_once_, __LINE__) = false)            \
+#define FB_LOG_EVERY_MS(level, interval_ms)                                    \
+  static ::base::detail::LogEveryMsState BASE_LOG_CONCAT(                      \
+      _fb_log_every_ms_state_, __LINE__);                                      \
+  for (bool BASE_LOG_CONCAT(_fb_log_every_ms_once_, __LINE__) =                \
+           BASE_LOG_CONCAT(_fb_log_every_ms_state_, __LINE__)                  \
+               .ShouldLog(interval_ms);                                        \
+       BASE_LOG_CONCAT(_fb_log_every_ms_once_, __LINE__);                      \
+       BASE_LOG_CONCAT(_fb_log_every_ms_once_, __LINE__) = false)              \
   LOG(level)

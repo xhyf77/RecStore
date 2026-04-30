@@ -10,7 +10,8 @@
 namespace base {
 
 template <typename... Args>
-inline std::string SFormat(fmt::format_string<Args...> fmt_str, Args&&... args) {
+inline std::string
+SFormat(fmt::format_string<Args...> fmt_str, Args&&... args) {
   return fmt::format(fmt_str, std::forward<Args>(args)...);
 }
 

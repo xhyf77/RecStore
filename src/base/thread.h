@@ -12,8 +12,8 @@ public:
   using Options  = folly::CPUThreadPoolExecutor::Options;
   using Blocking = folly::CPUThreadPoolExecutor::Options::Blocking;
 
-  explicit CPUThreadPoolExecutor(
-      size_t num_threads, Options options = Options())
+  explicit CPUThreadPoolExecutor(size_t num_threads,
+                                 Options options = Options())
       : impl_(std::make_unique<folly::CPUThreadPoolExecutor>(
             num_threads, std::move(options))) {}
   ~CPUThreadPoolExecutor() = default;

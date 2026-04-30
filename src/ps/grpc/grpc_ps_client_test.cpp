@@ -14,7 +14,7 @@ std::vector<int> AcquireGrpcTestPorts() {
   CHECK_EQ(ports.size(), 2);
   return ports;
 }
-}
+} // namespace
 
 static bool
 check_eq_1d(const std::vector<float>& a, const std::vector<float>& b) {

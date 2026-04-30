@@ -7,14 +7,14 @@
 
 namespace base {
 
-inline void InitLoggingAndFlags(int* argc,
-                                char*** argv,
-                                bool remove_flags = true) {
+inline void
+InitLoggingAndFlags(int* argc, char*** argv, bool remove_flags = true) {
   static std::once_flag once;
   std::call_once(once, [argc, argv, remove_flags]() {
-    google::InitGoogleLogging((argc != nullptr && argv != nullptr && *argc > 0)
-                                  ? (*argv)[0]
-                                  : "recstore");
+    google::InitGoogleLogging(
+        (argc != nullptr && argv != nullptr && *argc > 0)
+            ? (*argv)[0]
+            : "recstore");
     if (argc != nullptr && argv != nullptr) {
       gflags::ParseCommandLineFlags(argc, argv, remove_flags);
     }

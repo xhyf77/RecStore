@@ -181,7 +181,8 @@ public:
                              std::vector<float>* values,
                              int64_t* num_rows,
                              int64_t embedding_dim) override;
-  // Embeddings are vectors here; Get(float*) uses a flat buffer for legacy callers
+  // Embeddings are vectors here; Get(float*) uses a flat buffer for legacy
+  // callers
   virtual uint64_t EmbWriteAsync(const base::ConstArray<uint64_t>& keys,
                                  const std::vector<std::vector<float>>& values);
   virtual bool IsWriteDone(uint64_t write_id);

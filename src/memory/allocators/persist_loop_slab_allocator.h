@@ -239,9 +239,7 @@ class PersistMemoryPool : public MallocApi {
     }
 
   private:
-    ALWAYS_INLINE int MaxEntryNumber() const {
-      return header_->nr_entries_;
-    }
+    ALWAYS_INLINE int MaxEntryNumber() const { return header_->nr_entries_; }
 
     int EntryId(void* memory_data) {
 #ifdef DEBUG

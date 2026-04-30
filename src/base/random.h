@@ -71,17 +71,18 @@ public:
   explicit PseudoRandom(uint64_t seed) { rng.seed(seed); }
 
   PseudoRandom() {
-    const auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                            std::chrono::system_clock::now().time_since_epoch())
-                            .count();
+    const auto now_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count();
     rng.seed(static_cast<uint64_t>(now_us));
   }
 
   void SetSeed(uint64_t seed) { rng.seed(seed); }
 
   int GetInt(int min, int max) {
-    return static_cast<int>(
-        Random::rand32(static_cast<uint32_t>(min), static_cast<uint32_t>(max), rng));
+    return static_cast<int>(Random::rand32(
+        static_cast<uint32_t>(min), static_cast<uint32_t>(max), rng));
   }
 
   uint64_t GetUint64() { return Random::rand64(rng); }

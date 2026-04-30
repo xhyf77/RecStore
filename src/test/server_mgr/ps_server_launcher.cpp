@@ -727,7 +727,8 @@ bool PSServerLauncher::WaitUntilReady() {
         std::chrono::milliseconds(options_.startup_delay_ms));
   }
 
-  std::vector<int> expected_ports = ExtractPortsFromConfig(options_.config_path);
+  std::vector<int> expected_ports =
+      ExtractPortsFromConfig(options_.config_path);
   if (!options_.override_ports.empty()) {
     expected_ports = options_.override_ports;
   }
