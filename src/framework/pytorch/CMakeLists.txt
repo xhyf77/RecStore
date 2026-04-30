@@ -3,6 +3,8 @@ find_package(Torch REQUIRED)
 add_library(recstore_torch_ops SHARED
     op_torch.cc
     ../op.cc
+    ../op_local_shm.cc
+    ../common/hierkv_local_runtime.cc
     ../common/op_runtime_support.cc
     ../common/local_shm_op_component.cc
     ../common/ps_client_config_adapter.cc

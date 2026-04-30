@@ -335,6 +335,8 @@ if(ENABLE_CUDA AND CMAKE_CUDA_COMPILER AND
         ${PROJECT_SOURCE_DIR}/src/framework/hugectr/op_hugectr.cc
         ${PROJECT_SOURCE_DIR}/src/framework/hugectr/hierkv_backend.cc
         ${PROJECT_SOURCE_DIR}/src/framework/op.cc
+        ${PROJECT_SOURCE_DIR}/src/framework/op_local_shm.cc
+        ${PROJECT_SOURCE_DIR}/src/framework/common/hierkv_local_runtime.cc
         ${PROJECT_SOURCE_DIR}/src/framework/common/ps_client_config_adapter.cc
         ${PROJECT_SOURCE_DIR}/src/ps/client_factory.cc
         ${PROJECT_SOURCE_DIR}/src/ps/rdma/rdma_ps_client_adapter.cc
