@@ -138,6 +138,13 @@ public:
       raw_config.numa_id = FLAGS_numa_id;
       raw_config.local_base_addr = dsm_->get_conf()->baseAddr;
       raw_config.local_region_bytes = dsm_->get_conf()->dsmSize;
+      const std::uint64_t machine_count = static_cast<std::uint64_t>(
+          raw_config.num_servers + raw_config.num_clients);
+      raw_config.reserved_region_offset = FLAGS_rdma_put_v2_push_region_offset;
+      raw_config.reserved_region_bytes =
+          machine_count *
+          static_cast<std::uint64_t>(FLAGS_rdma_put_v2_push_slots_per_client) *
+          FLAGS_rdma_put_v2_push_slot_bytes;
       raw_transport_ = std::make_unique<petps::RawVerbsTransport>(raw_config);
     }
   }
@@ -463,6 +470,8 @@ private:
 
   void RpcPsDescriptorDoorbell(const petps::RdmaDescriptorRequest& request,
                                int thread_id) {
+    petps::RawVerbsTransportAllocationScope allocation_scope(
+        raw_transport_.get());
     if (request.op ==
         static_cast<std::uint16_t>(petps::RdmaDescriptorOp::kGet)) {
       const int key_count = static_cast<int>(request.key_count);

@@ -89,7 +89,7 @@ def build_rdma_runner(args):
         ),
         rdma_wait_timeout_ms=getattr(args, "rdma_wait_timeout_ms", None),
         rdma_transport_mode=getattr(args, "rdma_transport_mode", None),
-        rdma_transport_mode_client_flag=False,
+        rdma_transport_mode_client_flag=True,
         validate_routing=getattr(args, "validate_routing", False),
     )
 

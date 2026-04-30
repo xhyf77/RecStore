@@ -100,14 +100,16 @@ void ModifyQpToRts(ibv_qp* qp) {
   }
 }
 
-std::string MetaKey(int node_id) {
-  return "raw-verbs-meta-" + std::to_string(node_id);
+std::string MetaKey(int publisher_node_id, int receiver_node_id) {
+  return "raw-verbs-meta-" + std::to_string(publisher_node_id) + "-to-" +
+         std::to_string(receiver_node_id);
 }
 
 } // namespace
 
 struct RawVerbsTransport::Impl {
-  explicit Impl(const RawVerbsConfig& c) : config(c) {}
+  explicit Impl(const RawVerbsConfig& c)
+      : config(c), allocator(c.local_region_bytes) {}
 
   RawVerbsConfig config;
   ibv_context* context = nullptr;
@@ -117,7 +119,7 @@ struct RawVerbsTransport::Impl {
   void* local_base = nullptr;
   bool owns_local_base = false;
   std::size_t local_bytes = 0;
-  std::uint64_t allocation_offset = 0;
+  RawVerbsRegionAllocator allocator;
   std::vector<RawVerbsNodeMeta> metas;
   std::vector<RawVerbsRemoteMemory> remotes;
   std::vector<ibv_qp*> qps;
@@ -152,6 +154,10 @@ RawVerbsTransport::RawVerbsTransport(const RawVerbsConfig& config)
           IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC);
   if (impl_->local_mr == nullptr) {
     throw std::runtime_error("ibv_reg_mr failed");
+  }
+  if (config.reserved_region_bytes != 0) {
+    impl_->allocator.SetReservedRegion(
+        {config.reserved_region_offset, config.reserved_region_bytes});
   }
 
   const int node_count = config.num_servers + config.num_clients;
@@ -206,13 +212,16 @@ RawVerbsTransport::~RawVerbsTransport() {
 void RawVerbsTransport::RegisterThread() {}
 
 void* RawVerbsTransport::AllocateRegistered(std::size_t bytes) {
-  const std::uint64_t aligned = (bytes + 63) & ~std::uint64_t{63};
-  const std::uint64_t offset = impl_->allocation_offset;
-  if (offset + aligned > impl_->local_bytes) {
-    throw std::runtime_error("raw verbs registered region exhausted");
-  }
-  impl_->allocation_offset += aligned;
+  const std::uint64_t offset = impl_->allocator.Allocate(bytes);
   return static_cast<char*>(impl_->local_base) + offset;
+}
+
+std::uint64_t RawVerbsTransport::SaveAllocationState() const {
+  return impl_->allocator.Checkpoint();
+}
+
+void RawVerbsTransport::RestoreAllocationState(std::uint64_t checkpoint) {
+  impl_->allocator.Restore(checkpoint);
 }
 
 GlobalAddress RawVerbsTransport::LocalAddress(void* ptr) const {
@@ -253,29 +262,41 @@ RawVerbsNodeMeta RawVerbsTransport::LocalMeta() const {
   meta.rkey = impl_->local_mr->rkey;
   meta.base_addr = reinterpret_cast<std::uint64_t>(impl_->local_base);
   std::memcpy(meta.gid, &gid, sizeof(meta.gid));
-  for (ibv_qp* qp : impl_->qps) {
-    if (qp != nullptr) {
-      meta.qpn = qp->qp_num;
-      break;
-    }
-  }
   return meta;
 }
 
 void RawVerbsTransport::PublishAndConnect() {
-  const RawVerbsNodeMeta local = LocalMeta();
-  XPostoffice::GetInstance()->MemCachedSet(
-      MetaKey(local.node_id),
-      std::string(reinterpret_cast<const char*>(&local), sizeof(local)));
-
   const int node_count = impl_->config.num_servers + impl_->config.num_clients;
+  const RawVerbsNodeMeta local = LocalMeta();
+  for (int node = 0; node < node_count; ++node) {
+    if (node == impl_->config.global_id) {
+      continue;
+    }
+    RawVerbsNodeMeta peer_local = local;
+    peer_local.qpn = impl_->qps[static_cast<std::size_t>(node)]->qp_num;
+    XPostoffice::GetInstance()->MemCachedSet(
+        MetaKey(impl_->config.global_id, node),
+        std::string(reinterpret_cast<const char*>(&peer_local),
+                    sizeof(peer_local)));
+  }
+
   impl_->metas.assign(static_cast<std::size_t>(node_count), RawVerbsNodeMeta{});
   impl_->remotes.assign(
       static_cast<std::size_t>(node_count), RawVerbsRemoteMemory{});
 
   for (int node = 0; node < node_count; ++node) {
+    if (node == impl_->config.global_id) {
+      impl_->metas[static_cast<std::size_t>(node)] = local;
+      impl_->remotes[static_cast<std::size_t>(node)] = RawVerbsRemoteMemory{
+          local.node_id,
+          local.base_addr,
+          local.rkey,
+      };
+      continue;
+    }
     std::string value;
-    while (!XPostoffice::GetInstance()->MemCachedTryGet(MetaKey(node), &value)) {
+    while (!XPostoffice::GetInstance()->MemCachedTryGet(
+        MetaKey(node, impl_->config.global_id), &value)) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     if (value.size() != sizeof(RawVerbsNodeMeta)) {

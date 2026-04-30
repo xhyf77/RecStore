@@ -87,7 +87,8 @@ private:
   std::vector<int> serverThreadIdsRoutedTo_;
   std::unordered_map<uint64_t, std::atomic<int32_t>*> rpcId2PollMap_;
   RdmaTransportMode transport_mode_ = RdmaTransportMode::kRawMessage;
-  std::unique_ptr<RawVerbsTransport> raw_transport_;
+  std::shared_ptr<RawVerbsTransport> raw_transport_;
+  std::shared_ptr<std::mutex> raw_transport_mu_;
   std::atomic<std::uint64_t> descriptor_request_id_{1};
   std::atomic<std::uint64_t> descriptor_slot_cursor_{0};
 };

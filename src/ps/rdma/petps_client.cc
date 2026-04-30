@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -70,6 +71,31 @@ DEFINE_int32(
 namespace {
 constexpr std::uint64_t kClientDsmSizeBytes        = 1 * 1000 * define::MB;
 constexpr std::size_t kClientRdmaThreadBufferBytes = 1 * define::MB;
+
+struct SharedRawVerbsClientTransport {
+  std::shared_ptr<petps::RawVerbsTransport> transport;
+  std::shared_ptr<std::mutex> mu;
+};
+
+SharedRawVerbsClientTransport GetSharedRawVerbsClientTransport(
+    const petps::RawVerbsConfig& raw_config) {
+  static std::mutex shared_mu;
+  static std::map<int, SharedRawVerbsClientTransport> shared_by_global_id;
+
+  std::lock_guard<std::mutex> guard(shared_mu);
+  auto it = shared_by_global_id.find(raw_config.global_id);
+  if (it != shared_by_global_id.end()) {
+    return it->second;
+  }
+
+  SharedRawVerbsClientTransport shared;
+  shared.transport = std::make_shared<petps::RawVerbsTransport>(raw_config);
+  shared.transport->PublishAndConnect();
+  shared.mu = std::make_shared<std::mutex>();
+  auto [inserted, _] =
+      shared_by_global_id.emplace(raw_config.global_id, shared);
+  return inserted->second;
+}
 
 bool ShouldValidateRouting() {
   const char* env = std::getenv("RECSTORE_RDMA_VALIDATE_ROUTING");
@@ -167,8 +193,16 @@ void PetPSClient::Init() {
     raw_config.numa_id = FLAGS_numa_id;
     raw_config.local_base_addr = dsm_->get_conf()->baseAddr;
     raw_config.local_region_bytes = dsm_->get_conf()->dsmSize;
-    raw_transport_ = std::make_unique<RawVerbsTransport>(raw_config);
-    raw_transport_->PublishAndConnect();
+    const std::uint64_t machine_count = static_cast<std::uint64_t>(
+        raw_config.num_servers + raw_config.num_clients);
+    raw_config.reserved_region_offset = FLAGS_rdma_put_v2_push_region_offset;
+    raw_config.reserved_region_bytes =
+        machine_count *
+        static_cast<std::uint64_t>(FLAGS_rdma_put_v2_push_slots_per_client) *
+        FLAGS_rdma_put_v2_push_slot_bytes;
+    auto shared = GetSharedRawVerbsClientTransport(raw_config);
+    raw_transport_ = std::move(shared.transport);
+    raw_transport_mu_ = std::move(shared.mu);
   }
 }
 
@@ -427,6 +461,8 @@ int PetPSClient::GetParameterDescriptor(base::ConstArray<uint64_t> keys,
     throw std::runtime_error(
         "descriptor_doorbell async GET is not enabled in the first phase");
   }
+  std::lock_guard<std::mutex> transport_guard(*raw_transport_mu_);
+  RawVerbsTransportAllocationScope allocation_scope(raw_transport_.get());
   const std::size_t response_bytes =
       FixedSlotResponseBytes(keys.Size(), FLAGS_value_size);
   char* response_buf =
@@ -492,12 +528,29 @@ int PetPSClient::GetParameterDescriptor(base::ConstArray<uint64_t> keys,
   }
   WaitPutAck(status);
   std::memcpy(values, response_buf, response_bytes);
+  auto* caller_status = reinterpret_cast<std::atomic<std::int32_t>*>(
+      reinterpret_cast<char*>(values) + keys.Size() * FLAGS_value_size);
+  {
+    std::lock_guard<std::mutex> guard(rpc_mu_);
+    rpcId2PollMap_[request_id] = caller_status;
+  }
+  if (request_id > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+    {
+      std::lock_guard<std::mutex> guard(rpc_mu_);
+      rpcId2PollMap_.erase(request_id);
+    }
+    throw std::runtime_error(
+        "descriptor request_id overflow int range: " +
+        std::to_string(request_id));
+  }
   return static_cast<int>(request_id);
 }
 
 int PetPSClient::PutParameterDescriptor(
     const std::vector<uint64_t>& keys,
     const std::vector<std::vector<float>>& values) {
+  std::lock_guard<std::mutex> transport_guard(*raw_transport_mu_);
+  RawVerbsTransportAllocationScope allocation_scope(raw_transport_.get());
   const std::size_t payload_bytes = PutPayloadBytes(keys.size(), FLAGS_value_size);
   char* payload_buf =
       static_cast<char*>(raw_transport_->AllocateRegistered(payload_bytes));

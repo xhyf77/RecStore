@@ -30,23 +30,18 @@ RecStore 里有两层 RDMA 入口：
 
 ### 参数传播规则
 
-`petps_server` 和 `PetPSClient` 支持 gflag：
+`petps_server`、`PetPSClient` 和当前 `ps_transport_benchmark` binary 都支持 gflag：
 
 ```bash
 --rdma_transport_mode=raw_message
 --rdma_transport_mode=descriptor_doorbell
 ```
 
-但 `ps_transport_benchmark` 本身不支持这个 gflag。benchmark runner 必须避免把 `--rdma_transport_mode` 直接传给 benchmark binary，否则会失败：
-
-```text
-ERROR: unknown command line flag 'rdma_transport_mode'
-```
-
 当前脚本约定：
 
 - server 进程通过 `--rdma_transport_mode=...` 接收模式。
-- benchmark client 通过环境变量 `RECSTORE_RDMA_TRANSPORT_MODE` 传给 op/client 初始化路径。
+- benchmark client 也通过 `--rdma_transport_mode=...` 显式接收模式。
+- 环境变量 `RECSTORE_RDMA_TRANSPORT_MODE` 仍用于 op-layer / Python client 初始化路径。
 - raw-message 默认 benchmark 不传任何 transport mode 参数，保持旧行为。
 
 ## 快速基线：run.sh
@@ -90,6 +85,24 @@ cmake --build ./build --target \
   test_allshards_ps_client \
   -j
 ```
+
+如果当前工作树里已经改过 descriptor / raw-verbs 相关源码，例如：
+
+- `src/ps/rdma/petps_client.cc`
+- `src/ps/rdma/petps_client.h`
+- `src/ps/rdma/raw_verbs_transport.cc`
+
+那么不要直接拿旧 `build/` 里的二进制判断 descriptor mode 是否卡住。至少先重编：
+
+```bash
+cmake --build ./build --target \
+  petps_server \
+  petps_integration_test \
+  recstore_torch_ops \
+  -j
+```
+
+否则很容易出现“源码已更新，但 `petps_server` / `recstore_torch_ops` 仍是旧二进制”的假象，表现成 op-layer descriptor 偶发卡住或行为与源码不一致。
 
 如果只跑 `run.sh`，至少需要：
 
@@ -175,8 +188,8 @@ python3 src/test/scripts/run_rdma_transport_benchmarks.py \
 
 注意：
 
-- `--rdma-transport-mode descriptor_doorbell` 是 runner 参数，不是 benchmark binary 参数。
-- runner 会把 mode 传给 server，并通过环境变量传给 client 初始化路径。
+- `--rdma-transport-mode descriptor_doorbell` 是 runner 参数；runner 会把它翻译成 `--rdma_transport_mode=descriptor_doorbell` 传给 server 和 benchmark client。
+- 环境变量 `RECSTORE_RDMA_TRANSPORT_MODE` 仍会保留，供 op/client 其他初始化路径读取。
 - 当前 descriptor mode 目标是先保持正确性闭环，不应把它当成已证明有 async overlap 收益的路径。
 
 ### descriptor_doorbell 当前实现约束
@@ -226,6 +239,20 @@ python3 src/test/scripts/run_petps_integration.py \
   --use-local-memcached auto
 ```
 
+如果你刚改过 descriptor 相关实现，推荐显式把 `--cluster-timeout 15` 也带上，先保证失败时能更快收敛日志：
+
+```bash
+python3 src/test/scripts/run_petps_integration.py \
+  --server-count 1 \
+  --config-path ./src/test/configs/recstore_config.rdma_test.json \
+  --test-binary ./build/bin/petps_integration_test \
+  --gtest-filter=PetPSIntegrationTest.PutGetRoundTripSingleShard:PetPSIntegrationTest.MissingKeysReturnZeroSlots \
+  --rdma-transport-mode descriptor_doorbell \
+  --client-timeout 15 \
+  --cluster-timeout 15 \
+  --use-local-memcached auto
+```
+
 ### 多分片
 
 ```bash
@@ -236,6 +263,21 @@ python3 src/test/scripts/run_petps_integration.py \
   --test-binary ./build/bin/petps_integration_test \
   --gtest-filter=PetPSIntegrationTest.PutGetRoundTripMultiShard \
   --client-timeout 30 \
+  --use-local-memcached auto
+```
+
+descriptor mode：
+
+```bash
+python3 src/test/scripts/run_petps_integration.py \
+  --server-count 2 \
+  --client-count 1 \
+  --config-path ./src/test/configs/recstore_config.rdma_multishard_test.json \
+  --test-binary ./build/bin/petps_integration_test \
+  --gtest-filter=PetPSIntegrationTest.PutGetRoundTripMultiShard \
+  --rdma-transport-mode descriptor_doorbell \
+  --client-timeout 30 \
+  --cluster-timeout 20 \
   --use-local-memcached auto
 ```
 
@@ -305,7 +347,7 @@ test_client.py: error: unrecognized arguments: --global_id=1 ...
 
 ## 当前已验证的 RDMA 测试
 
-以下命令在真实 RDMA 环境中用于确认当前修复后的状态：
+以下命令在真实 RDMA 环境中用于确认当前状态。`2026-04-30` 本地复验时，descriptor single-shard / multi-shard / op-layer basic，以及 descriptor benchmark 都已跑通。
 
 ```bash
 python3 src/test/scripts/run_petps_integration.py \
@@ -331,9 +373,48 @@ python3 src/test/scripts/run_petps_integration.py \
 ```
 
 ```bash
+python3 src/test/scripts/run_petps_integration.py \
+  --server-count 1 \
+  --config-path ./src/test/configs/recstore_config.rdma_test.json \
+  --test-binary ./build/bin/petps_integration_test \
+  --gtest-filter=PetPSIntegrationTest.PutGetRoundTripSingleShard:PetPSIntegrationTest.MissingKeysReturnZeroSlots \
+  --rdma-transport-mode descriptor_doorbell \
+  --client-timeout 15 \
+  --cluster-timeout 15 \
+  --use-local-memcached auto
+```
+
+```bash
+python3 src/test/scripts/run_petps_integration.py \
+  --server-count 2 \
+  --client-count 1 \
+  --config-path ./src/test/configs/recstore_config.rdma_multishard_test.json \
+  --test-binary ./build/bin/petps_integration_test \
+  --gtest-filter=PetPSIntegrationTest.PutGetRoundTripMultiShard \
+  --rdma-transport-mode descriptor_doorbell \
+  --client-timeout 30 \
+  --cluster-timeout 20 \
+  --use-local-memcached auto
+```
+
+```bash
 ctest --test-dir ./build -R "^pytorch_client_test_rdma_basic$" -VV
 ctest --test-dir ./build -R "^pytorch_client_test_rdma$|^pytorch_client_test_rdma_auto$" -VV
 ctest --test-dir ./build -R "^pytorch_client_test_rdma_descriptor_basic$" -VV
+```
+
+```bash
+python3 src/test/scripts/run_rdma_transport_benchmarks.py \
+  --benchmark-binary ./build/bin/ps_transport_benchmark \
+  --rdma-only \
+  --rdma-transport-mode descriptor_doorbell \
+  --iterations 500 \
+  --batch-keys 128 \
+  --rounds 40 \
+  --rdma-warmup-rounds 20 \
+  --report-mode summary \
+  --show-runner-logs \
+  --use-local-memcached auto
 ```
 
 结果矩阵：
@@ -342,10 +423,19 @@ ctest --test-dir ./build -R "^pytorch_client_test_rdma_descriptor_basic$" -VV
 |------|------|--------|----------|
 | PetPS single-shard integration | `raw_message` | Put/Get 单分片、missing key | 通过 |
 | PetPS multi-shard integration | `raw_message` | 多分片 Put/Get 路由 | 通过 |
+| PetPS single-shard integration | `descriptor_doorbell` | Put/Get 单分片、missing key | 通过 |
+| PetPS multi-shard integration | `descriptor_doorbell` | 多分片 Put/Get 路由 | 通过 |
 | `pytorch_client_test_rdma_basic` | `raw_message` | Op-layer init/write/read basic | 通过 |
 | `pytorch_client_test_rdma` | `raw_message` | Op-layer full phase | 通过 |
 | `pytorch_client_test_rdma_auto` | `raw_message` | Op-layer full phase + memcached auto | 通过 |
 | `pytorch_client_test_rdma_descriptor_basic` | `descriptor_doorbell` | Op-layer descriptor basic | 通过 |
+| `run_rdma_transport_benchmarks.py` + `ps_transport_benchmark` | `descriptor_doorbell` | 单分片 put/get benchmark summary | 通过 |
+
+补充说明：
+
+- `2026-04-30` 本地复验中，`pytorch_client_test_rdma_descriptor_basic` 在重新编译相关目标后可直接通过；带最小诊断日志的同路径还连续通过了 3 次。
+- `2026-04-30` 本地复验中，descriptor benchmark 之所以会卡住，是因为 runner 没把 `--rdma_transport_mode=descriptor_doorbell` 传给 `ps_transport_benchmark` client，导致 client 仍按 `raw_message` 初始化，而 server 已进入 descriptor mode。修正后 benchmark 可正常输出 summary。
+- 如果你看到 descriptor op-layer 停在一串 `I open mlx5_0 :)` 后不动，先确认是不是拿旧的 `petps_server` / `recstore_torch_ops` 二进制在跑，而不是先下结论说 descriptor 路径本身坏了。
 
 这些结果只说明当前 correctness smoke/integration 已闭环，不代表 descriptor mode 已有稳定性能收益。
 
@@ -406,12 +496,12 @@ ss -ltnp | grep ':21211'
 ERROR: unknown command line flag 'rdma_transport_mode'
 ```
 
-说明 `--rdma_transport_mode` 被传给了不支持该 gflag 的 binary，常见是 `ps_transport_benchmark`。
+说明你当前执行的 binary 没有把 RDMA client 相关对象正确链接进来，或者跑到的不是当前仓库里这版 `ps_transport_benchmark`。
 
 修正方向：
 
 - benchmark runner 使用 `--rdma-transport-mode` 作为脚本参数。
-- 不要把 `--rdma_transport_mode` 直接加到 `ps_transport_benchmark` 命令后。
+- 先确认你跑的是当前 `./build/bin/ps_transport_benchmark`，并且已经按上文重新编译。
 - raw-message 基线不要显式传 mode。
 
 ### 2. 再确认 RDMA 设备是否真的打开
@@ -502,6 +592,8 @@ descriptor mode 的重点排查项：
 - 是否只有一个线程 poll raw verbs CQ。
 - client 端 `unittest` 是否过滤了 reexec 追加的 C++ gflags。
 - `RECSTORE_RDMA_TRANSPORT_MODE=descriptor_doorbell` 是否传到了 client，同时 `--rdma_transport_mode=descriptor_doorbell` 是否传到了 server。
+- benchmark 路径里，`--rdma_transport_mode=descriptor_doorbell` 是否也显式传到了 `ps_transport_benchmark` client。
+- 当前源码是否已经更新，但 `petps_server` / `petps_integration_test` / `recstore_torch_ops` 还是旧 build 产物。
 
 ## 当前建议
 

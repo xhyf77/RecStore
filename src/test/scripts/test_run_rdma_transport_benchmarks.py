@@ -58,7 +58,7 @@ class TestRunRDMATransportBenchmarks(unittest.TestCase):
         self.assertEqual(runner.rdma_put_server_scratch_bytes, 654321)
         self.assertEqual(runner.rdma_wait_timeout_ms, 15000)
         self.assertEqual(runner.rdma_transport_mode, "descriptor_doorbell")
-        self.assertFalse(runner.rdma_transport_mode_client_flag)
+        self.assertTrue(runner.rdma_transport_mode_client_flag)
 
     def test_load_client_endpoint_for_default_grpc_config(self):
         host, port = load_client_endpoint(DEFAULT_GRPC_MAIN_CONFIG)
