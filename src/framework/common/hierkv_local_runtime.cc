@@ -78,8 +78,7 @@ const HierKVLocalRuntime::Impl& HierKVLocalRuntime::impl() const {
 }
 
 bool HierKVLocalRuntime::InitEmbeddingTable(
-    const std::string& table_name,
-    const EmbeddingTableConfig& config) {
+    const std::string& table_name, const EmbeddingTableConfig& config) {
   auto& state = impl();
   std::lock_guard<std::mutex> lock(state.mu);
   state.ValidateOrSetEmbeddingDim(
@@ -106,7 +105,7 @@ void HierKVLocalRuntime::Write(const base::RecTensor& keys,
     throw std::invalid_argument("HierKV write row count mismatch.");
   }
   const int64_t embedding_dim = values.shape(1);
-  auto& state = impl();
+  auto& state                 = impl();
   std::lock_guard<std::mutex> lock(state.mu);
   state.ValidateOrSetEmbeddingDim(embedding_dim, "EmbWrite");
 
@@ -127,7 +126,7 @@ void HierKVLocalRuntime::Read(const base::RecTensor& keys,
     throw std::invalid_argument("HierKV read row count mismatch.");
   }
   const int64_t embedding_dim = values.shape(1);
-  auto& state = impl();
+  auto& state                 = impl();
   std::lock_guard<std::mutex> lock(state.mu);
   state.ValidateOrSetEmbeddingDim(embedding_dim, "EmbRead");
 
@@ -160,16 +159,15 @@ void HierKVLocalRuntime::Update(const std::string& table_name,
     throw std::invalid_argument("HierKV update row count mismatch.");
   }
   const int64_t embedding_dim = grads.shape(1);
-  auto& state = impl();
+  auto& state                 = impl();
   std::lock_guard<std::mutex> lock(state.mu);
   state.ValidateOrSetEmbeddingDim(embedding_dim, "EmbUpdate");
   if (!table_name.empty()) {
     auto table_it = state.table_configs.find(table_name);
     if (table_it != state.table_configs.end() &&
-        static_cast<int64_t>(table_it->second.embedding_dim) !=
-            embedding_dim) {
-      throw std::runtime_error("HierKV table dim mismatch for update: " +
-                               table_name);
+        static_cast<int64_t>(table_it->second.embedding_dim) != embedding_dim) {
+      throw std::runtime_error(
+          "HierKV table dim mismatch for update: " + table_name);
     }
   }
 
@@ -231,8 +229,7 @@ void HierKVLocalRuntime::WaitForPrefetch(uint64_t prefetch_id) {
 }
 
 void HierKVLocalRuntime::ConsumePrefetch(
-    uint64_t prefetch_id,
-    std::vector<std::vector<float>>* values) {
+    uint64_t prefetch_id, std::vector<std::vector<float>>* values) {
   auto& state = impl();
   std::lock_guard<std::mutex> lock(state.mu);
   auto it = state.prefetch_results.find(prefetch_id);
@@ -244,10 +241,11 @@ void HierKVLocalRuntime::ConsumePrefetch(
   state.prefetch_results.erase(it);
 }
 
-void HierKVLocalRuntime::ConsumePrefetchFlat(uint64_t prefetch_id,
-                                             std::vector<float>* values,
-                                             int64_t* num_rows,
-                                             int64_t embedding_dim) {
+void HierKVLocalRuntime::ConsumePrefetchFlat(
+    uint64_t prefetch_id,
+    std::vector<float>* values,
+    int64_t* num_rows,
+    int64_t embedding_dim) {
   std::vector<std::vector<float>> rows;
   ConsumePrefetch(prefetch_id, &rows);
   *num_rows = static_cast<int64_t>(rows.size());
