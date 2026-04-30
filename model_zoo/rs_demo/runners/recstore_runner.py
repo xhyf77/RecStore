@@ -58,6 +58,7 @@ FAST_PATH_UPDATE_PROFILE_KEYS = (
     "local_update_keys_stage_ms",
     "local_update_grads_stage_ms",
     "local_update_shm_call_ms",
+    "local_update_stage_wait_ms",
 )
 
 GPU_CACHE_PROFILE_KEYS = (

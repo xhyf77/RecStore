@@ -278,6 +278,21 @@ class RecStoreClient:
             ids = ids.to('cpu')
         return ids
 
+    def _reject_gpu_cache_reserved_ids(self, ids: torch.Tensor) -> None:
+        if ids.numel() == 0:
+            return
+        if ids.device.type == "cuda" and os.getenv(
+            "RECSTORE_VALIDATE_GPU_CACHE_KEYS", ""
+        ) not in ("1", "true", "TRUE", "yes", "YES"):
+            return
+        empty_key = torch.iinfo(torch.int64).max
+        deleted_key = empty_key - 1
+        if int(ids.max().item()) >= deleted_key:
+            raise RuntimeError(
+                "ids contain reserved GPU cache sentinel key; "
+                f"values {deleted_key} and {empty_key} are not valid RecStore GPU cache keys"
+            )
+
     def _normalize_grads(
         self,
         grads: torch.Tensor,
@@ -326,6 +341,7 @@ class RecStoreClient:
         meta = self._tensor_meta[name]
         embedding_dim = meta['shape'][1]
         ids = self._normalize_ids(ids, preserve_device=True)
+        self._reject_gpu_cache_reserved_ids(ids)
         return self.ops.local_lookup_flat(ids, int(embedding_dim))
 
     def get_last_local_shm_lookup_profile(self) -> Dict[str, float]:
@@ -416,6 +432,8 @@ class RecStoreClient:
             raise ValueError("grads must be a 2-dimensional tensor")
         if ids.size(0) != grads.size(0):
             raise ValueError("ids and grads must have the same number of rows")
+        if ids.device.type == "cpu":
+            self._reject_gpu_cache_reserved_ids(ids)
         self.ops.local_update_flat(name, ids, grads)
         if ids.device.type == "cpu":
             self._clear_gpu_cache_if_available()
@@ -432,6 +450,7 @@ class RecStoreClient:
             "local_update_keys_stage_ms": float(values[1]),
             "local_update_grads_stage_ms": float(values[2]),
             "local_update_shm_call_ms": float(values[3]),
+            "local_update_stage_wait_ms": float(values[4]) if len(values) > 4 else 0.0,
         }
 
     def push(self, name: str, ids: torch.Tensor, data: torch.Tensor):

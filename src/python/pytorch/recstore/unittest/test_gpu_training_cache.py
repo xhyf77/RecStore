@@ -307,6 +307,29 @@ class TestGpuTrainingCache(unittest.TestCase):
         )
         self.assertTrue(torch.allclose(cached, cached_expected))
 
+    def test_gpu_cache_rejects_reserved_sentinel_keys(self) -> None:
+        table_name = self._new_table_name()
+        self.client.init_data(name=table_name, shape=(64, 4), dtype=torch.float32)
+        reserved_ids = torch.tensor(
+            [
+                torch.iinfo(torch.int64).max,
+                torch.iinfo(torch.int64).max - 1,
+            ],
+            dtype=torch.int64,
+            device="cuda",
+        )
+
+        old_value = os.environ.get("RECSTORE_VALIDATE_GPU_CACHE_KEYS")
+        os.environ["RECSTORE_VALIDATE_GPU_CACHE_KEYS"] = "1"
+        try:
+            with self.assertRaisesRegex(RuntimeError, "reserved GPU cache sentinel"):
+                self.client.local_lookup_flat(table_name, reserved_ids)
+        finally:
+            if old_value is None:
+                os.environ.pop("RECSTORE_VALIDATE_GPU_CACHE_KEYS", None)
+            else:
+                os.environ["RECSTORE_VALIDATE_GPU_CACHE_KEYS"] = old_value
+
 
 if __name__ == "__main__":
     unittest.main()

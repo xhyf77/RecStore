@@ -19,6 +19,9 @@
 #endif
 
 #if __has_include(<cuda_runtime_api.h>)
+#  include <ATen/cuda/CUDAContext.h>
+#  include <c10/cuda/CUDAException.h>
+#  include <c10/cuda/CUDAGuard.h>
 #  include <cuda_runtime_api.h>
 #  define RECSTORE_HAS_CUDA_RUNTIME_API 1
 #else
@@ -50,6 +53,7 @@ enum UpdateProfileIndex : std::size_t {
   kUpdateKeysStageMs,
   kUpdateGradsStageMs,
   kUpdateShmCallMs,
+  kUpdateStageWaitMs,
   kUpdateProfileSize,
 };
 
@@ -141,6 +145,27 @@ static torch::Tensor StageCudaTensorToPinnedCpu(const torch::Tensor& tensor,
   auto cpu_tensor = torch::empty(tensor.sizes(), PinnedCpuOptions(dtype));
   cpu_tensor.copy_(tensor.to(dtype), /*non_blocking=*/false);
   return cpu_tensor;
+}
+
+static torch::Tensor
+StageCudaTensorToPinnedCpuAsyncNoCast(const torch::Tensor& tensor) {
+  auto cpu_tensor =
+      torch::empty(tensor.sizes(), PinnedCpuOptions(tensor.scalar_type()));
+  cpu_tensor.copy_(tensor, /*non_blocking=*/true);
+  return cpu_tensor;
+}
+
+static void SynchronizeCurrentCudaStreamForTensor(const torch::Tensor& tensor) {
+#if RECSTORE_HAS_CUDA_RUNTIME_API
+  if (!tensor.is_cuda()) {
+    return;
+  }
+  c10::cuda::CUDAGuard device_guard(tensor.device());
+  C10_CUDA_CHECK(
+      cudaStreamSynchronize(at::cuda::getCurrentCUDAStream().stream()));
+#else
+  (void)tensor;
+#endif
 }
 
 static bool EnsurePinnedLocalShmPayload(const void* ptr, std::size_t bytes) {
@@ -563,18 +588,38 @@ void local_update_flat_torch(const std::string& table_name,
   }
 
   torch::Tensor cpu_keys = keys;
+  const bool can_async_stage_cuda =
+      (keys.is_cuda() || grads.is_cuda()) &&
+      (!keys.is_cuda() || !grads.is_cuda() || keys.device() == grads.device());
+  bool staged_cuda_async = false;
   if (keys.is_cuda()) {
     const auto keys_stage_start = SteadyNow();
-    cpu_keys = StageCudaTensorToPinnedCpu(keys, torch::kInt64);
+    if (can_async_stage_cuda) {
+      cpu_keys          = StageCudaTensorToPinnedCpuAsyncNoCast(keys);
+      staged_cuda_async = true;
+    } else {
+      cpu_keys = StageCudaTensorToPinnedCpu(keys, torch::kInt64);
+    }
     g_last_local_update_flat_profile[kUpdateKeysStageMs] =
         ElapsedMs(keys_stage_start);
   }
   torch::Tensor cpu_grads = grads;
   if (grads.is_cuda()) {
     const auto grads_stage_start = SteadyNow();
-    cpu_grads = StageCudaTensorToPinnedCpu(grads, torch::kFloat32);
+    if (can_async_stage_cuda) {
+      cpu_grads         = StageCudaTensorToPinnedCpuAsyncNoCast(grads);
+      staged_cuda_async = true;
+    } else {
+      cpu_grads = StageCudaTensorToPinnedCpu(grads, torch::kFloat32);
+    }
     g_last_local_update_flat_profile[kUpdateGradsStageMs] =
         ElapsedMs(grads_stage_start);
+  }
+  if (staged_cuda_async) {
+    const auto stage_wait_start = SteadyNow();
+    SynchronizeCurrentCudaStreamForTensor(keys.is_cuda() ? keys : grads);
+    g_last_local_update_flat_profile[kUpdateStageWaitMs] =
+        ElapsedMs(stage_wait_start);
   }
 
   base::RecTensor rec_keys  = ToRecTensor(cpu_keys, base::DataType::UINT64);

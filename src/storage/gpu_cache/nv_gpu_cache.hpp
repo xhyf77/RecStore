@@ -59,20 +59,24 @@ class gpu_cache : public gpu_cache_api<key_type> {
   // Dtor
   ~gpu_cache();
 
-  // Query API, i.e. A single read from the cache
+  // Query API, i.e. A single read from the cache. Input keys must not equal
+  // empty_key or empty_key - 1, which are reserved cache sentinel values.
   void Query(const key_type* d_keys, const size_t len, float* d_values, uint64_t* d_missing_index,
              key_type* d_missing_keys, size_t* d_missing_len, cudaStream_t stream,
              const size_t task_per_warp_tile = TASK_PER_WARP_TILE_MACRO) override;
 
-  // Replace API, i.e. Follow the Query API to update the content of the cache to Most Recent
+  // Replace API, i.e. Follow the Query API to update the content of the cache to Most Recent.
+  // Input keys must not equal the reserved cache sentinel values described above.
   void Replace(const key_type* d_keys, const size_t len, const float* d_values, cudaStream_t stream,
                const size_t task_per_warp_tile = TASK_PER_WARP_TILE_MACRO) override;
 
-  // Update API, i.e. update the embeddings which exist in the cache
+  // Update API, i.e. update the embeddings which exist in the cache.
+  // Input keys must not equal the reserved cache sentinel values described above.
   void Update(const key_type* d_keys, const size_t len, const float* d_values, cudaStream_t stream,
               const size_t task_per_warp_tile = TASK_PER_WARP_TILE_MACRO) override;
 
-  // Remove API, i.e. invalidate existing embeddings from the cache
+  // Remove API, i.e. invalidate existing embeddings from the cache.
+  // Input keys must not equal the reserved cache sentinel values described above.
   void Remove(const key_type* d_keys, const size_t len, cudaStream_t stream,
               const size_t task_per_warp_tile = TASK_PER_WARP_TILE_MACRO) override;
 
