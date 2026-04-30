@@ -24,7 +24,7 @@ from typing import Dict, List, Tuple
 
 
 GLOG_EVENT_PREFIX = "REPORT_LOCAL_EVENT "
-STAGE_TABLE = "embupdate_stages"
+DEFAULT_STAGE_TABLE = "embupdate_stages"
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,6 +50,11 @@ def parse_args() -> argparse.Namespace:
         "--group-by-prefix",
         action="store_true",
         help="Group traces by unique_id prefix before '|' and print group stats.",
+    )
+    parser.add_argument(
+        "--table-name",
+        default=DEFAULT_STAGE_TABLE,
+        help=f"Report table to analyze (default: {DEFAULT_STAGE_TABLE}).",
     )
     parser.add_argument(
         "--export-csv",
@@ -162,10 +167,12 @@ def derive_chain_metrics(metrics: Dict[str, float]) -> Dict[str, float]:
     return out
 
 
-def build_trace_map(events: List[dict], trace_prefix: str) -> Dict[str, Dict[str, float]]:
+def build_trace_map(
+    events: List[dict], trace_prefix: str, table_name: str = DEFAULT_STAGE_TABLE
+) -> Dict[str, Dict[str, float]]:
     by_trace: Dict[str, Dict[str, float]] = {}
     for e in events:
-        if e.get("table_name") != STAGE_TABLE:
+        if e.get("table_name") != table_name:
             continue
         unique_id = str(e.get("unique_id", ""))
         if trace_prefix and not unique_id.startswith(trace_prefix):
@@ -467,9 +474,11 @@ def export_csv(by_trace: Dict[str, Dict[str, float]], output_path: str) -> None:
 def main() -> None:
     args = parse_args()
     events = read_events(args.input)
-    by_trace = build_trace_map(events, args.trace_prefix)
+    by_trace = build_trace_map(events, args.trace_prefix, args.table_name)
     if not by_trace:
-        print("No embupdate stage events found. Check input paths and logging mode.")
+        print(
+            f"No {args.table_name} events found. Check input paths and logging mode."
+        )
         return
     print_overall(by_trace)
     print_breakdown_ratios(by_trace)

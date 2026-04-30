@@ -15,6 +15,7 @@ def setup_local_report_env(jsonl_path: str) -> None:
     os.environ["RECSTORE_REPORT_LOCAL_SINK"] = "jsonl"
     os.environ["RECSTORE_REPORT_JSONL_PATH"] = jsonl_path
     os.environ.setdefault("RECSTORE_REPORT_FLUSH_EVERY_N", "256")
+    os.environ.setdefault("RECSTORE_LOCAL_SHM_STAGE_REPORT", "1")
 
 
 def summarize_us(values: list[float]) -> str:
@@ -29,10 +30,11 @@ def summarize_us(values: list[float]) -> str:
     )
 
 
-def analyze_embupdate(
+def analyze_stage_table(
     repo_root: Path,
     jsonl_path: str,
     csv_path: str,
+    table_name: str,
     top_n: int = 20,
     extra_inputs: list[str] | None = None,
 ) -> str:
@@ -48,6 +50,8 @@ def analyze_embupdate(
     cmd.extend(
         [
             "--group-by-prefix",
+            "--table-name",
+            table_name,
             "--export-csv",
             csv_path,
             "--top",
@@ -65,6 +69,23 @@ def analyze_embupdate(
     if res.returncode != 0:
         raise RuntimeError(f"analyze failed: {res.stderr}")
     return res.stdout
+
+
+def analyze_embupdate(
+    repo_root: Path,
+    jsonl_path: str,
+    csv_path: str,
+    top_n: int = 20,
+    extra_inputs: list[str] | None = None,
+) -> str:
+    return analyze_stage_table(
+        repo_root=repo_root,
+        jsonl_path=jsonl_path,
+        csv_path=csv_path,
+        table_name="embupdate_stages",
+        top_n=top_n,
+        extra_inputs=extra_inputs,
+    )
 
 
 def write_stage_csv(path: Path, rows: list[dict]) -> None:
@@ -96,6 +117,13 @@ def finalize_torchrec_row(row: dict) -> dict:
 
 
 def finalize_recstore_row(row: dict) -> dict:
+    if (
+        "local_update_backend_call_ms" not in row
+        and "local_update_shm_call_ms" in row
+    ):
+        row["local_update_backend_call_ms"] = float(
+            row.get("local_update_shm_call_ms", 0.0)
+        )
     row["emb_stage_ms"] = (
         row["input_pack_ms"]
         + row["embed_lookup_local_ms"]

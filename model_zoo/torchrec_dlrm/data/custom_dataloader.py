@@ -57,6 +57,25 @@ class CustomCriteoDataset(Dataset):
         
         return dense, sparse, label
 
+    def __getitems__(self, indices):
+        if len(indices) == 0:
+            return []
+
+        actual_indices = self.start_idx + np.asarray(indices, dtype=np.int64)
+        dense_batch = torch.from_numpy(self.dense_data[actual_indices]).to(torch.float32)
+        sparse_np = self.sparse_data[actual_indices].astype(np.int64, copy=False)
+        sparse_batch = torch.from_numpy(sparse_np).to(torch.int64)
+        labels_batch = torch.from_numpy(self.labels_data[actual_indices]).to(torch.float32)
+
+        if self.num_embeddings_per_feature is not None and len(self.num_embeddings_per_feature) == 26:
+            sparse_batch = torch.abs(sparse_batch)
+            vocab = torch.tensor(self.num_embeddings_per_feature, dtype=torch.int64)
+            positive = vocab > 0
+            if torch.any(positive):
+                sparse_batch[:, positive] %= vocab[positive]
+
+        return list(zip(dense_batch.unbind(0), sparse_batch.unbind(0), labels_batch.unbind(0)))
+
 
 class RandomSingleDayDataset(Dataset):
     def __init__(
