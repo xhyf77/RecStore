@@ -411,6 +411,7 @@ class RecStoreClient:
         self._require_local_shm_backend("local_update_flat")
         ids = self._normalize_ids(ids, preserve_device=True)
         grads = self._normalize_grads(grads, preserve_device=True)
+        self._ensure_gpu_cache_table(name)
         if grads.dim() != 2:
             raise ValueError("grads must be a 2-dimensional tensor")
         if ids.size(0) != grads.size(0):

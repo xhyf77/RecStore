@@ -22,6 +22,7 @@ class _FakeOps:
         self.backend = "brpc"
         self.lookup_calls: list[tuple[int | None, list[int], int]] = []
         self.update_calls: list[tuple[int | None, str, list[int], list[list[float]]]] = []
+        self.update_clear_gpu_cache_call_counts: list[int] = []
         self.backend_switch_calls: list[str] = []
         self.lookup_region_warmup_calls = 0
         self.clear_gpu_cache_calls = 0
@@ -45,6 +46,7 @@ class _FakeOps:
         return torch.arange(rows * int(embedding_dim), dtype=torch.float32).view(rows, int(embedding_dim))
 
     def local_update_flat(self, table_name: str, keys: torch.Tensor, grads: torch.Tensor) -> None:
+        self.update_clear_gpu_cache_call_counts.append(self.clear_gpu_cache_calls)
         self.update_calls.append(
             (
                 self.active_port,
@@ -629,6 +631,26 @@ class TestShardedRecstoreClient(unittest.TestCase):
         client.local_lookup_flat("table1", torch.tensor([1], dtype=torch.int64))
 
         self.assertEqual(fake_client.ops.clear_gpu_cache_calls, 1)
+
+    def test_local_update_flat_clears_gpu_cache_when_switching_tables(self) -> None:
+        runtime_dir = self._make_runtime_dir()
+        fake_client = _FakeClient()
+        fake_client.ops.backend = "local_shm"
+        client = ShardedRecstoreClient(fake_client, runtime_dir)
+        client.register_tensor_meta("table0", shape=(16, 4), dtype=torch.float32)
+        client.register_tensor_meta("table1", shape=(16, 4), dtype=torch.float32)
+        client._activate_shard(1)
+
+        client.local_lookup_flat("table0", torch.tensor([1], dtype=torch.int64))
+        client.local_update_flat(
+            "table1",
+            torch.tensor([1], dtype=torch.int64),
+            torch.ones((1, 4), dtype=torch.float32),
+        )
+
+        self.assertEqual(fake_client.ops.update_clear_gpu_cache_call_counts, [1])
+        self.assertEqual(fake_client.ops.clear_gpu_cache_calls, 2)
+        self.assertIsNone(client._gpu_cache_table_name)
 
     def test_activate_shard_skips_transport_reconfig_for_shared_local_shm_single_table(self) -> None:
         runtime_dir = self._make_runtime_dir(

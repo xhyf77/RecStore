@@ -10,7 +10,9 @@ class _FakeOps:
         self.backend = backend
         self.lookup_calls = []
         self.update_calls = []
+        self.update_clear_gpu_cache_call_counts = []
         self.backend_switch_calls = []
+        self.clear_gpu_cache_calls = 0
 
     def current_ps_backend(self) -> str:
         return self.backend
@@ -25,7 +27,11 @@ class _FakeOps:
         return torch.arange(rows * int(embedding_dim), dtype=torch.float32).view(rows, int(embedding_dim))
 
     def local_update_flat(self, table_name: str, keys: torch.Tensor, grads: torch.Tensor) -> None:
+        self.update_clear_gpu_cache_call_counts.append(self.clear_gpu_cache_calls)
         self.update_calls.append((table_name, keys.clone(), grads.clone()))
+
+    def clear_gpu_cache(self) -> None:
+        self.clear_gpu_cache_calls += 1
 
 
 class TestKVClientLocalFastPath(unittest.TestCase):
@@ -113,6 +119,21 @@ class TestKVClientLocalFastPath(unittest.TestCase):
         self.assertTrue(torch.equal(called_keys, keys))
         self.assertTrue(torch.equal(called_grads, grads))
 
+    def test_local_update_flat_clears_gpu_cache_when_switching_tables(self):
+        client = self._build_client()
+        client._tensor_meta["table_b"] = {"shape": (16, 4), "dtype": torch.float32}
+
+        client.local_lookup_flat("table_a", torch.tensor([1], dtype=torch.int64))
+        client.local_update_flat(
+            "table_b",
+            torch.tensor([1], dtype=torch.int64),
+            torch.ones((1, 4), dtype=torch.float32),
+        )
+
+        self.assertEqual(client.ops.update_clear_gpu_cache_call_counts, [1])
+        self.assertEqual(client.ops.clear_gpu_cache_calls, 2)
+        self.assertIsNone(client._gpu_cache_table_name)
+
     def test_local_flat_ops_allow_hierkv_backend(self):
         client = self._build_client(backend="hierkv")
 
@@ -194,6 +215,9 @@ class TestKVClientLocalFastPath(unittest.TestCase):
                 "gpu_cache_fill_ms": 3.0,
                 "gpu_cache_update_ms": 4.0,
                 "gpu_cache_hit_count": 5.0,
+                "gpu_cache_invalidate_ms": 0.0,
+                "gpu_cache_request_count": 0.0,
+                "gpu_cache_miss_count": 0.0,
             },
         )
 
@@ -216,6 +240,7 @@ class TestKVClientLocalFastPath(unittest.TestCase):
 
     def test_gpu_cache_control_requires_ops_support(self):
         client = self._build_client()
+        client.ops.clear_gpu_cache = None
 
         with self.assertRaisesRegex(RuntimeError, "enable_gpu_cache"):
             client.enable_gpu_cache(capacity=1024, embedding_dim=4)

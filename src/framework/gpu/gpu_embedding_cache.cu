@@ -144,29 +144,31 @@ bool CanUseGpuCache(const torch::Tensor& keys, int64_t embedding_dim) {
 
 GpuCacheLookupResult QueryGpuCache(const torch::Tensor& keys,
                                    int64_t embedding_dim) {
-  std::lock_guard<std::mutex> guard(g_mu);
   RequireCudaTensor(keys, "keys");
   TORCH_CHECK(keys.scalar_type() == torch::kInt64, "keys must have dtype int64");
-  TORCH_CHECK(g_cache != nullptr, "gpu cache is not enabled");
-  TORCH_CHECK(embedding_dim == g_embedding_dim,
-              "gpu cache embedding_dim mismatch");
-  RequireCacheDevice(keys, "keys");
 
   c10::cuda::CUDAGuard device_guard(keys.device());
-  const auto query_start = Now();
   const auto stream      = at::cuda::getCurrentCUDAStream();
   auto options = keys.options().dtype(torch::kFloat32);
   auto values  = torch::empty({keys.numel(), embedding_dim}, options);
   auto missing_index =
       torch::empty({keys.numel()}, keys.options().dtype(torch::kInt64));
   auto missing_keys = torch::empty_like(keys);
+  auto missing_len =
+      torch::empty({1}, keys.options().dtype(torch::kInt64));
+  auto* missing_len_device =
+      reinterpret_cast<size_t*>(missing_len.data_ptr<int64_t>());
 
-  size_t* missing_len_device = nullptr;
+  std::lock_guard<std::mutex> guard(g_mu);
+  TORCH_CHECK(g_cache != nullptr, "gpu cache is not enabled");
+  TORCH_CHECK(embedding_dim == g_embedding_dim,
+              "gpu cache embedding_dim mismatch");
+  RequireCacheDevice(keys, "keys");
+  const auto query_start = Now();
+
   C10_CUDA_CHECK(
-      cudaMalloc(reinterpret_cast<void**>(&missing_len_device), sizeof(size_t)));
+      cudaMemsetAsync(missing_len_device, 0, sizeof(size_t), stream.stream()));
   try {
-    C10_CUDA_CHECK(
-        cudaMemsetAsync(missing_len_device, 0, sizeof(size_t), stream.stream()));
     g_cache->Query(keys.data_ptr<int64_t>(),
                    static_cast<size_t>(keys.numel()),
                    values.data_ptr<float>(),
@@ -181,8 +183,6 @@ GpuCacheLookupResult QueryGpuCache(const torch::Tensor& keys,
                                    cudaMemcpyDeviceToHost,
                                    stream.stream()));
     C10_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));
-    C10_CUDA_CHECK(cudaFree(missing_len_device));
-    missing_len_device = nullptr;
 
     TORCH_CHECK(missing_count_host <= static_cast<size_t>(keys.numel()),
                 "gpu cache returned invalid missing count");
@@ -205,9 +205,6 @@ GpuCacheLookupResult QueryGpuCache(const torch::Tensor& keys,
         missing_count,
     };
   } catch (...) {
-    if (missing_len_device != nullptr) {
-      cudaFree(missing_len_device);
-    }
     throw;
   }
 }
@@ -304,6 +301,42 @@ void InvalidateGpuCache(const torch::Tensor& keys_cuda) {
                   stream.stream());
   C10_CUDA_CHECK(cudaStreamSynchronize(stream.stream()));
   g_last_profile.invalidate_ms += MsSince(invalidate_start);
+}
+
+bool ApplySgdUpdateGpuCache(const torch::Tensor& keys_cuda,
+                            const torch::Tensor& grads_cuda,
+                            double learning_rate) {
+  if (keys_cuda.numel() == 0) {
+    return true;
+  }
+  RequireCudaTensor(keys_cuda, "keys_cuda");
+  TORCH_CHECK(grads_cuda.dim() == 2, "grads_cuda must be a 2-D tensor");
+  RequireCudaTensor(grads_cuda, "grads_cuda");
+  TORCH_CHECK(grads_cuda.scalar_type() == torch::kFloat32,
+              "grads_cuda must have dtype float32");
+  TORCH_CHECK(keys_cuda.size(0) == grads_cuda.size(0),
+              "keys_cuda and grads_cuda row count mismatch");
+  const int64_t embedding_dim = grads_cuda.size(1);
+
+  auto unique_result =
+      at::_unique2(keys_cuda,
+                   /*sorted=*/true,
+                   /*return_inverse=*/true,
+                   /*return_counts=*/false);
+  auto unique_keys = std::get<0>(unique_result);
+  auto inverse     = std::get<1>(unique_result);
+
+  auto cached = QueryGpuCache(unique_keys, embedding_dim);
+  if (cached.missing_count != 0) {
+    InvalidateGpuCache(keys_cuda);
+    return false;
+  }
+
+  auto grad_sums = torch::zeros_like(cached.values);
+  grad_sums.index_add_(0, inverse, grads_cuda);
+  auto updated_values = cached.values - grad_sums * learning_rate;
+  UpdateGpuCache(unique_keys, updated_values.contiguous());
+  return true;
 }
 
 } // namespace recstore::framework::gpu

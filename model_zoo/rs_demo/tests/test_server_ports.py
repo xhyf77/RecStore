@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import socket
 import tempfile
 import unittest
@@ -116,6 +117,27 @@ class TestChooseAvailablePorts(unittest.TestCase):
             self.assertIn('"local_shm"', runtime_cfg)
             self.assertIn('"region_name"', runtime_cfg)
             self.assertIn('"value_size": 256', runtime_cfg)
+
+    def test_make_runtime_dir_uses_single_shared_local_shm_shard(self) -> None:
+        base_cfg = {"cache_ps": {}, "distributed_client": {"servers": []}}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _runtime_dir, runtime_cfg_path = make_runtime_dir(
+                base_cfg=base_cfg,
+                host="127.0.0.1",
+                port0=15123,
+                port1=15124,
+                allocator="PersistLoopShmMalloc",
+                output_root=tmpdir,
+                run_id="case-local-shm-single",
+                ps_type="LOCAL_SHM",
+                value_size_bytes=256,
+            )
+            runtime_cfg = json.loads(runtime_cfg_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(runtime_cfg["cache_ps"]["num_shards"], 1)
+            self.assertEqual(runtime_cfg["distributed_client"]["num_shards"], 1)
+            self.assertEqual(runtime_cfg["cache_ps"]["servers"], [{"host": "127.0.0.1", "port": 15123, "shard": 0}])
+            self.assertEqual(runtime_cfg["distributed_client"]["servers"], [{"host": "127.0.0.1", "port": 15123, "shard": 0}])
 
     def test_wait_server_ready_local_shm_only_requires_live_process(self) -> None:
         proc = mock.Mock()

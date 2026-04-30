@@ -136,7 +136,7 @@ class TestGpuTrainingCache(unittest.TestCase):
         self.assertEqual(first_profile["gpu_cache_hit_count"], 0.0)
         self.assertEqual(second_profile["gpu_cache_hit_count"], 3.0)
 
-    def test_update_invalidates_cached_rows_before_next_lookup_refills_cache(self) -> None:
+    def test_update_refreshes_cached_rows_before_next_lookup_hits(self) -> None:
         table_name = self._new_table_name()
         self.client.init_data(name=table_name, shape=(64, 4), dtype=torch.float32)
         ids = torch.tensor([7, 9], dtype=torch.int64, device="cuda")
@@ -154,13 +154,40 @@ class TestGpuTrainingCache(unittest.TestCase):
         expected = torch.full((2, 4), -0.01, dtype=torch.float32, device="cuda")
         self.assertTrue(torch.allclose(after, expected))
         profile = self.client.get_last_gpu_cache_profile()
-        self.assertEqual(profile["gpu_cache_hit_count"], 0.0)
+        self.assertEqual(profile["gpu_cache_hit_count"], 2.0)
         self.assertEqual(profile["gpu_cache_request_count"], 2.0)
-        self.assertEqual(profile["gpu_cache_miss_count"], 2.0)
+        self.assertEqual(profile["gpu_cache_miss_count"], 0.0)
 
         refilled = self.client.local_lookup_flat(table_name, ids)
         self.assertTrue(torch.allclose(refilled, expected))
         self.assertEqual(self.client.get_last_gpu_cache_profile()["gpu_cache_hit_count"], 2.0)
+
+    def test_update_refresh_accumulates_duplicate_ids(self) -> None:
+        table_name = self._new_table_name()
+        self.client.init_data(name=table_name, shape=(64, 4), dtype=torch.float32)
+        ids = torch.tensor([7, 7], dtype=torch.int64, device="cuda")
+
+        self.client.local_lookup_flat(table_name, ids)
+        self.client.local_lookup_flat(table_name, ids)
+        self.assertEqual(self.client.get_last_gpu_cache_profile()["gpu_cache_hit_count"], 2.0)
+
+        grads = torch.tensor(
+            [
+                [1.0, 1.0, 1.0, 1.0],
+                [2.0, 2.0, 2.0, 2.0],
+            ],
+            dtype=torch.float32,
+            device="cuda",
+        )
+        self.client.local_update_flat(table_name, ids, grads)
+        after = self.client.local_lookup_flat(table_name, ids)
+
+        expected = torch.full((2, 4), -0.03, dtype=torch.float32, device="cuda")
+        self.assertTrue(torch.allclose(after, expected))
+        profile = self.client.get_last_gpu_cache_profile()
+        self.assertEqual(profile["gpu_cache_hit_count"], 2.0)
+        self.assertEqual(profile["gpu_cache_request_count"], 2.0)
+        self.assertEqual(profile["gpu_cache_miss_count"], 0.0)
 
     def test_emb_update_table_invalidates_cached_rows_before_next_lookup(self) -> None:
         table_name = self._new_table_name()

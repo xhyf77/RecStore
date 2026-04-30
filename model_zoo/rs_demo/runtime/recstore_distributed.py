@@ -426,6 +426,7 @@ class ShardedRecstoreClient:
         self._require_local_shm_backend("local_update_flat")
         normalized_ids = self._normalize_ids(ids, keep_device=True)
         normalized_grads = self._normalize_grads(grads, keep_device=True)
+        self._ensure_gpu_cache_table(name)
         if normalized_grads.dim() != 2:
             raise ValueError("grads must be a 2-dimensional tensor")
         if normalized_ids.size(0) != normalized_grads.size(0):

@@ -81,6 +81,8 @@ inline void ResetLocalUpdateFlatProfile() {
 }
 
 #ifdef RECSTORE_ENABLE_GPU_CACHE
+constexpr double kGpuCacheSgdLearningRate = 0.01;
+
 void SafeClearGpuCacheNoThrow() {
   try {
     gpu::ClearGpuCache();
@@ -92,20 +94,21 @@ void SafeClearGpuCacheNoThrow() {
 }
 
 void MaintainGpuCacheAfterUpdateNoThrow(const torch::Tensor& keys,
+                                        const torch::Tensor& grads,
                                         int64_t embedding_dim) {
   if (!gpu::IsGpuCacheEnabled()) {
     return;
   }
   if (gpu::CanUseGpuCache(keys, embedding_dim) && keys.is_cuda()) {
     try {
-      gpu::InvalidateGpuCache(keys);
+      gpu::ApplySgdUpdateGpuCache(keys, grads, kGpuCacheSgdLearningRate);
       return;
     } catch (const std::exception& e) {
-      LOG(WARNING) << "GPU cache invalidation failed after backend update "
+      LOG(WARNING) << "GPU cache refresh failed after backend update "
                       "succeeded; clearing cache and continuing: "
                    << e.what();
     } catch (...) {
-      LOG(WARNING) << "GPU cache invalidation failed after backend update "
+      LOG(WARNING) << "GPU cache refresh failed after backend update "
                       "succeeded; clearing cache and continuing: "
                    << "unknown exception";
     }
@@ -523,7 +526,7 @@ void emb_update_table_torch(const std::string& table_name,
 
   op->EmbUpdate(table_name, rec_keys, rec_grads);
 #ifdef RECSTORE_ENABLE_GPU_CACHE
-  MaintainGpuCacheAfterUpdateNoThrow(keys, grads.size(1));
+  MaintainGpuCacheAfterUpdateNoThrow(keys, grads, grads.size(1));
 #endif
 }
 
@@ -593,7 +596,7 @@ void local_update_flat_torch(const std::string& table_name,
       ElapsedMs(shm_call_start);
 
 #ifdef RECSTORE_ENABLE_GPU_CACHE
-  MaintainGpuCacheAfterUpdateNoThrow(keys, grads.size(1));
+  MaintainGpuCacheAfterUpdateNoThrow(keys, grads, grads.size(1));
 #endif
 
   g_last_local_update_flat_profile[kUpdateTotalMs] = ElapsedMs(total_start);

@@ -41,6 +41,9 @@ void ScatterMissValues(torch::Tensor* output_values,
                        const torch::Tensor& missing_positions_cpu,
                        const torch::Tensor& miss_values_cuda);
 void AddGpuCacheBackendLookupMs(double ms);
+bool ApplySgdUpdateGpuCache(const torch::Tensor& keys_cuda,
+                            const torch::Tensor& grads_cuda,
+                            double learning_rate);
 void UpdateGpuCache(const torch::Tensor& keys_cuda,
                     const torch::Tensor& values_cuda);
 void InvalidateGpuCache(const torch::Tensor& keys_cuda);

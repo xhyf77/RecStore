@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import fcntl
 import hashlib
 import json
 import os
@@ -240,23 +241,27 @@ def _write_or_verify_worker_fingerprint(
 ) -> None:
     del world_size
     fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-    if fingerprint_path.exists():
-        all_fingerprints = json.loads(fingerprint_path.read_text(encoding="utf-8"))
-    else:
-        all_fingerprints = {}
+    lock_path = fingerprint_path.with_suffix(fingerprint_path.suffix + ".lock")
+    with lock_path.open("w", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        if fingerprint_path.exists():
+            content = fingerprint_path.read_text(encoding="utf-8")
+            all_fingerprints = json.loads(content) if content.strip() else {}
+        else:
+            all_fingerprints = {}
 
-    all_fingerprints[str(rank)] = fingerprint
-    fingerprint_path.write_text(
-        json.dumps(all_fingerprints, sort_keys=True, indent=2),
-        encoding="utf-8",
-    )
+        all_fingerprints[str(rank)] = fingerprint
+        fingerprint_path.write_text(
+            json.dumps(all_fingerprints, sort_keys=True, indent=2),
+            encoding="utf-8",
+        )
 
-    if rank != 0:
-        baseline = all_fingerprints.get("0")
-        if baseline is not None and baseline != fingerprint:
-            raise RuntimeError(
-                f"worker fingerprint mismatch: rank0={baseline} rank{rank}={fingerprint}"
-            )
+        if rank != 0:
+            baseline = all_fingerprints.get("0")
+            if baseline is not None and baseline != fingerprint:
+                raise RuntimeError(
+                    f"worker fingerprint mismatch: rank0={baseline} rank{rank}={fingerprint}"
+                )
 
 
 def _merge_rank_outputs(paths: list[Path], out_path: Path) -> list[dict[str, Any]]:
