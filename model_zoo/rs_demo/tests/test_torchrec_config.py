@@ -17,7 +17,7 @@ from model_zoo.rs_demo.config import (
 
 
 class TestTorchRecConfig(unittest.TestCase):
-    def test_recstore_distributed_rejects_multi_node(self) -> None:
+    def test_recstore_distributed_allows_multi_node(self) -> None:
         cfg = parse_config(
             [
                 "--backend",
@@ -28,13 +28,11 @@ class TestTorchRecConfig(unittest.TestCase):
                 "0",
                 "--nproc-per-node",
                 "1",
+                "--recstore-runtime-dir",
+                "/tmp/recstore-shared-runtime",
             ]
         )
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "RecStore multi-trainer currently supports only --nnodes=1",
-        ):
-            validate_recstore_config(cfg)
+        validate_recstore_config(cfg)
 
     def test_torchrec_distributed_fields_parse(self) -> None:
         cfg = parse_config(
@@ -70,6 +68,17 @@ class TestTorchRecConfig(unittest.TestCase):
         self.assertEqual(cfg.rdzv_id, "demo-run")
         self.assertEqual(cfg.output_root, "/nas/home/shq/docker/rs_demo")
         self.assertEqual(cfg.run_id, "case-a")
+
+    def test_torchrec_dist_mode_parses(self) -> None:
+        cfg = parse_config(
+            [
+                "--backend",
+                "torchrec",
+                "--torchrec-dist-mode",
+                "fair_remote",
+            ]
+        )
+        self.assertEqual(cfg.torchrec_dist_mode, "fair_remote")
 
     def test_torchrec_backend_parses_profiler_flags(self) -> None:
         cfg = parse_config(
@@ -160,6 +169,24 @@ class TestTorchRecConfig(unittest.TestCase):
                     "1",
                 ]
             )
+            validate_torchrec_config(cfg)
+
+    def test_torchrec_fair_remote_requires_multi_process_world(self) -> None:
+        cfg = parse_config(
+            [
+                "--backend",
+                "torchrec",
+                "--torchrec-dist-mode",
+                "fair_remote",
+                "--nnodes",
+                "1",
+                "--nproc-per-node",
+                "1",
+            ]
+        )
+        with self.assertRaisesRegex(
+            RuntimeError, "fair_remote requires world_size greater than 1"
+        ):
             validate_torchrec_config(cfg)
 
     def test_ensure_run_id_generates_when_missing(self) -> None:
@@ -351,6 +378,115 @@ class TestTorchRecConfig(unittest.TestCase):
                         )
 
             self.assertEqual(rc, 0)
+
+    def test_cli_recstore_runtime_dir_skips_make_runtime_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            base_cfg = {
+                "client": {"host": "127.0.0.1", "port": 15123, "shard": 0},
+                "cache_ps": {"servers": []},
+                "distributed_client": {"servers": []},
+            }
+            (repo_root / "recstore_config.json").write_text(json.dumps(base_cfg), encoding="utf-8")
+            shared_runtime = repo_root / "shared-runtime"
+            shared_runtime.mkdir()
+            (shared_runtime / "recstore_config.json").write_text(
+                json.dumps(base_cfg),
+                encoding="utf-8",
+            )
+
+            class _FakeRunner:
+                def __init__(self):
+                    self.runtime_dir = None
+
+                def run(self, repo_root, cfg):
+                    Path(cfg.recstore_main_csv).parent.mkdir(parents=True, exist_ok=True)
+                    Path(cfg.recstore_main_csv).write_text(
+                        "step_total_ms,input_pack_ms,embed_lookup_local_ms,embed_pool_local_ms,output_unpack_ms,dense_fwd_ms,backward_ms,optimizer_ms,sparse_update_ms,emb_stage_ms\n"
+                        "1.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,1.0\n",
+                        encoding="utf-8",
+                    )
+                    return {"backend": "recstore", "rows": []}
+
+            fake_runner = _FakeRunner()
+
+            with mock.patch.object(cli, "build_runner", return_value=fake_runner), mock.patch.object(
+                cli, "repo_root_from_this_file", return_value=repo_root
+            ), mock.patch.object(
+                cli, "make_runtime_dir", side_effect=AssertionError("make_runtime_dir should not be called")
+            ), mock.patch.object(
+                cli, "analyze_embupdate", return_value="ok"
+            ):
+                rc = cli.main(
+                    [
+                        "--backend",
+                        "recstore",
+                        "--steps",
+                        "1",
+                        "--no-start-server",
+                        "--output-root",
+                        str(repo_root),
+                        "--run-id",
+                        "recstore-external-runtime",
+                        "--recstore-runtime-dir",
+                        str(shared_runtime),
+                    ]
+                )
+
+            self.assertEqual(rc, 0)
+
+    def test_cli_recstore_assigns_generated_runtime_dir_back_to_cfg(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            base_cfg = {
+                "client": {"host": "127.0.0.1", "port": 15123, "shard": 0},
+                "cache_ps": {"servers": []},
+                "distributed_client": {"servers": []},
+            }
+            (repo_root / "recstore_config.json").write_text(json.dumps(base_cfg), encoding="utf-8")
+            generated_runtime = repo_root / "runtime-generated"
+            generated_runtime.mkdir()
+            (generated_runtime / "recstore_config.json").write_text(
+                json.dumps(base_cfg),
+                encoding="utf-8",
+            )
+
+            captured_cfg = {}
+
+            class _FakeRunner:
+                def run(self, repo_root, cfg):
+                    captured_cfg["recstore_runtime_dir"] = cfg.recstore_runtime_dir
+                    Path(cfg.recstore_main_csv).parent.mkdir(parents=True, exist_ok=True)
+                    Path(cfg.recstore_main_csv).write_text(
+                        "step_total_ms,input_pack_ms,embed_lookup_local_ms,embed_pool_local_ms,output_unpack_ms,dense_fwd_ms,backward_ms,optimizer_ms,sparse_update_ms,emb_stage_ms\n"
+                        "1.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,1.0\n",
+                        encoding="utf-8",
+                    )
+                    return {"backend": "recstore", "rows": []}
+
+            with mock.patch.object(cli, "build_runner", return_value=_FakeRunner()), mock.patch.object(
+                cli, "repo_root_from_this_file", return_value=repo_root
+            ), mock.patch.object(
+                cli, "make_runtime_dir", return_value=(generated_runtime, generated_runtime / "recstore_config.json")
+            ), mock.patch.object(
+                cli, "analyze_embupdate", return_value="ok"
+            ):
+                rc = cli.main(
+                    [
+                        "--backend",
+                        "recstore",
+                        "--steps",
+                        "1",
+                        "--no-start-server",
+                        "--output-root",
+                        str(repo_root),
+                        "--run-id",
+                        "recstore-generated-runtime",
+                    ]
+                )
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(captured_cfg["recstore_runtime_dir"], str(generated_runtime))
 
 
 if __name__ == "__main__":

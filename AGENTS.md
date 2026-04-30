@@ -22,6 +22,10 @@ This document applies repository-wide unless the current conversation gives a mo
 - Do not amend commits unless the user explicitly asks for it.
 - Never use destructive git commands such as `git reset --hard` or `git checkout --` unless explicitly requested.
 - Assume the worktree may be dirty. Do not revert unrelated user changes.
+- Do not commit transient AI planning files, scratch specs, or intermediate
+  workflow artifacts such as `docs/superpowers/specs/*`. Keep them untracked,
+  place them under `/tmp`, or convert them into intentional project
+  documentation before committing.
 
 ## Default Development Workflow
 
@@ -128,7 +132,7 @@ When the user asks to validate baseline repository operability, or explicitly as
 
 Notes:
 
-- `pytorch_client_test` maps to `src/framework/pytorch/python_client/client_test.py`.
+- `pytorch_client_test` maps to `src/test/framework/pytorch/test_client.py`.
 - The test connects to the ports defined in `recstore_config.json`, currently `15123` and `15124`.
 - If a usable `ps_server` is already running on those ports, the test may reuse it.
 - If the environment blocks local socket binding, start the server and run the client tests in an environment without that restriction.

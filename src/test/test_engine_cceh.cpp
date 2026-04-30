@@ -7,6 +7,7 @@
 #include "base/json.h"
 #include "memory/shm_file.h"
 #include "storage/kv_engine/engine_cceh.h"
+#include "test_io_uring_helper.h"
 
 namespace {
 std::string GetDirectIOTestDir() {
@@ -20,6 +21,10 @@ std::string GetDirectIOTestDir() {
 class KVEngineCCEHTest : public ::testing::Test {
 protected:
   void SetUp() override {
+    std::string reason;
+    if (!test_utils::CanUseIoUring(&reason))
+      GTEST_SKIP() << reason;
+
     test_dir_ = GetDirectIOTestDir();
     std::filesystem::create_directories(test_dir_);
     base::PMMmapRegisterCenter::GetConfig().use_dram = true;

@@ -39,6 +39,7 @@ class RunConfig:
     recstore_main_csv: str = ""
     recstore_main_agg_csv: str = ""
     library_path: str = ""
+    recstore_runtime_dir: str = ""
     server_log: str = ""
     data_dir: str = "model_zoo/torchrec_dlrm/processed_day_0_data"
     train_ratio: float = 0.8
@@ -50,12 +51,18 @@ class RunConfig:
     nnodes: int = 1
     node_rank: int = 0
     nproc_per_node: int = 1
+    enable_single_node_distributed_fast_path: bool = False
+    single_node_ps_backend: str = "local_shm"
+    single_node_owner_policy: str = "hash_mod_world_size"
+    enable_gpu_cache: bool = False
+    gpu_cache_capacity: int = 0
     master_addr: str = "127.0.0.1"
     master_port: int = 29500
     rdzv_backend: str = "c10d"
     rdzv_id: str = ""
     ps_type: str = "BRPC"
     torchrec_profiler: bool = False
+    torchrec_dist_mode: str = "replicated"
     torchrec_profiler_warmup: int = 0
     torchrec_profiler_active: int = 2
     torchrec_profiler_repeat: int = 1
@@ -80,13 +87,47 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nnodes", type=int, default=1)
     parser.add_argument("--node-rank", type=int, default=0)
     parser.add_argument("--nproc-per-node", type=int, default=None)
+    parser.add_argument(
+        "--enable-single-node-distributed-fast-path",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--single-node-ps-backend",
+        type=str,
+        default="local_shm",
+        choices=["local_shm", "hierkv"],
+    )
+    parser.add_argument(
+        "--single-node-owner-policy",
+        type=str,
+        default="hash_mod_world_size",
+        choices=["hash_mod_world_size"],
+    )
+    parser.add_argument(
+        "--enable-gpu-cache",
+        action="store_true",
+        default=False,
+        help="Enable RecStore GPU read/write training cache for local fast path.",
+    )
+    parser.add_argument(
+        "--gpu-cache-capacity",
+        type=int,
+        default=0,
+        help="Number of embedding rows to keep in the RecStore GPU cache.",
+    )
     parser.add_argument("--master-addr", type=str, default="127.0.0.1")
     parser.add_argument("--master-port", type=int, default=29500)
     parser.add_argument("--rdzv-backend", type=str, default="c10d")
     parser.add_argument("--rdzv-id", type=str, default="")
     parser.add_argument("--output-root", type=str, default="/nas/home/shq/docker/rs_demo")
     parser.add_argument("--run-id", type=str, default="")
-    parser.add_argument("--ps-type", type=str, default="BRPC", choices=["BRPC", "GRPC"])
+    parser.add_argument(
+        "--ps-type",
+        type=str,
+        default="BRPC",
+        choices=["BRPC", "GRPC", "LOCAL_SHM"],
+    )
     parser.add_argument("--num-embeddings", type=int, default=200000)
     parser.add_argument("--embedding-dim", type=int, default=128)
     parser.add_argument("--batch-size", type=int, default=4096)
@@ -116,6 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--recstore-main-csv", type=str, default="")
     parser.add_argument("--recstore-main-agg-csv", type=str, default="")
     parser.add_argument("--library-path", type=str, default="")
+    parser.add_argument("--recstore-runtime-dir", type=str, default="")
     parser.add_argument("--server-log", type=str, default="")
     parser.add_argument(
         "--data-dir",
@@ -135,6 +177,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="1024,1024,512,256,1",
     )
     parser.add_argument("--torchrec-profiler", action="store_true", default=False)
+    parser.add_argument(
+        "--torchrec-dist-mode",
+        type=str,
+        default="replicated",
+        choices=["replicated", "fair_remote"],
+    )
     parser.add_argument("--torchrec-profiler-warmup", type=int, default=0)
     parser.add_argument("--torchrec-profiler-active", type=int, default=2)
     parser.add_argument("--torchrec-profiler-repeat", type=int, default=1)
@@ -198,6 +246,10 @@ def validate_torchrec_config(cfg: RunConfig) -> None:
         raise RuntimeError(
             "TorchRec profiler sub-arguments require --torchrec-profiler."
         )
+    if cfg.torchrec_dist_mode == "fair_remote":
+        world_size = cfg.nnodes * cfg.nproc_per_node
+        if world_size <= 1:
+            raise RuntimeError("fair_remote requires world_size greater than 1.")
 
 
 def validate_recstore_config(cfg: RunConfig) -> None:
@@ -210,8 +262,31 @@ def validate_recstore_config(cfg: RunConfig) -> None:
         raise RuntimeError("--nproc-per-node must be greater than 0.")
     if cfg.node_rank < 0 or cfg.node_rank >= cfg.nnodes:
         raise RuntimeError("--node-rank must be within [0, nnodes).")
-    if cfg.nnodes > 1:
-        raise RuntimeError("RecStore multi-trainer currently supports only --nnodes=1.")
+    if cfg.enable_gpu_cache and cfg.gpu_cache_capacity <= 0:
+        raise RuntimeError(
+            "--gpu-cache-capacity must be positive when --enable-gpu-cache is set"
+        )
+    if cfg.enable_single_node_distributed_fast_path:
+        if cfg.nnodes != 1:
+            raise RuntimeError(
+                "RecStore single-node distributed fast path requires --nnodes=1."
+            )
+        if cfg.nproc_per_node <= 1:
+            raise RuntimeError(
+                "RecStore single-node distributed fast path requires --nproc-per-node greater than 1."
+            )
+        if cfg.single_node_ps_backend not in {"local_shm", "hierkv"}:
+            raise RuntimeError(
+                "RecStore single-node distributed fast path only supports --single-node-ps-backend=local_shm or hierkv."
+            )
+        if cfg.single_node_owner_policy != "hash_mod_world_size":
+            raise RuntimeError(
+                "RecStore single-node distributed fast path only supports --single-node-owner-policy=hash_mod_world_size."
+            )
+    if cfg.nnodes > 1 and not cfg.recstore_runtime_dir:
+        raise RuntimeError(
+            "RecStore multi-node requires --recstore-runtime-dir pointing to a shared runtime directory."
+        )
 
 
 def ensure_run_id(cfg: RunConfig) -> None:

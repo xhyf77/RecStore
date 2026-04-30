@@ -1,0 +1,362 @@
+name: Docker Test
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - '**'
+  pull_request_target:
+    branches:
+      - '**'
+  workflow_run:
+    workflows: ["Docker Build and Publish"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Optional environment image tag (for example: latest, manual). If not specified, uses latest."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  test-image:
+    name: Pull image and run tests
+    if: >-
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name != github.repository)
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_REPO: ghcr.io/${{ github.repository }}/recstore-devel
+      TEST_CONTAINER: recstore-image-test-${{ github.run_id }}-${{ github.run_attempt }}
+      PUBLISH_COVERAGE: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # workflow_run 触发时固定拉取默认分支最新代码，镜像仅提供构建环境。
+          # pull_request_target 触发时显式检出 PR merge ref，避免回到基线分支代码。
+          ref: ${{ github.event_name == 'workflow_run' && format('refs/heads/{0}', github.event.repository.default_branch) || (github.event_name == 'pull_request_target' && format('refs/pull/{0}/merge', github.event.pull_request.number)) || github.ref }}
+          # third_party 已在发布镜像阶段缓存并在测试容器中恢复，这里仅拉取主仓库代码。
+          submodules: false
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve image reference
+        id: image
+        env:
+          INPUT_IMAGE_TAG: ${{ github.event.inputs.image_tag || '' }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+          CURRENT_REPO: ${{ github.repository }}
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha || '' }}
+          CURRENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          REPO_LOWER="$(echo "${IMAGE_REPO}" | tr '[:upper:]' '[:lower:]')"
+
+          if { [ "${EVENT_NAME}" = "pull_request" ] || [ "${EVENT_NAME}" = "pull_request_target" ]; } && [ "${PR_HEAD_REPO}" != "${CURRENT_REPO}" ]; then
+            PRIMARY_SHA_TAG="latest"
+          elif [ "${EVENT_NAME}" = "workflow_run" ] && [ -n "${WORKFLOW_RUN_HEAD_SHA}" ]; then
+            PRIMARY_SHA_TAG="sha-$(echo "${WORKFLOW_RUN_HEAD_SHA}" | cut -c1-7)"
+          elif { [ "${EVENT_NAME}" = "pull_request" ] || [ "${EVENT_NAME}" = "pull_request_target" ]; } && [ -n "${PR_HEAD_SHA}" ]; then
+            PRIMARY_SHA_TAG="sha-$(echo "${PR_HEAD_SHA}" | cut -c1-7)"
+          else
+            PRIMARY_SHA_TAG="sha-$(echo "${CURRENT_SHA}" | cut -c1-7)"
+          fi
+
+          echo "repo=${REPO_LOWER}" >> "${GITHUB_OUTPUT}"
+          echo "input_tag=${INPUT_IMAGE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "event_name=${EVENT_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "primary_sha_tag=${PRIMARY_SHA_TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull docker image
+        id: pull
+        run: |
+          set -euo pipefail
+          REPO="${{ steps.image.outputs.repo }}"
+          INPUT_TAG="${{ steps.image.outputs.input_tag }}"
+          PRIMARY_SHA_TAG="${{ steps.image.outputs.primary_sha_tag }}"
+          EVENT_NAME="${{ steps.image.outputs.event_name }}"
+
+          try_pull() {
+            local tag_to_try=$1
+            local img="${REPO}:${tag_to_try}"
+            echo "Trying image: ${img}"
+            if docker pull "${img}" 2>/dev/null; then
+              echo "pulled_image=${img}" >> "${GITHUB_OUTPUT}"
+              echo "✓ Successfully pulled image: ${img}"
+              return 0
+            fi
+            return 1
+          }
+
+          # 用户显式指定 tag 时优先尝试。
+          if [ -n "${INPUT_TAG}" ] && try_pull "${INPUT_TAG}"; then
+            exit 0
+          fi
+
+          # 外部 fork PR 没有同提交镜像时，primary_sha_tag 会被预先解析为 latest。
+          if try_pull "${PRIMARY_SHA_TAG}"; then
+            exit 0
+          fi
+
+          if [ "${PRIMARY_SHA_TAG}" != "latest" ] && try_pull "latest"; then
+            exit 0
+          fi
+
+          # manual 仅用于 workflow_dispatch 手动触发兜底。
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && try_pull "manual"; then
+            exit 0
+          fi
+
+          # Try to find any available tag (as last resort)
+          echo "Commit-specific tags not found. Searching for any available images..."
+          available_tags=$(docker search "${REPO}" --format "table {{.Name}}\t{{.Stars}}" 2>/dev/null | grep "${REPO}" | head -1 || echo "")
+          if [ -n "${available_tags}" ]; then
+            echo "Note: Available images exist but none match your search criteria."
+            echo "Available: ${available_tags}"
+          fi
+
+          echo "" >&2
+          echo "Failed to find image at ${REPO}" >&2
+          echo "Please run Docker Publish workflow first to build the image." >&2
+          echo "Or manually trigger Docker Publish from Actions tab." >&2
+          exit 1
+
+      - name: Start test container
+        env:
+          TEST_IMAGE: ${{ steps.pull.outputs.pulled_image }}
+        run: |
+          set -euo pipefail
+          PULLED_IMAGE="${TEST_IMAGE}"
+
+          docker run -d --name "${TEST_CONTAINER}" --network host \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
+            "${PULLED_IMAGE}" \
+            bash -lc 'tail -f /dev/null'
+
+      - name: Restore initialized third_party cache
+        run: |
+          set -euo pipefail
+          docker exec "${TEST_CONTAINER}" bash -lc '
+            set -euo pipefail
+            CACHE_DIR="/opt/recstore-cache/third_party"
+            if [ ! -d "${CACHE_DIR}" ]; then
+              echo "No initialized third_party cache found in image. Continue without restore."
+              exit 0
+            fi
+
+            echo "Restoring initialized third_party from ${CACHE_DIR} ..."
+            rm -rf /workspace/third_party
+            cp -a "${CACHE_DIR}" /workspace/third_party
+            echo "Restore completed."
+          '
+
+      - name: Build project inside container
+        run: |
+          set -euo pipefail
+          docker exec \
+            -e PUBLISH_COVERAGE="${PUBLISH_COVERAGE}" \
+            "${TEST_CONTAINER}" bash -lc '
+            set -euo pipefail
+            export CI=true
+            export GITHUB_ACTIONS=true
+            export DEBIAN_FRONTEND=noninteractive
+            export GLOG_logtostderr=1
+            export GLOG_v=1
+
+            cd /workspace
+            echo "Current commit under test:"
+            git rev-parse HEAD || true
+            echo "Verifying bRPC test source version in container..."
+            grep -n "kBrpcTestPort0\|kDistBrpcPort0" src/test/ps/brpc/*_test.cpp || true
+            mkdir -p runner/logs
+
+            if [ "${PUBLISH_COVERAGE}" = "true" ]; then
+              BUILD_DIR=build_coverage
+              rm -rf "${BUILD_DIR}"
+              mkdir -p "${BUILD_DIR}"
+              cd "${BUILD_DIR}"
+              CMAKE_ARGS=(
+                -DENABLE_CUDA=OFF
+                -DCMAKE_BUILD_TYPE=Debug
+                -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+                -DCMAKE_C_FLAGS=--coverage\ -O0\ -g
+                -DCMAKE_CXX_FLAGS=--coverage\ -O0\ -g
+              )
+              if [ -x /usr/local/cuda/bin/nvcc ]; then
+                CMAKE_ARGS+=(
+                  -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc
+                  -DCUDAToolkit_ROOT=/usr/local/cuda
+                )
+              fi
+              cmake "${CMAKE_ARGS[@]}" ..
+            else
+              BUILD_DIR=build
+              rm -rf "${BUILD_DIR}"
+              mkdir -p "${BUILD_DIR}"
+              cd "${BUILD_DIR}"
+              cmake -DENABLE_CUDA=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ..
+            fi
+
+            make -j4
+
+            if [ "${PUBLISH_COVERAGE}" = "true" ]; then
+              cd /workspace
+              rm -rf build
+              ln -s build_coverage build
+            fi
+          '
+
+      - name: Run ctest
+        run: |
+          set -euo pipefail
+          docker exec \
+            -e PUBLISH_COVERAGE="${PUBLISH_COVERAGE}" \
+            "${TEST_CONTAINER}" bash -lc '
+            set -euo pipefail
+
+            CTEST_EXCLUDE_REGEX="test_cceh|test_engine_cceh|test_io_backend"
+            if ! command -v memcached >/dev/null 2>&1; then
+              echo "memcached not found; skipping RDMA integration tests."
+              CTEST_EXCLUDE_REGEX="${CTEST_EXCLUDE_REGEX}|pytorch_client_test_rdma_basic|pytorch_client_test_rdma|pytorch_client_test_rdma_auto"
+            fi
+
+            BUILD_DIR=build
+            if [ "${PUBLISH_COVERAGE}" = "true" ]; then
+              BUILD_DIR=build_coverage
+              export PS_SERVER_PATH="/workspace/${BUILD_DIR}/bin/ps_server"
+            fi
+
+            cd "/workspace/${BUILD_DIR}"
+            # Docker default seccomp in GitHub Actions blocks io_uring syscalls.
+            # Skip io_uring-dependent tests in this containerized lane.
+            ctest --output-on-failure \
+              -E "${CTEST_EXCLUDE_REGEX}" \
+              2>&1 | tee /workspace/runner/logs/ctest.log
+            exit ${PIPESTATUS[0]}
+          '
+
+      - name: Generate and publish coverage
+        if: env.PUBLISH_COVERAGE == 'true'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          docker exec "${TEST_CONTAINER}" bash -lc '
+            set -euo pipefail
+            cd /workspace
+            export CI=true
+            export GITHUB_ACTIONS=true
+            export DEBIAN_FRONTEND=noninteractive
+            export PATH="${HOME}/.local/bin:/usr/local/cuda/bin:${PATH}"
+            python3 -m pip install --user gcovr coverage
+
+            CPP_REPORT_DIR=/workspace/build_coverage/coverage/cpp
+            PY_REPORT_DIR=/workspace/build_coverage/coverage/python
+            mkdir -p "${CPP_REPORT_DIR}" "${PY_REPORT_DIR}"
+
+            eval "$(python3 /workspace/ci/test/coverage_scope.py --labeler /workspace/.github/labeler.yml --format gcovr)"
+            gcovr \
+              --root /workspace \
+              --object-directory /workspace/build_coverage \
+              "${COVERAGE_SCOPE_ARGS[@]}" \
+              --exclude ".*third_party/.*" \
+              --exclude "build_coverage/.*" \
+              --exclude ".*/build_coverage/.*" \
+              --exclude "build/.*" \
+              --exclude ".*/build/.*" \
+              --exclude-directories ".*/CMakeFiles/[0-9.]+/CompilerId.*" \
+              --xml-pretty --xml "${CPP_REPORT_DIR}/coverage.xml" \
+              --html-details "${CPP_REPORT_DIR}/index.html" \
+              --txt "${CPP_REPORT_DIR}/coverage.txt" \
+              --print-summary
+
+            export LD_LIBRARY_PATH="/workspace/build_coverage/lib:${LD_LIBRARY_PATH:-}"
+            export PYTHONPATH="/workspace/src/python/pytorch:${PYTHONPATH:-}"
+            export PS_SERVER_PATH="/workspace/build_coverage/bin/ps_server"
+
+            python3 -m coverage erase
+            (
+              cd /workspace/src/test/framework/pytorch
+              python3 -m coverage run --parallel-mode test_client.py /workspace/build_coverage/lib/lib_recstore_ops.so
+            )
+            (
+              cd /workspace/src/python/pytorch
+              python3 -m coverage run --parallel-mode -m unittest recstore.unittest.test_dist_emb
+            )
+            python3 -m coverage combine \
+              /workspace/src/test/framework/pytorch \
+              /workspace/src/python/pytorch
+            eval "$(python3 /workspace/ci/test/coverage_scope.py --labeler /workspace/.github/labeler.yml --format coverage)"
+            python3 -m coverage html "${COVERAGE_SCOPE_ARGS[@]}" -d "${PY_REPORT_DIR}"
+            python3 -m coverage xml "${COVERAGE_SCOPE_ARGS[@]}" -o "${PY_REPORT_DIR}/coverage.xml"
+            python3 -m coverage report "${COVERAGE_SCOPE_ARGS[@]}" -m | tee "${PY_REPORT_DIR}/coverage.txt"
+          '
+
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          bash ci/pages/update_gh_pages.sh \
+            --source build_coverage/coverage \
+            --mode coverage \
+            --message "ci: deploy coverage reports"
+
+      - name: Upload coverage reports
+        if: always() && env.PUBLISH_COVERAGE == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: build_coverage/coverage/
+          if-no-files-found: ignore
+
+      - name: Print ctest log summary
+        if: always()
+        run: |
+          set -euo pipefail
+          echo "===== ctest log summary (last 200 lines) ====="
+          docker exec "${TEST_CONTAINER}" bash -lc '
+            if [ -f /workspace/runner/logs/ctest.log ]; then
+              tail -n 200 /workspace/runner/logs/ctest.log
+            else
+              echo "ctest log not found: /workspace/runner/logs/ctest.log"
+            fi
+          '
+          echo "===== end of ctest log summary ====="
+
+      - name: Collect test logs from container
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p runner/logs build
+          docker cp "${TEST_CONTAINER}:/workspace/runner/logs" runner/ || true
+          docker cp "${TEST_CONTAINER}:/workspace/build/CMakeCache.txt" build/CMakeCache.txt || true
+          docker cp "${TEST_CONTAINER}:/workspace/build_coverage/CMakeCache.txt" build/CMakeCache.coverage.txt || true
+          docker rm -f "${TEST_CONTAINER}" || true
+
+      - name: Upload docker image test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-test-logs
+          path: |
+            runner/logs/
+            init_env_*.log
+            build/CMakeCache.txt
+            build/CMakeCache.coverage.txt

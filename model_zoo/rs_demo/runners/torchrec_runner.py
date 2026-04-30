@@ -192,6 +192,8 @@ def _merge_rank_outputs(paths: list[Path], out_path: Path) -> list[dict[str, Any
                 except (TypeError, ValueError):
                     normalized[key] = value
             merged.append(normalized)
+    if any(str(row.get("torchrec_dist_mode", "")) == "fair_remote" for row in merged):
+        merged = [row for row in merged if int(row.get("torchrec_is_trainer", 1)) == 1]
     merged.sort(key=lambda row: (int(row.get("rank", 0)), int(row.get("step", 0))))
     _write_rows(out_path, merged)
     return merged
@@ -214,6 +216,54 @@ def _barrier_for_step_alignment(dist, device, local_rank: int, use_dist: bool) -
         dist.barrier()
 
 
+def _is_fair_remote_mode(cfg: RunConfig, world_size: int) -> bool:
+    return cfg.torchrec_dist_mode == "fair_remote" and world_size > 1
+
+
+def _build_train_dataloader_for_mode(
+    repo_root: Path,
+    cfg: RunConfig,
+    rank: int,
+    torch,
+):
+    from ..data.dlrm_source import build_train_dataloader
+
+    world_size = cfg.nnodes * cfg.nproc_per_node
+    fair_remote_mode = _is_fair_remote_mode(cfg, world_size)
+    shuffle = not fair_remote_mode
+    seed = cfg.seed
+    return build_train_dataloader(
+        repo_root=repo_root,
+        data_dir_rel=cfg.data_dir,
+        train_ratio=cfg.train_ratio,
+        num_embeddings=cfg.num_embeddings,
+        batch_size=cfg.batch_size,
+        shuffle=shuffle,
+        seed=seed,
+        rank=rank if (world_size > 1 and not fair_remote_mode) else None,
+        world_size=world_size if (world_size > 1 and not fair_remote_mode) else None,
+    )
+
+
+def _maybe_wrap_dense_module_for_dist(
+    dense_module,
+    device,
+    local_rank: int,
+    use_dist: bool,
+    fair_remote_mode: bool,
+    torch,
+):
+    if not use_dist or fair_remote_mode:
+        return dense_module
+    if device.type == "cuda":
+        return torch.nn.parallel.DistributedDataParallel(
+            dense_module,
+            device_ids=[local_rank],
+            output_device=local_rank,
+        )
+    return torch.nn.parallel.DistributedDataParallel(dense_module)
+
+
 def _run_single_or_dist_worker(
     repo_root: Path,
     cfg: RunConfig,
@@ -228,7 +278,6 @@ def _run_single_or_dist_worker(
 
     from ..data.dlrm_source import (
         build_kjt_batch_from_dense_sparse_labels,
-        build_train_dataloader,
         inject_project_paths,
     )
 
@@ -257,7 +306,7 @@ def _run_single_or_dist_worker(
         device = torch.device("cpu")
     if is_dist and not dist.is_initialized():
         _append_worker_debug(cfg, rank, f"before_init_process_group device={device}")
-        dist.init_process_group(backend=backend, device_id=device if device.type == "cuda" else None)
+        dist.init_process_group(backend=backend)
         _append_worker_debug(cfg, rank, "after_init_process_group")
 
     if is_dist:
@@ -271,14 +320,14 @@ def _run_single_or_dist_worker(
         )
         _append_worker_debug(cfg, rank, f"worker_fingerprint {fingerprint}")
 
-    torch.manual_seed(cfg.seed + rank)
+    fair_remote_mode = _is_fair_remote_mode(cfg, world_size)
+    torch.manual_seed(cfg.seed if fair_remote_mode else cfg.seed + rank)
 
-    _dataset, dataloader = build_train_dataloader(
+    _dataset, dataloader = _build_train_dataloader_for_mode(
         repo_root=repo_root,
-        data_dir_rel=cfg.data_dir,
-        train_ratio=cfg.train_ratio,
-        num_embeddings=cfg.num_embeddings,
-        batch_size=cfg.batch_size,
+        cfg=cfg,
+        rank=rank,
+        torch=torch,
     )
     data_iter = iter(dataloader)
 
@@ -350,8 +399,16 @@ def _run_single_or_dist_worker(
         over_arch_layer_sizes=parse_layer_sizes(cfg.over_arch_layer_sizes),
         device=device,
     )
-    if use_dist:
-        _append_worker_debug(cfg, rank, "skip_dense_ddp")
+    dense_module = _maybe_wrap_dense_module_for_dist(
+        dense_module=dense_module,
+        device=device,
+        local_rank=local_rank,
+        use_dist=use_dist,
+        fair_remote_mode=fair_remote_mode,
+        torch=torch,
+    )
+    if use_dist and fair_remote_mode:
+        _append_worker_debug(cfg, rank, "skip_dense_ddp_fair_remote")
 
     criterion = nn.BCEWithLogitsLoss()
     _append_worker_debug(cfg, rank, "after_criterion")
@@ -368,6 +425,7 @@ def _run_single_or_dist_worker(
     _append_worker_debug(cfg, rank, "before_training_loop")
 
     rows: list[dict[str, Any]] = []
+    is_trainer_rank = (not fair_remote_mode) or rank == 0
     with profiler_context:
         for step in range(cfg.steps):
             _append_worker_debug(cfg, rank, f"step_start step={step}")
@@ -384,6 +442,9 @@ def _run_single_or_dist_worker(
                 "nproc_per_node": cfg.nproc_per_node,
                 "world_size": cfg.nnodes * cfg.nproc_per_node,
                 "dist_mode": "multi_node" if cfg.nnodes > 1 else "single_node",
+                "torchrec_dist_mode": cfg.torchrec_dist_mode,
+                "torchrec_role": "trainer" if is_trainer_rank else "embedding_worker",
+                "torchrec_is_trainer": _bool_int(is_trainer_rank),
             }
             step_start = time.perf_counter()
 
@@ -396,36 +457,35 @@ def _run_single_or_dist_worker(
                     dense_batch, sparse_batch, labels_batch = next(data_iter)
                 _append_worker_debug(cfg, rank, f"after_batch_prepare step={step}")
 
+            _append_worker_debug(cfg, rank, f"before_input_pack step={step}")
             with stage_timer(row, "input_pack_ms"):
-                _append_worker_debug(cfg, rank, f"before_input_pack step={step}")
                 dense_batch, sparse_features = build_kjt_batch_from_dense_sparse_labels(
                     dense_batch,
                     sparse_batch,
                     labels_batch,
                 )
-                _append_worker_debug(cfg, rank, f"after_input_pack step={step}")
+                sparse_features = sparse_features.to(device)
+                sync_device(torch, device)
+            _append_worker_debug(cfg, rank, f"after_input_pack step={step}")
 
-            if use_dist and device.type == "cuda":
-                torch.cuda.synchronize(device)
+            _append_worker_debug(cfg, rank, f"before_embedding step={step}")
             collective_start = time.perf_counter()
             with stage_timer(row, "embed_lookup_local_ms"):
-                _append_worker_debug(cfg, rank, f"before_embedding step={step}")
-                embeddings = embedding_module(sparse_features.to(device))
-                _append_worker_debug(cfg, rank, f"after_embedding step={step}")
-            if use_dist and device.type == "cuda":
-                torch.cuda.synchronize(device)
+                sync_device(torch, device)
+                embeddings = embedding_module(sparse_features)
+                sync_device(torch, device)
             collective_elapsed_ms = (time.perf_counter() - collective_start) * 1e3
+            _append_worker_debug(cfg, rank, f"after_embedding step={step}")
 
+            _append_worker_debug(cfg, rank, f"before_pool step={step}")
             with stage_timer(row, "embed_pool_local_ms"):
-                _append_worker_debug(cfg, rank, f"before_pool step={step}")
                 embedded_sparse_source = reshape_torchrec_embeddings_for_dlrm(
                     embeddings=embeddings,
                     feature_names=DEFAULT_CAT_NAMES,
                     torch=torch,
                 )
-                if device.type == "cuda":
-                    torch.cuda.synchronize(device)
-                _append_worker_debug(cfg, rank, f"after_pool step={step}")
+                sync_device(torch, device)
+            _append_worker_debug(cfg, rank, f"after_pool step={step}")
 
             if use_dist:
                 row["collective_launch_ms"] = 0.0
@@ -434,49 +494,64 @@ def _run_single_or_dist_worker(
                 row["collective_launch_ms"] = 0.0
                 row["collective_wait_ms"] = 0.0
 
+            _append_worker_debug(cfg, rank, f"before_output_unpack step={step}")
             with stage_timer(row, "output_unpack_ms"):
-                _append_worker_debug(cfg, rank, f"before_output_unpack step={step}")
                 dense_features, embedded_sparse, labels = prepare_hybrid_dlrm_input(
                     dense_batch=dense_batch,
                     embedded_sparse_source=embedded_sparse_source,
                     labels_batch=labels_batch,
                     torch=torch,
                     device=device,
-                    detach_sparse=False,
+                    detach_sparse=True,
                 )
-                _append_worker_debug(cfg, rank, f"after_output_unpack step={step}")
+            _append_worker_debug(cfg, rank, f"after_output_unpack step={step}")
 
-            with stage_timer(row, "dense_fwd_ms"):
+            if is_trainer_rank:
                 _append_worker_debug(cfg, rank, f"before_dense_fwd step={step}")
-                sync_device(torch, device)
-                logits = dense_module(dense_features, embedded_sparse)
-                loss = criterion(logits, labels)
-                sync_device(torch, device)
+                with stage_timer(row, "dense_fwd_ms"):
+                    sync_device(torch, device)
+                    logits = dense_module(dense_features, embedded_sparse)
+                    loss = criterion(logits, labels)
+                    sync_device(torch, device)
                 _append_worker_debug(cfg, rank, f"after_dense_fwd step={step}")
 
-            with stage_timer(row, "backward_ms"):
                 _append_worker_debug(cfg, rank, f"before_backward step={step}")
-                embedded_sparse_grad = run_hybrid_backward(
-                    loss=loss,
-                    embedded_sparse=embedded_sparse,
-                    dense_module=dense_module,
-                    torch=torch,
-                    device=device,
-                )
+                with stage_timer(row, "backward_ms"):
+                    embedded_sparse_grad = run_hybrid_backward(
+                        loss=loss,
+                        embedded_sparse=embedded_sparse,
+                        dense_module=dense_module,
+                        torch=torch,
+                        device=device,
+                    )
                 _append_worker_debug(cfg, rank, f"after_backward step={step}")
 
-            with stage_timer(row, "optimizer_ms"):
                 _append_worker_debug(cfg, rank, f"before_optimizer step={step}")
-                sync_device(torch, device)
-                dense_optimizer.step()
-                dense_optimizer.zero_grad(set_to_none=True)
-                sync_device(torch, device)
+                with stage_timer(row, "optimizer_ms"):
+                    sync_device(torch, device)
+                    dense_optimizer.step()
+                    dense_optimizer.zero_grad(set_to_none=True)
+                    sync_device(torch, device)
                 _append_worker_debug(cfg, rank, f"after_optimizer step={step}")
+            else:
+                row["dense_fwd_ms"] = 0.0
+                row["backward_ms"] = 0.0
+                row["optimizer_ms"] = 0.0
+                embedded_sparse_grad = torch.zeros_like(embedded_sparse)
+
+            embedded_sparse_grad = embedded_sparse_grad.contiguous()
 
             with stage_timer(row, "sparse_update_ms"):
                 _append_worker_debug(cfg, rank, f"before_sparse_update step={step}")
                 sync_device(torch, device)
-                embedded_sparse.backward(embedded_sparse_grad)
+                if fair_remote_mode and use_dist:
+                    dist.broadcast(
+                        embedded_sparse_grad,
+                        src=0,
+                    )
+                embedded_sparse_source.backward(
+                    embedded_sparse_grad.to(embedded_sparse_source.device)
+                )
                 sparse_optimizer.step()
                 sparse_optimizer.zero_grad(set_to_none=True)
                 sync_device(torch, device)
@@ -566,6 +641,10 @@ class TorchRecRunner(BenchmarkRunner):
             str(cfg.num_embeddings),
             "--embedding-dim",
             str(cfg.embedding_dim),
+            "--dense-arch-layer-sizes",
+            str(cfg.dense_arch_layer_sizes),
+            "--over-arch-layer-sizes",
+            str(cfg.over_arch_layer_sizes),
             "--seed",
             str(cfg.seed),
             "--data-dir",
@@ -580,6 +659,8 @@ class TorchRecRunner(BenchmarkRunner):
             str(Path(cfg.torchrec_trace_dir)),
             "--torchrec-trace-csv",
             str(Path(cfg.torchrec_trace_csv)),
+            "--torchrec-dist-mode",
+            str(cfg.torchrec_dist_mode),
             "--no-start-server",
         ]
         if cfg.torchrec_profiler:

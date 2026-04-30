@@ -4,9 +4,10 @@
 
 #include "base/factory.h"
 #include "base/timer.h"
-#include "ps/Postoffice.h"
-#include "ps/allshards_ps_client.h"
-#include "ps/base_client.h"
+#include "ps/base/Postoffice.h"
+#include "ps/rdma/allshards_ps_client.h"
+#include "ps/rdma/petps_client.h"
+#include "ps/rdma/base_client.h"
 #include "sample_reader.h"
 #include "third_party/Mayfly-main/include/Common.h"
 
@@ -180,8 +181,7 @@ public:
             folly::sformat("clients pause {}", stop_thread_id_orders.size()),
             XPostoffice::GetInstance()->NumClients());
         // clean Timer
-        xmh::Reporter::Init4GoogleTest();
-        xmh::Reporter::StartReportThread();
+        xmh::Reporter::Clear();
         for (int i = 0; i < args_.thread_count_; ++i) {
           tp[i][0] = 0;
         }
@@ -242,9 +242,9 @@ private:
 
           if (folly::Random::rand32(100) < args_.read_ratio_) {
             // read request
-            isPullRequest[req_i]   = true;
-            running_rpc_ids[req_i] = client->GetParameter(
-                keys.ToConstArray(), values, true, true, req_i);
+            isPullRequest[req_i] = true;
+            running_rpc_ids[req_i] =
+                client->GetParameter(keys.ToConstArray(), values, true, req_i);
             if (req_i == 0)
               client_get_timer.start();
           } else {

@@ -5,8 +5,21 @@ import json
 import struct
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Dict, List, Tuple
 
 import torch
+
+_LOCAL_FAST_PATH_BACKENDS = {"local_shm", "hierkv"}
+_GPU_CACHE_PROFILE_KEYS = (
+    "gpu_cache_query_ms",
+    "gpu_cache_backend_lookup_ms",
+    "gpu_cache_fill_ms",
+    "gpu_cache_update_ms",
+    "gpu_cache_hit_count",
+    "gpu_cache_invalidate_ms",
+    "gpu_cache_request_count",
+    "gpu_cache_miss_count",
+)
 
 
 @dataclass(frozen=True)
@@ -59,6 +72,18 @@ def _load_num_shards(distributed_cfg: dict, cache_cfg: dict, servers: list[Shard
     return len(servers)
 
 
+def _load_cache_servers(cache_cfg: dict) -> list[ShardServer]:
+    raw_servers = cache_cfg.get("servers") or []
+    return [
+        ShardServer(
+            shard=int(server["shard"]),
+            host=str(server["host"]),
+            port=int(server["port"]),
+        )
+        for server in raw_servers
+    ]
+
+
 def _load_hash_method(distributed_cfg: dict) -> str:
     return str(distributed_cfg.get("hash_method", "city_hash"))
 
@@ -97,6 +122,9 @@ class ShardedRecstoreClient:
         cfg = _load_runtime_config(runtime_dir)
         distributed_cfg, cache_cfg = _load_client_configs(cfg)
         self._client = client
+        self._cache_ps_type = str(cache_cfg.get("ps_type", "")).upper()
+        self._cache_servers = _load_cache_servers(cache_cfg)
+        self._cache_num_shards = _load_num_shards({}, cache_cfg, self._cache_servers)
         self._servers = _load_shard_servers(
             distributed_cfg, cache_cfg, runtime_dir / "recstore_config.json"
         )
@@ -106,6 +134,28 @@ class ShardedRecstoreClient:
         self._active_shard: int | None = None
         self._next_prefetch_id = 1
         self._prefetch_contexts: dict[int, tuple[int, list[tuple[int, torch.Tensor, torch.Tensor]]]] = {}
+        self._kv_prefetch_next_id = 1
+        self._kv_prefetch_contexts: dict[int, tuple[int, list[tuple[int, torch.Tensor, torch.Tensor]]]] = {}
+        self._tensor_meta: Dict[str, Dict[str, Any]] = {}
+        self._next_async_handle = 1
+        self._pending_async_ops: Dict[int, tuple[str, torch.Tensor, torch.Tensor]] = {}
+        self._gpu_cache_table_name: str | None = None
+
+    def register_tensor_meta(
+        self,
+        name: str,
+        shape: tuple[int, int],
+        dtype: torch.dtype,
+        base_offset: int = 0,
+    ) -> None:
+        if name in self._tensor_meta:
+            return
+        num_embeddings, embedding_dim = shape
+        self._tensor_meta[name] = {
+            "shape": (int(num_embeddings), int(embedding_dim)),
+            "dtype": dtype,
+            "base_offset": int(base_offset),
+        }
 
     def _shard_for_key(self, key: int) -> int:
         if self._hash_method == "simple_mod":
@@ -116,11 +166,21 @@ class ShardedRecstoreClient:
         shard = int(shard)
         if self._active_shard == shard:
             return
+        if self.is_shared_local_shm_table():
+            self._active_shard = shard
+            return
+        current_backend = None
+        if hasattr(self._client, "ops") and hasattr(self._client.ops, "current_ps_backend"):
+            current_backend = str(self._client.ops.current_ps_backend())
         server = self._servers_by_shard.get(shard)
         if server is None:
             raise RuntimeError(f"no server configured for shard {shard}")
-        self._client.ops.set_ps_config(server.host, server.port)
+        if current_backend not in _LOCAL_FAST_PATH_BACKENDS:
+            self._client.ops.set_ps_config(server.host, server.port)
         self._active_shard = shard
+
+    def activate_shard(self, shard: int) -> None:
+        self._activate_shard(shard)
 
     def _group_indices(self, keys: torch.Tensor) -> list[tuple[int, torch.Tensor]]:
         shard_to_indices: dict[int, list[int]] = {}
@@ -135,6 +195,61 @@ class ShardedRecstoreClient:
             (shard, torch.tensor(indices, dtype=torch.long))
             for shard, indices in ((shard, shard_to_indices[shard]) for shard in shard_order)
         ]
+
+    def _normalize_ids(self, ids: torch.Tensor, *, keep_device: bool = False) -> torch.Tensor:
+        if not isinstance(ids, torch.Tensor):
+            raise TypeError("ids must be a torch.Tensor")
+        normalized_ids = ids.to(dtype=torch.int64)
+        if not normalized_ids.is_contiguous():
+            normalized_ids = normalized_ids.contiguous()
+        if not keep_device and normalized_ids.device.type != "cpu":
+            normalized_ids = normalized_ids.to("cpu")
+        return normalized_ids
+
+    def _normalize_grads(self, grads: torch.Tensor, *, keep_device: bool = False) -> torch.Tensor:
+        if not isinstance(grads, torch.Tensor):
+            raise TypeError("grads must be a torch.Tensor")
+        normalized_grads = grads.to(dtype=torch.float32)
+        if not normalized_grads.is_contiguous():
+            normalized_grads = normalized_grads.contiguous()
+        if not keep_device and normalized_grads.device.type != "cpu":
+            normalized_grads = normalized_grads.to("cpu")
+        return normalized_grads
+
+    def _require_active_shard(self, api_name: str) -> None:
+        if self._active_shard is None:
+            raise RuntimeError(f"{api_name} requires an active shard to be selected first.")
+
+    def _require_local_shm_backend(self, api_name: str) -> None:
+        if not hasattr(self._client, "ops") or not hasattr(self._client.ops, "current_ps_backend"):
+            raise RuntimeError(
+                f"{api_name} requires a RecStore ops library exposing current_ps_backend()."
+            )
+        backend = self._client.ops.current_ps_backend()
+        if backend not in _LOCAL_FAST_PATH_BACKENDS:
+            raise RuntimeError(
+                f"{api_name} requires local_shm or hierkv backend, but current backend is {backend}."
+            )
+
+    def _group_ids_by_shard(self, keys: torch.Tensor) -> list[tuple[int, torch.Tensor, torch.Tensor]]:
+        ids_cpu = self._normalize_ids(keys)
+        shard_to_indices: dict[int, list[int]] = {}
+        shard_order: list[int] = []
+        for idx, key in enumerate(ids_cpu.tolist()):
+            shard = self._shard_for_key(int(key))
+            if shard not in shard_to_indices:
+                shard_to_indices[shard] = []
+                shard_order.append(shard)
+            shard_to_indices[shard].append(idx)
+        grouped: list[tuple[int, torch.Tensor, torch.Tensor]] = []
+        for shard in shard_order:
+            indices = shard_to_indices[shard]
+            index_tensor = torch.tensor(indices, dtype=torch.long)
+            shard_keys = ids_cpu.index_select(0, index_tensor)
+            if not shard_keys.is_contiguous():
+                shard_keys = shard_keys.contiguous()
+            grouped.append((shard, index_tensor, shard_keys))
+        return grouped
 
     def init_embedding_table(self, table_name: str, num_embeddings: int, embedding_dim: int) -> bool:
         ok = True
@@ -196,6 +311,150 @@ class ShardedRecstoreClient:
         prefetch_id = self.emb_prefetch(keys)
         return self.emb_wait_result(prefetch_id, embedding_dim)
 
+    def current_ps_backend(self) -> str:
+        if not hasattr(self._client, "ops") or not hasattr(self._client.ops, "current_ps_backend"):
+            raise RuntimeError(
+                "current_ps_backend requires a RecStore ops library exposing current_ps_backend()."
+            )
+        return str(self._client.ops.current_ps_backend())
+
+    def activate_shard(self, shard: int) -> None:
+        self._activate_shard(int(shard))
+
+    def set_ps_backend(self, backend: str) -> None:
+        if not isinstance(backend, str) or not backend:
+            raise ValueError("backend must be a non-empty string")
+        if not hasattr(self._client, "ops") or not hasattr(self._client.ops, "set_ps_backend"):
+            raise RuntimeError(
+                "set_ps_backend requires a RecStore ops library exposing set_ps_backend()."
+            )
+        self._client.ops.set_ps_backend(backend)
+
+    def enable_gpu_cache(self, capacity: int, embedding_dim: int) -> bool:
+        enable = getattr(self._client, "enable_gpu_cache", None)
+        if not callable(enable):
+            ops = getattr(self._client, "ops", None)
+            enable = getattr(ops, "enable_gpu_cache", None)
+        if not callable(enable):
+            raise RuntimeError(
+                "enable_gpu_cache requires a RecStore client or ops library exposing "
+                "enable_gpu_cache()."
+            )
+        return bool(enable(int(capacity), int(embedding_dim)))
+
+    def get_last_gpu_cache_profile(self) -> dict[str, float]:
+        getter = getattr(self._client, "get_last_gpu_cache_profile", None)
+        if callable(getter):
+            profile = getter()
+            return profile if isinstance(profile, dict) else {}
+        ops = getattr(self._client, "ops", None)
+        getter = getattr(ops, "get_last_gpu_cache_profile", None)
+        if not callable(getter):
+            return {}
+        values = getter()
+        if not isinstance(values, (list, tuple)) or len(values) < 5:
+            return {}
+        profile = {}
+        for index, key in enumerate(_GPU_CACHE_PROFILE_KEYS):
+            profile[key] = float(values[index]) if index < len(values) else 0.0
+        return profile
+
+    def _clear_gpu_cache_if_available(self) -> None:
+        clear = getattr(self._client, "clear_gpu_cache", None)
+        if not callable(clear):
+            ops = getattr(self._client, "ops", None)
+            clear = getattr(ops, "clear_gpu_cache", None)
+        if callable(clear):
+            clear()
+        self._gpu_cache_table_name = None
+
+    def _ensure_gpu_cache_table(self, name: str) -> None:
+        if self._gpu_cache_table_name is None:
+            self._gpu_cache_table_name = name
+            return
+        if self._gpu_cache_table_name != name:
+            self._clear_gpu_cache_if_available()
+            self._gpu_cache_table_name = name
+
+    def is_shared_local_shm_table(self) -> bool:
+        if self._cache_ps_type != "LOCAL_SHM":
+            return False
+        if self._cache_num_shards != 1:
+            return False
+        if len(self._cache_servers) != 1:
+            return False
+        return True
+
+    def local_lookup_flat(self, name: str, ids: torch.Tensor) -> torch.Tensor:
+        if name not in self._tensor_meta:
+            raise RuntimeError(f"Tensor '{name}' has not been initialized.")
+        self._require_active_shard("local_lookup_flat")
+        self._require_local_shm_backend("local_lookup_flat")
+        embedding_dim = int(self._tensor_meta[name]["shape"][1])
+        normalized_ids = self._normalize_ids(ids, keep_device=True)
+        self._ensure_gpu_cache_table(name)
+        return self._client.ops.local_lookup_flat(normalized_ids, embedding_dim)
+
+    def warmup_local_lookup_flat_cuda_region(self) -> bool:
+        self._require_active_shard("warmup_local_lookup_flat_cuda_region")
+        warmup = getattr(self._client.ops, "warmup_local_lookup_flat_cuda_region", None)
+        if not callable(warmup):
+            return False
+        return bool(warmup())
+
+    def get_last_local_shm_lookup_profile(self) -> dict[str, float]:
+        getter = getattr(self._client.ops, "get_last_local_lookup_flat_profile", None)
+        if not callable(getter):
+            return {}
+        values = getter()
+        if not isinstance(values, (list, tuple)) or len(values) < 7:
+            return {}
+        return {
+            "lookup_cpp_total_ms": float(values[0]),
+            "lookup_keys_stage_ms": float(values[1]),
+            "lookup_submit_ms": float(values[2]),
+            "lookup_wait_ms": float(values[3]),
+            "lookup_payload_pin_ms": float(values[4]),
+            "lookup_fallback_copy_ms": float(values[5]),
+            "lookup_values_h2d_enqueue_ms": float(values[6]),
+        }
+
+    def local_update_flat(self, name: str, ids: torch.Tensor, grads: torch.Tensor) -> None:
+        if name not in self._tensor_meta:
+            raise RuntimeError(f"Tensor '{name}' has not been initialized.")
+        self._require_active_shard("local_update_flat")
+        self._require_local_shm_backend("local_update_flat")
+        normalized_ids = self._normalize_ids(ids, keep_device=True)
+        normalized_grads = self._normalize_grads(grads, keep_device=True)
+        self._ensure_gpu_cache_table(name)
+        if normalized_grads.dim() != 2:
+            raise ValueError("grads must be a 2-dimensional tensor")
+        if normalized_ids.size(0) != normalized_grads.size(0):
+            raise ValueError("ids and grads must have the same number of rows")
+        embedding_dim = int(self._tensor_meta[name]["shape"][1])
+        if normalized_grads.size(1) != embedding_dim:
+            raise ValueError(
+                f"grads second dimension must match embedding dim {embedding_dim} for tensor '{name}'"
+            )
+        self._client.ops.local_update_flat(name, normalized_ids, normalized_grads)
+        if normalized_ids.device.type == "cpu":
+            self._clear_gpu_cache_if_available()
+
+    def get_last_local_shm_update_profile(self) -> dict[str, float]:
+        getter = getattr(self._client.ops, "get_last_local_update_flat_profile", None)
+        if not callable(getter):
+            return {}
+        values = getter()
+        if not isinstance(values, (list, tuple)) or len(values) < 4:
+            return {}
+        return {
+            "local_update_cpp_total_ms": float(values[0]),
+            "local_update_keys_stage_ms": float(values[1]),
+            "local_update_grads_stage_ms": float(values[2]),
+            "local_update_shm_call_ms": float(values[3]),
+            "local_update_stage_wait_ms": float(values[4]) if len(values) > 4 else 0.0,
+        }
+
     def emb_update_table(self, table_name: str, keys: torch.Tensor, grads: torch.Tensor) -> None:
         if keys.numel() == 0:
             return
@@ -204,3 +463,106 @@ class ShardedRecstoreClient:
             shard_keys = keys.index_select(0, index_tensor).contiguous()
             shard_grads = grads.index_select(0, index_tensor).contiguous()
             self._client.emb_update_table(table_name, shard_keys, shard_grads)
+
+    def init_data(
+        self,
+        name: str,
+        shape: tuple[int, int],
+        dtype: torch.dtype,
+        part_policy: Any = None,
+        init_func: Any | None = None,
+        is_gdata: bool = True,
+        base_offset: int = 0,
+    ) -> None:
+        if name in self._tensor_meta:
+            return
+        num_embeddings, embedding_dim = shape
+        self.register_tensor_meta(name=name, shape=shape, dtype=dtype, base_offset=base_offset)
+        self.init_embedding_table(name, num_embeddings, embedding_dim)
+
+        if init_func:
+            initial_data = init_func(shape, dtype)
+        else:
+            initial_data = torch.zeros(shape, dtype=dtype)
+        if not isinstance(initial_data, torch.Tensor):
+            initial_data = torch.tensor(initial_data, dtype=dtype)
+        initial_data = initial_data.to(dtype=dtype)
+        if initial_data.device.type != "cpu":
+            initial_data = initial_data.to("cpu")
+        if not initial_data.is_contiguous():
+            initial_data = initial_data.contiguous()
+
+        keys = torch.arange(num_embeddings, dtype=torch.int64)
+        if base_offset != 0:
+            keys = keys + int(base_offset)
+
+        for shard, index_tensor, shard_keys in self._group_ids_by_shard(keys):
+            self._activate_shard(shard)
+            shard_values = initial_data.index_select(0, index_tensor).contiguous()
+            self._client.emb_write(shard_keys, shard_values)
+
+    def pull(self, name: str, ids: torch.Tensor) -> torch.Tensor:
+        if name not in self._tensor_meta:
+            raise RuntimeError(f"Tensor {name} has not been initialized.")
+        embedding_dim = int(self._tensor_meta[name]["shape"][1])
+        return self.emb_read(ids, embedding_dim)
+
+    def prefetch(self, ids: torch.Tensor) -> int:
+        normalized_ids = self._normalize_ids(ids)
+        req_id = self._kv_prefetch_next_id
+        self._kv_prefetch_next_id += 1
+        if normalized_ids.numel() == 0:
+            self._kv_prefetch_contexts[req_id] = (0, [])
+            return req_id
+        shard_requests: list[tuple[int, torch.Tensor, torch.Tensor]] = []
+        for shard, index_tensor, shard_keys in self._group_ids_by_shard(normalized_ids):
+            shard_requests.append((shard, index_tensor, shard_keys))
+        self._kv_prefetch_contexts[req_id] = (int(normalized_ids.numel()), shard_requests)
+        return req_id
+
+    def wait_and_get(
+        self,
+        prefetch_id: int,
+        embedding_dim: int,
+        device: torch.device = torch.device("cpu"),
+    ) -> torch.Tensor:
+        context = self._kv_prefetch_contexts.pop(int(prefetch_id), None)
+        if context is None:
+            raise RuntimeError(f"unknown prefetch_id: {prefetch_id}")
+        total_rows, shard_requests = context
+        if total_rows == 0:
+            return torch.empty((0, embedding_dim), dtype=torch.float32, device=device)
+        out = torch.empty((total_rows, embedding_dim), dtype=torch.float32)
+        for shard, index_tensor, shard_keys in shard_requests:
+            self._activate_shard(shard)
+            shard_prefetch_id = int(self._client.emb_prefetch(shard_keys))
+            shard_values = self._client.emb_wait_result(shard_prefetch_id, embedding_dim)
+            out.index_copy_(0, index_tensor, shard_values)
+        if device.type == "cuda":
+            out = out.to(device)
+        return out
+
+    def update_async(self, name: str, ids: torch.Tensor, grads: torch.Tensor) -> int:
+        if name not in self._tensor_meta:
+            raise RuntimeError(f"Tensor {name} has not been initialized.")
+        normalized_ids = self._normalize_ids(ids)
+        normalized_grads = self._normalize_grads(grads)
+        if normalized_ids.size(0) != normalized_grads.size(0):
+            raise RuntimeError("ids and grads must have the same number of rows for update_async")
+        handle = self._next_async_handle
+        self._next_async_handle += 1
+        self._pending_async_ops[handle] = (name, normalized_ids, normalized_grads)
+        return handle
+
+    def wait(self, handle: int) -> None:
+        pending = self._pending_async_ops.pop(int(handle), None)
+        if pending is None:
+            return
+        name, ids, grads = pending
+        if ids.numel() == 0:
+            return
+        for shard, index_tensor, shard_keys in self._group_ids_by_shard(ids):
+            shard_grads = grads.index_select(0, index_tensor).contiguous()
+            self._activate_shard(shard)
+            self._client.emb_update_table(name, shard_keys, shard_grads)
+        self._clear_gpu_cache_if_available()

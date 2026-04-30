@@ -190,7 +190,7 @@ class TestTorchRecCompare(unittest.TestCase):
                 writer = csv.DictWriter(
                     f,
                     fieldnames=[
-                        "collective_total_ms",
+                        "embed_transport_ms",
                         "kv_local_only_ms",
                         "kv_extended_ms",
                         "network_proxy_torchrec_extended_ms",
@@ -199,7 +199,7 @@ class TestTorchRecCompare(unittest.TestCase):
                 writer.writeheader()
                 writer.writerow(
                     {
-                        "collective_total_ms": 1.0,
+                        "embed_transport_ms": 1.0,
                         "kv_local_only_ms": 2.0,
                         "kv_extended_ms": 3.0,
                         "network_proxy_torchrec_extended_ms": 1.5,
@@ -213,6 +213,57 @@ class TestTorchRecCompare(unittest.TestCase):
         self.assertEqual(by_metric["network_main"]["torchrec_ms"], 1.0)
         self.assertEqual(by_metric["kv_strict"]["recstore_ms"], 3.0)
         self.assertEqual(by_metric["kv_strict"]["torchrec_ms"], 2.0)
+
+    def test_build_compare_rows_falls_back_to_collective_total(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recstore_csv = Path(tmpdir) / "recstore.csv"
+            torchrec_csv = Path(tmpdir) / "torchrec.csv"
+
+            with recstore_csv.open("w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=[
+                        "network_transport_us",
+                        "storage_backend_update_us",
+                        "server_total_us",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "network_transport_us": 2000,
+                        "storage_backend_update_us": 3000,
+                        "server_total_us": 4000,
+                    }
+                )
+
+            with torchrec_csv.open("w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=[
+                        "collective_total_ms",
+                        "kv_local_only_ms",
+                        "kv_extended_ms",
+                        "input_pack_ms",
+                        "output_unpack_ms",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "collective_total_ms": 1.0,
+                        "kv_local_only_ms": 2.0,
+                        "kv_extended_ms": 3.0,
+                        "input_pack_ms": 0.25,
+                        "output_unpack_ms": 0.25,
+                    }
+                )
+
+            rows = build_compare_rows(recstore_csv, torchrec_csv)
+
+        by_metric = {row["metric"]: row for row in rows}
+        self.assertEqual(by_metric["network_main"]["torchrec_ms"], 1.0)
+        self.assertEqual(by_metric["network_extended"]["torchrec_ms"], 1.5)
 
     def test_write_compare_csv(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

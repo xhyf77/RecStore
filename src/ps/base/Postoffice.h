@@ -24,11 +24,14 @@ public:
 
   std::string MemCachedGet(const std::string& key);
 
+  bool MemCachedTryGet(const std::string& key, std::string* value);
+
   void MemCachedSet(const std::string& key, const std::string& value);
 
 private:
   XPostoffice();
   void ConnectMemcached();
+  std::string NamespacedKey(const std::string& key) const;
   int num_servers_;
   int num_clients_;
   int global_id_;
@@ -37,4 +40,5 @@ private:
   enum ActorEnum { ACTOR_SERVER, ACTOR_CLIENT };
   ActorEnum actor_;
   memcached_st* memc_;
+  std::string memcached_namespace_;
 };

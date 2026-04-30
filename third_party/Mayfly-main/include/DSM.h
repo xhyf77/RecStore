@@ -201,7 +201,9 @@ class DSM {
                 Slice extra_data = Slice::Void(), bool is_server = true) {
     auto buffer = (RawMessage *)iCon->message->getSendPool();
 
-    if (m->size() + 40 >= MESSAGE_SIZE) {
+    const size_t extra_bytes =
+        extra_data.s ? (sizeof(uint32_t) + extra_data.len) : 0;
+    if (m->size() + extra_bytes + 40 >= MESSAGE_SIZE) {
       Debug::notifyError("messeage size too large; exit -1");
       exit(-1);
     }

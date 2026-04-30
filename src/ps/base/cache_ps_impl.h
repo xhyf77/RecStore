@@ -14,9 +14,11 @@
 #include "base/timer.h"
 #include "parameters.h"
 #include "storage/kv_engine/base_kv.h"
+#include "storage/kv_engine/engine_extendible_hash.h"
 #include "storage/kv_engine/engine_factory.h"
 #include "storage/kv_engine/engine_selector.h"
 #include "optimizer/optimizer.h"
+#include "ps/local_shm/local_shm_stage_report.h"
 
 #ifdef ENABLE_PERF_REPORT
 #  include <chrono>
@@ -83,6 +85,24 @@ public:
     base_kv_->Put(key, std::string_view((char*)data, dim * sizeof(float)), tid);
   }
 
+  void PutDenseParameterBatch(
+      const uint64_t* keys,
+      const float* values,
+      int key_count,
+      int embedding_dim,
+      int tid) {
+    if (key_count <= 0 || embedding_dim <= 0) {
+      return;
+    }
+    base::ConstArray<uint64_t> key_array(keys, key_count);
+    std::vector<base::ConstArray<float>> value_slices;
+    value_slices.reserve(static_cast<std::size_t>(key_count));
+    for (int i = 0; i < key_count; ++i) {
+      value_slices.emplace_back(values + i * embedding_dim, embedding_dim);
+    }
+    base_kv_->BatchPut(key_array, &value_slices, tid);
+  }
+
   void PutSingleParameter(const ParameterCompressItem* item, int tid) {
     auto key = item->key;
     auto dim = item->dim;
@@ -146,12 +166,19 @@ public:
 #ifdef ENABLE_PERF_REPORT
     auto start_time = std::chrono::high_resolution_clock::now();
 #endif
+    const auto batch_get_start = std::chrono::steady_clock::now();
     std::vector<base::ConstArray<float>> values;
     base_kv_->BatchGet(keys, &values, tid);
+    recstore::ReportLocalShmStageMetric(
+        "cache_ps_get_batch_get_us",
+        recstore::LocalShmElapsedUs(batch_get_start));
 
+    const auto pack_build_start = std::chrono::steady_clock::now();
     for (int i = 0; i < keys.Size(); i++) {
       packs.emplace_back(keys[i], values[i].Size(), values[i].Data());
     }
+    recstore::ReportLocalShmStageMetric(
+        "cache_ps_get_pack_us", recstore::LocalShmElapsedUs(pack_build_start));
 
 #ifdef ENABLE_PERF_REPORT
     auto end_time = std::chrono::high_resolution_clock::now();
@@ -187,6 +214,78 @@ public:
         static_cast<double>(duration)};
     report_flame_graph("emb_read_flame_map", unique_id.c_str(), fg_data);
 #endif
+    return true;
+  }
+
+  bool GetParameterFlat(base::ConstArray<uint64_t> keys,
+                        float* values,
+                        int64_t num_rows,
+                        int64_t embedding_dim,
+                        int tid) {
+    if (values == nullptr) {
+      LOG(ERROR) << "GetParameterFlat values pointer is null";
+      return false;
+    }
+    if (num_rows < 0 || embedding_dim <= 0) {
+      LOG(ERROR) << "GetParameterFlat invalid shape rows=" << num_rows
+                 << " dim=" << embedding_dim;
+      return false;
+    }
+    if (keys.Size() != static_cast<size_t>(num_rows)) {
+      LOG(ERROR) << "GetParameterFlat keys size mismatch " << keys.Size()
+                 << " vs " << num_rows;
+      return false;
+    }
+
+    if (auto* extendible_hash =
+            dynamic_cast<KVEngineExtendibleHash*>(base_kv_.get());
+        extendible_hash != nullptr) {
+      const auto direct_start = std::chrono::steady_clock::now();
+      const bool ok           = extendible_hash->BatchGetFlat(
+          keys, values, num_rows, embedding_dim, tid);
+      recstore::ReportLocalShmStageMetric(
+          "cache_ps_get_direct_us", recstore::LocalShmElapsedUs(direct_start));
+      return ok;
+    }
+
+    const auto batch_get_start = std::chrono::steady_clock::now();
+    std::vector<base::ConstArray<float>> value_slices;
+    base_kv_->BatchGet(keys, &value_slices, tid);
+    recstore::ReportLocalShmStageMetric(
+        "cache_ps_get_batch_get_us",
+        recstore::LocalShmElapsedUs(batch_get_start));
+    if (value_slices.size() != static_cast<size_t>(num_rows)) {
+      LOG(ERROR) << "GetParameterFlat BatchGet returned " << value_slices.size()
+                 << " rows, expected " << num_rows;
+      return false;
+    }
+
+    for (int64_t row = 0; row < num_rows; ++row) {
+      const auto& slice = value_slices[static_cast<size_t>(row)];
+      if (slice.Size() != 0 &&
+          static_cast<int64_t>(slice.Size()) != embedding_dim) {
+        LOG(ERROR) << "GetParameterFlat embedding_dim mismatch at row=" << row
+                   << " key=" << keys[static_cast<size_t>(row)] << " expected="
+                   << embedding_dim << " actual=" << slice.Size();
+        return false;
+      }
+    }
+
+    const auto copy_start = std::chrono::steady_clock::now();
+    std::fill_n(
+        values,
+        static_cast<size_t>(num_rows) * static_cast<size_t>(embedding_dim),
+        0.0f);
+    for (int64_t row = 0; row < num_rows; ++row) {
+      const auto& slice = value_slices[static_cast<size_t>(row)];
+      if (slice.Size() > 0) {
+        std::copy_n(slice.Data(),
+                    static_cast<int64_t>(slice.Size()),
+                    values + row * embedding_dim);
+      }
+    }
+    recstore::ReportLocalShmStageMetric(
+        "cache_ps_get_copy_us", recstore::LocalShmElapsedUs(copy_start));
     return true;
   }
 
@@ -229,6 +328,36 @@ public:
     }
 
     optimizer_->Update(table_name, reader, tid);
+    return true;
+  }
+
+  bool UpdateParameterFlat(
+      const std::string& table_name,
+      const base::ConstArray<uint64_t>& keys,
+      const float* grads,
+      int64_t num_rows,
+      int64_t embedding_dim,
+      unsigned tid) {
+    if (grads == nullptr) {
+      LOG(ERROR) << "UpdateParameterFlat grads pointer is null";
+      return false;
+    }
+    if (num_rows < 0 || embedding_dim <= 0) {
+      LOG(ERROR) << "UpdateParameterFlat invalid shape rows=" << num_rows
+                 << " dim=" << embedding_dim;
+      return false;
+    }
+    if (keys.Size() != static_cast<size_t>(num_rows)) {
+      LOG(ERROR) << "UpdateParameterFlat keys size mismatch " << keys.Size()
+                 << " vs " << num_rows;
+      return false;
+    }
+    if (!optimizer_) {
+      LOG(ERROR) << "Optimizer not initialized. Please call InitTable first.";
+      return false;
+    }
+    optimizer_->UpdateFlat(
+        table_name, keys, grads, num_rows, embedding_dim, tid);
     return true;
   }
 

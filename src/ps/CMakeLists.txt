@@ -16,6 +16,7 @@ add_subdirectory(proto)
 add_subdirectory(grpc)
 add_subdirectory(brpc)
 add_subdirectory(rdma)
+add_subdirectory(local_shm)
 
 if(brpc_FOUND)
     add_executable(ps_server
@@ -71,5 +72,3 @@ if(brpc_FOUND)
         target_link_libraries(ps_server PRIVATE report_client)
     endif()
 endif()
-
-

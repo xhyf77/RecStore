@@ -30,6 +30,13 @@ public:
   virtual void Update(std::string table,
                       const ParameterCompressReader* reader,
                       unsigned tid) = 0;
+  virtual void UpdateFlat(
+      std::string table,
+      const base::ConstArray<uint64_t>& keys,
+      const float* grads,
+      int64_t num_rows,
+      int64_t embedding_dim,
+      unsigned tid) = 0;
 };
 
 class SGD : public Optimizer {
@@ -45,6 +52,12 @@ public:
   void Update(std::string table,
               const ParameterCompressReader* reader,
               unsigned tid) override;
+  void UpdateFlat(std::string table,
+                  const base::ConstArray<uint64_t>& keys,
+                  const float* grads,
+                  int64_t num_rows,
+                  int64_t embedding_dim,
+                  unsigned tid) override;
 };
 
 class AdaGrad : public Optimizer {
@@ -62,6 +75,12 @@ public:
   void Update(std::string table,
               const ParameterCompressReader* reader,
               unsigned tid) override;
+  void UpdateFlat(std::string table,
+                  const base::ConstArray<uint64_t>& keys,
+                  const float* grads,
+                  int64_t num_rows,
+                  int64_t embedding_dim,
+                  unsigned tid) override;
 };
 
 class RowWiseAdaGrad : public Optimizer {
@@ -79,4 +98,10 @@ public:
   void Update(std::string table,
               const ParameterCompressReader* reader,
               unsigned tid) override;
+  void UpdateFlat(std::string table,
+                  const base::ConstArray<uint64_t>& keys,
+                  const float* grads,
+                  int64_t num_rows,
+                  int64_t embedding_dim,
+                  unsigned tid) override;
 };

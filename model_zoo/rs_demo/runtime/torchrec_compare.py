@@ -120,7 +120,10 @@ def summarize_torchrec_main_csv(torchrec_main_csv: Path) -> dict[str, float]:
             "step_total_ms": step_total_ms,
         }
 
-    network_main_ms = _mean(rows, "collective_total_ms")
+    network_main_ms = _first_non_none(
+        _mean(rows, "embed_transport_ms"),
+        _mean(rows, "collective_total_ms"),
+    )
     network_extended_ms = _first_non_none(
         _mean(rows, "network_proxy_torchrec_extended_ms"),
     )

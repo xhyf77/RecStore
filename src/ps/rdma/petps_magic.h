@@ -1,7 +1,6 @@
 #pragma once
 
 namespace petps {
-int FINISH_MAGIC = 123456789;
 
 enum {
   WR_ID_DEFAULT,

@@ -6,17 +6,22 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 import unittest
+import torch
 
 from model_zoo.rs_demo.cli import build_runner
 from model_zoo.rs_demo.config import RunConfig
+from model_zoo.rs_demo.runtime.report import write_stage_csv
 from model_zoo.rs_demo.runners.torchrec_runner import (
     TorchRecRunner,
     _barrier_for_step_alignment,
     _build_worker_fingerprint,
+    _merge_rank_outputs,
     _debug_log_path,
+    _maybe_wrap_dense_module_for_dist,
     _write_or_verify_worker_fingerprint,
     _compute_or_load_shared_sharding_plan,
     _summarize_sharding_plan,
+    _build_train_dataloader_for_mode,
 )
 
 
@@ -274,6 +279,60 @@ class TestTorchRecDispatch(unittest.TestCase):
         self.assertIn("--output-root", cmd)
         self.assertIn("--run-id", cmd)
 
+    def test_runner_builds_fair_remote_torchrun_command(self) -> None:
+        cfg = RunConfig(
+            backend="torchrec",
+            steps=1,
+            nnodes=2,
+            node_rank=0,
+            nproc=1,
+            nproc_per_node=1,
+            master_addr="10.0.2.196",
+            master_port=29611,
+            rdzv_backend="c10d",
+            rdzv_id="fair-case",
+            output_root="/tmp/rs_demo",
+            run_id="fair-case",
+            torchrec_main_csv="/tmp/rs_demo/out.csv",
+            torchrec_main_agg_csv="/tmp/rs_demo/out_agg.csv",
+            torchrec_trace_dir="/tmp/rs_demo/traces",
+            torchrec_trace_csv="/tmp/rs_demo/trace.csv",
+            torchrec_dist_mode="fair_remote",
+        )
+        runner = TorchRecRunner(Path("/tmp/runtime"))
+        cmd = runner._build_torchrun_cmd(Path("/app/RecStore"), cfg)
+        self.assertIn("--torchrec-dist-mode", cmd)
+        self.assertIn("fair_remote", cmd)
+
+    def test_runner_forwards_dense_arch_args_to_worker(self) -> None:
+        cfg = RunConfig(
+            backend="torchrec",
+            steps=1,
+            nnodes=2,
+            node_rank=0,
+            nproc=1,
+            nproc_per_node=1,
+            master_addr="10.0.2.196",
+            master_port=29611,
+            rdzv_backend="c10d",
+            rdzv_id="arch-case",
+            output_root="/tmp/rs_demo",
+            run_id="arch-case",
+            torchrec_main_csv="/tmp/rs_demo/out.csv",
+            torchrec_main_agg_csv="/tmp/rs_demo/out_agg.csv",
+            torchrec_trace_dir="/tmp/rs_demo/traces",
+            torchrec_trace_csv="/tmp/rs_demo/trace.csv",
+            embedding_dim=16,
+            dense_arch_layer_sizes="64,32,16",
+            over_arch_layer_sizes="128,64,1",
+        )
+        runner = TorchRecRunner(Path("/tmp/runtime"))
+        cmd = runner._build_torchrun_cmd(Path("/app/RecStore"), cfg)
+        self.assertIn("--dense-arch-layer-sizes", cmd)
+        self.assertIn("64,32,16", cmd)
+        self.assertIn("--over-arch-layer-sizes", cmd)
+        self.assertIn("128,64,1", cmd)
+
     def test_runner_rank_output_dir_uses_shared_output_root(self) -> None:
         cfg = RunConfig(
             backend="torchrec",
@@ -358,6 +417,128 @@ class TestTorchRecDispatch(unittest.TestCase):
         self.assertEqual(env["GLOO_SOCKET_IFNAME"], "eno1")
         self.assertEqual(env["NCCL_IB_DISABLE"], "1")
         self.assertEqual(env["NCCL_SOCKET_FAMILY"], "AF_INET")
+
+    def test_merge_rank_outputs_keeps_only_trainer_rows_for_fair_remote(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path0 = Path(tmpdir) / "rank0.csv"
+            path1 = Path(tmpdir) / "rank1.csv"
+            out_path = Path(tmpdir) / "merged.csv"
+            write_stage_csv(
+                path0,
+                [
+                    {
+                        "backend": "torchrec",
+                        "rank": 0,
+                        "step": 0,
+                        "collective_mode": "measured_distributed",
+                        "collective_measured": 1,
+                        "torchrec_dist_mode": "fair_remote",
+                        "torchrec_role": "trainer",
+                        "torchrec_is_trainer": 1,
+                        "step_total_ms": 10.0,
+                    }
+                ],
+            )
+            write_stage_csv(
+                path1,
+                [
+                    {
+                        "backend": "torchrec",
+                        "rank": 1,
+                        "step": 0,
+                        "collective_mode": "measured_distributed",
+                        "collective_measured": 1,
+                        "torchrec_dist_mode": "fair_remote",
+                        "torchrec_role": "embedding_worker",
+                        "torchrec_is_trainer": 0,
+                        "step_total_ms": 20.0,
+                    }
+                ],
+            )
+
+            rows = _merge_rank_outputs([path0, path1], out_path)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["rank"], 0)
+        self.assertEqual(rows[0]["torchrec_role"], "trainer")
+
+    def test_build_train_dataloader_for_fair_remote_disables_shuffle(self) -> None:
+        fake_dataset = [1, 2, 3]
+
+        with mock.patch(
+            "model_zoo.rs_demo.data.dlrm_source.build_train_dataloader",
+            return_value=(fake_dataset, "loader"),
+        ) as build_loader:
+            dataset, dataloader = _build_train_dataloader_for_mode(
+                repo_root=Path("/app/RecStore"),
+                cfg=RunConfig(
+                    backend="torchrec",
+                    steps=1,
+                    nnodes=2,
+                    nproc_per_node=1,
+                    torchrec_dist_mode="fair_remote",
+                ),
+                rank=1,
+                torch=torch,
+            )
+
+        self.assertEqual(dataset, fake_dataset)
+        self.assertEqual(dataloader, "loader")
+        self.assertEqual(build_loader.call_args.kwargs["shuffle"], False)
+        self.assertEqual(build_loader.call_args.kwargs["seed"], 20260330)
+
+    def test_build_train_dataloader_for_replicated_distributed_shards_by_rank(self) -> None:
+        fake_dataset = [1, 2, 3]
+
+        with mock.patch(
+            "model_zoo.rs_demo.data.dlrm_source.build_train_dataloader",
+            return_value=(fake_dataset, "loader"),
+        ) as build_loader:
+            dataset, dataloader = _build_train_dataloader_for_mode(
+                repo_root=Path("/app/RecStore"),
+                cfg=RunConfig(
+                    backend="torchrec",
+                    steps=1,
+                    nnodes=2,
+                    nproc_per_node=2,
+                    torchrec_dist_mode="replicated",
+                ),
+                rank=3,
+                torch=torch,
+            )
+
+        self.assertEqual(dataset, fake_dataset)
+        self.assertEqual(dataloader, "loader")
+        self.assertEqual(build_loader.call_args.kwargs["shuffle"], True)
+        self.assertEqual(build_loader.call_args.kwargs["seed"], 20260330)
+        self.assertEqual(build_loader.call_args.kwargs["rank"], 3)
+        self.assertEqual(build_loader.call_args.kwargs["world_size"], 4)
+
+    def test_maybe_wrap_dense_module_for_dist_wraps_replicated_dense(self) -> None:
+        dense_module = mock.Mock()
+        fake_ddp = mock.sentinel.ddp
+        device = mock.Mock()
+        device.type = "cuda"
+
+        with mock.patch(
+            "torch.nn.parallel.DistributedDataParallel",
+            return_value=fake_ddp,
+        ) as ddp_cls:
+            wrapped = _maybe_wrap_dense_module_for_dist(
+                dense_module=dense_module,
+                device=device,
+                local_rank=1,
+                use_dist=True,
+                fair_remote_mode=False,
+                torch=torch,
+            )
+
+        self.assertIs(wrapped, fake_ddp)
+        ddp_cls.assert_called_once_with(
+            dense_module,
+            device_ids=[1],
+            output_device=1,
+        )
 
 
 if __name__ == "__main__":

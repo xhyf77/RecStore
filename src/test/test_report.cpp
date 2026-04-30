@@ -146,6 +146,37 @@ TEST(ReportTest, JsonlSinkWritesStructuredEvent) {
   std::filesystem::remove(temp_dir);
 }
 
+TEST(ReportTest, JsonlSinkEscapesStructuredEventStrings) {
+  std::lock_guard<std::mutex> lock(EnvTestMutex());
+  ScopedEnvVar report_mode("RECSTORE_REPORT_MODE", "local");
+  ScopedEnvVar sink_mode("RECSTORE_REPORT_LOCAL_SINK", "jsonl");
+
+  const std::filesystem::path temp_dir =
+      std::filesystem::temp_directory_path() /
+      "recstore_test_report_jsonl_escape";
+  std::filesystem::create_directories(temp_dir);
+  const std::filesystem::path output_path = temp_dir / "report_events.jsonl";
+  ScopedEnvVar output_file("RECSTORE_REPORT_JSONL_PATH", output_path.c_str());
+
+  const char* unique_id = "uid\"with\\escapes\nline";
+  EXPECT_TRUE(report("cpp_easy_test_report_map", unique_id, "latency_us", 4.0));
+
+  std::ifstream ifs(output_path);
+  ASSERT_TRUE(ifs.is_open());
+  std::string line;
+  ASSERT_TRUE(std::getline(ifs, line));
+  ASSERT_FALSE(line.empty());
+
+  auto event = nlohmann::json::parse(line);
+  EXPECT_EQ(event["table_name"], "cpp_easy_test_report_map");
+  EXPECT_EQ(event["unique_id"], unique_id);
+  EXPECT_EQ(event["metric_name"], "latency_us");
+  EXPECT_DOUBLE_EQ(event["metric_value"], 4.0);
+
+  std::filesystem::remove(output_path);
+  std::filesystem::remove(temp_dir);
+}
+
 TEST(ReportTest, FlameGraphData) {
   FlameGraphData root     = {"main", 0.0, 0, 100.0, 10.0};
   FlameGraphData child1   = {"do_work", 10.0, 1, 60.0, 20.0};

@@ -12,8 +12,9 @@ def setup_local_report_env(jsonl_path: str) -> None:
     Path(jsonl_path).parent.mkdir(parents=True, exist_ok=True)
     open(jsonl_path, "w", encoding="utf-8").close()
     os.environ["RECSTORE_REPORT_MODE"] = "local"
-    os.environ["RECSTORE_REPORT_LOCAL_SINK"] = "both"
+    os.environ["RECSTORE_REPORT_LOCAL_SINK"] = "jsonl"
     os.environ["RECSTORE_REPORT_JSONL_PATH"] = jsonl_path
+    os.environ.setdefault("RECSTORE_REPORT_FLUSH_EVERY_N", "256")
 
 
 def summarize_us(values: list[float]) -> str:
@@ -78,6 +79,7 @@ def write_stage_csv(path: Path, rows: list[dict]) -> None:
 
 def finalize_torchrec_row(row: dict) -> dict:
     row["collective_total_ms"] = row["collective_launch_ms"] + row["collective_wait_ms"]
+    row["embed_transport_ms"] = row["collective_total_ms"]
     row["network_proxy_torchrec_ms"] = row["collective_total_ms"]
     row["kv_local_only_ms"] = row["embed_lookup_local_ms"] + row["embed_pool_local_ms"]
     row["kv_extended_ms"] = (
@@ -99,5 +101,17 @@ def finalize_recstore_row(row: dict) -> dict:
         + row["embed_lookup_local_ms"]
         + row["embed_pool_local_ms"]
         + row["output_unpack_ms"]
+    )
+    row["lookup_breakdown_ms"] = (
+        float(row.get("lookup_wait_ms", 0.0))
+        + float(row.get("lookup_owner_exchange_ms", 0.0))
+        + float(row.get("lookup_local_lookup_ms", 0.0))
+        + float(row.get("lookup_reassemble_ms", 0.0))
+    )
+    row["sparse_update_breakdown_ms"] = (
+        float(row.get("update_trace_merge_ms", 0.0))
+        + float(row.get("update_owner_exchange_ms", 0.0))
+        + float(row.get("update_local_apply_ms", 0.0))
+        + float(row.get("update_flush_wait_ms", 0.0))
     )
     return row

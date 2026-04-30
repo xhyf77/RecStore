@@ -63,9 +63,12 @@ ExternalProject_Add(jemalloc_ext
   BUILD_IN_SOURCE   1
   BUILD_COMMAND     ./configure
                       --with-jemalloc-prefix=je
+                      --with-pic
                       --prefix=${JEMALLOC_INSTALL_DIR}
                       CC=${CMAKE_C_COMPILER}
                       CXX=${CMAKE_CXX_COMPILER}
+                      CFLAGS=-fPIC
+                      CXXFLAGS=-fPIC
                     && $(MAKE) -j
   INSTALL_COMMAND   $(MAKE) install
 )

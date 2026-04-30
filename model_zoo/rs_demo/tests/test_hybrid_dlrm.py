@@ -7,7 +7,9 @@ import torch
 from model_zoo.rs_demo.runtime.hybrid_dlrm import (
     build_hybrid_dense_arch,
     flatten_embedded_sparse_grad_for_recstore,
+    prepare_hybrid_dlrm_input,
     reshape_recstore_embeddings_for_dlrm,
+    run_hybrid_backward,
 )
 
 
@@ -89,6 +91,89 @@ class TestHybridDlrm(unittest.TestCase):
         loss = logits.sum()
         dense_grads = torch.autograd.grad(loss, list(model.parameters()) + [embedded_sparse])
         self.assertEqual(len(dense_grads), len(list(model.parameters())) + 1)
+        self.assertIsInstance(model, torch.nn.Module)
+
+    def test_run_hybrid_backward_populates_parameter_grads_via_backward(self) -> None:
+        model = torch.nn.Linear(4, 1)
+        embedded_sparse = torch.randn(2, 4, requires_grad=True)
+        loss = model(embedded_sparse).sum()
+
+        embedded_sparse_grad = run_hybrid_backward(
+            loss=loss,
+            embedded_sparse=embedded_sparse,
+            dense_module=model,
+            torch=torch,
+            device=torch.device("cpu"),
+        )
+
+        self.assertEqual(tuple(embedded_sparse_grad.shape), tuple(embedded_sparse.shape))
+        for param in model.parameters():
+            self.assertIsNotNone(param.grad)
+
+    def test_run_hybrid_backward_does_not_require_autograd_grad(self) -> None:
+        model = torch.nn.Linear(4, 1)
+        embedded_sparse = torch.randn(2, 4, requires_grad=True)
+        loss = model(embedded_sparse).sum()
+
+        with unittest.mock.patch(
+            "torch.autograd.grad",
+            side_effect=AssertionError("autograd.grad should not be used here"),
+        ):
+            embedded_sparse_grad = run_hybrid_backward(
+                loss=loss,
+                embedded_sparse=embedded_sparse,
+                dense_module=model,
+                torch=torch,
+                device=torch.device("cpu"),
+            )
+
+        self.assertEqual(tuple(embedded_sparse_grad.shape), tuple(embedded_sparse.shape))
+
+    def test_run_hybrid_backward_retains_grad_for_non_leaf_sparse_tensor(self) -> None:
+        model = torch.nn.Linear(4, 1)
+        leaf_sparse = torch.randn(2, 4, requires_grad=True)
+        embedded_sparse = leaf_sparse * 2.0
+        loss = model(embedded_sparse).sum()
+
+        embedded_sparse_grad = run_hybrid_backward(
+            loss=loss,
+            embedded_sparse=embedded_sparse,
+            dense_module=model,
+            torch=torch,
+            device=torch.device("cpu"),
+        )
+
+        self.assertEqual(tuple(embedded_sparse_grad.shape), tuple(embedded_sparse.shape))
+        self.assertIsNotNone(leaf_sparse.grad)
+
+    def test_split_backward_can_propagate_grad_to_non_leaf_sparse_source(self) -> None:
+        model = torch.nn.Linear(4, 1)
+        leaf_sparse = torch.randn(2, 4, requires_grad=True)
+        embedded_sparse_source = leaf_sparse * 2.0
+        dense_batch = torch.randn(2, 13)
+        labels_batch = torch.ones(2, 1)
+
+        _, embedded_sparse, _ = prepare_hybrid_dlrm_input(
+            dense_batch=dense_batch,
+            embedded_sparse_source=embedded_sparse_source,
+            labels_batch=labels_batch,
+            torch=torch,
+            device=torch.device("cpu"),
+            detach_sparse=True,
+        )
+        loss = model(embedded_sparse).sum()
+
+        embedded_sparse_grad = run_hybrid_backward(
+            loss=loss,
+            embedded_sparse=embedded_sparse,
+            dense_module=model,
+            torch=torch,
+            device=torch.device("cpu"),
+        )
+        embedded_sparse_source.backward(embedded_sparse_grad)
+
+        self.assertEqual(tuple(embedded_sparse_grad.shape), tuple(embedded_sparse.shape))
+        self.assertIsNotNone(leaf_sparse.grad)
 
 
 if __name__ == "__main__":

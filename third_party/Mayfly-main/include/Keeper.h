@@ -28,8 +28,10 @@ private:
   uint16_t myNodeID;
   std::string myIP;
   uint16_t myPort;
+  std::string memcached_namespace;
 
   memcached_st *memc;
+  std::string NamespacedKey(const std::string &key) const;
 
 protected:
   bool connectMemcached();

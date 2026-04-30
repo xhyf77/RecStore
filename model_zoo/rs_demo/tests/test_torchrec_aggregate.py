@@ -21,6 +21,7 @@ class TestTorchRecAggregate(unittest.TestCase):
                     fieldnames=[
                         "step_total_ms",
                         "collective_total_ms",
+                        "embed_transport_ms",
                         "kv_local_only_ms",
                     ],
                 )
@@ -29,6 +30,7 @@ class TestTorchRecAggregate(unittest.TestCase):
                     {
                         "step_total_ms": 10.0,
                         "collective_total_ms": 1.0,
+                        "embed_transport_ms": 1.5,
                         "kv_local_only_ms": 2.0,
                     }
                 )
@@ -36,6 +38,7 @@ class TestTorchRecAggregate(unittest.TestCase):
                     {
                         "step_total_ms": 20.0,
                         "collective_total_ms": 3.0,
+                        "embed_transport_ms": 3.5,
                         "kv_local_only_ms": 4.0,
                     }
                 )
@@ -47,6 +50,10 @@ class TestTorchRecAggregate(unittest.TestCase):
         self.assertEqual(agg["step_total_ms_p50"], 15.0)
         self.assertEqual(agg["step_total_ms_p95"], 19.5)
         self.assertEqual(agg["step_total_ms_max"], 20.0)
+        self.assertEqual(agg["embed_transport_ms_mean"], 2.5)
+        self.assertEqual(agg["embed_transport_ms_p50"], 2.5)
+        self.assertEqual(agg["embed_transport_ms_p95"], 3.4)
+        self.assertEqual(agg["embed_transport_ms_max"], 3.5)
 
     def test_write_aggregate_csv(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

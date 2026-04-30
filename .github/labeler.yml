@@ -1,24 +1,82 @@
-Compute:
+Compute/OP:
 - changed-files:
   - any-glob-to-any-file:
-    - 'src/python/**'
-    - 'src/framework/**'
-    - 'model_zoo/**'
+    - 'src/ps/python_client/**'
+    - 'src/framework/ps_client_factory.h'
+    - 'src/framework/op.cc'
+    - 'src/framework/op.h'
 
-Network:
+Compute/PyTorch:
+- changed-files:
+  - any-glob-to-any-file:
+    - 'src/framework/pytorch/**'
+    - 'src/python/pytorch/**'
+    - 'model_zoo/torchrec_dlrm/**'
+
+Compute/TensorFlow:
+- changed-files:
+  - any-glob-to-any-file:
+    - 'src/framework/tensorflow/**'
+
+Compute/HugeCTR:
+- changed-files:
+  - any-glob-to-any-file:
+    - 'src/framework/hugectr/**'
+
+Network/gRPC:
 - changed-files:
   - any-glob-to-any-file:
     - 'src/ps/grpc/**'
-    - 'src/ps/proto/**'
+
+Network/bRPC:
+- changed-files:
+  - any-glob-to-any-file:
     - 'src/ps/brpc/**'
+
+Network/RDMA:
+- changed-files:
+  - any-glob-to-any-file:
     - 'src/ps/rdma/**'
 
-Storage:
+Network/Protocol:
+- changed-files:
+  - any-glob-to-any-file:
+    - 'src/ps/proto/**'
+    - 'rpc_data/**'
+
+Network/Server:
+- changed-files:
+  - any-glob-to-any-file:
+    - 'src/ps/ps_server.cpp'
+    - 'src/ps/provider.h'
+    - 'src/ps/report_client.h'
+
+Storage/Engine:
+- changed-files:
+  - any-glob-to-any-file:
+    - 'src/storage/**'
+
+Storage/Memory:
+- changed-files:
+  - any-glob-to-any-file:
+    - 'src/memory/**'
+    - 'src/gpu_memory/**'
+
+Storage/CacheBase:
 - changed-files:
   - any-glob-to-any-file:
     - 'src/ps/base/**'
-    - 'src/storage/**'
-    - 'src/memory/**'
+
+Optimizer:
+- changed-files:
+  - any-glob-to-any-file:
+    - 'src/optimizer/**'
+
+Testing:
+- changed-files:
+  - any-glob-to-any-file:
+    - 'src/test/**'
+    - 'ci/test/**'
 
 Documentation:
 - changed-files:
@@ -26,22 +84,49 @@ Documentation:
     - 'docs/**'
     - '**/*.md'
 
-CI/CD:
+CI/Workflows:
 - changed-files:
   - any-glob-to-any-file:
     - '.github/**'
-    - 'dockerfiles/**'
-    - 'ci/**'
+
+CI/Env:
+- changed-files:
+  - any-glob-to-any-file:
+    - 'ci/env/**'
+
+CI/Schema:
+- changed-files:
+  - any-glob-to-any-file:
+    - 'ci/schema/**'
+
+CI/Pack:
+- changed-files:
+  - any-glob-to-any-file:
+    - 'ci/pack/**'
 
 ThirdParty:
 - changed-files:
   - any-glob-to-any-file:
     - 'third_party/**'
 
-Build:
+Build/CMake:
 - changed-files:
   - any-glob-to-any-file:
     - 'CMakeLists.txt'
+    - 'src/CMakeLists.txt'
+    - 'src/ps/CMakeLists.txt'
+    - 'src/framework/CMakeLists.txt'
     - 'cmake/**'
-    - 'build/**'
+
+Build/Docker:
+- changed-files:
+  - any-glob-to-any-file:
     - 'dockerfiles/**'
+
+Config:
+- changed-files:
+  - any-glob-to-any-file:
+    - 'recstore_config.json'
+    - 'recstore_config_generator.py'
+    - 'src/recstore_config.h.in'
+    - 'build/recstore_config.h'

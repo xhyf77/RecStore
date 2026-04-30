@@ -1,3 +1,19 @@
+find_package(folly REQUIRED)
+find_package(ZLIB REQUIRED)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+function(add_python_unittest _name)
+    add_test(
+        NAME ${_name}
+        COMMAND ${Python3_EXECUTABLE} -m unittest ${ARGN}
+    )
+    set_tests_properties(
+        ${_name}
+        PROPERTIES
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+endfunction()
+
 add_subdirectory(small_tests)
 add_subdirectory(server_mgr)
 
@@ -89,6 +105,15 @@ target_link_libraries(test_io_backend PUBLIC
 )
 add_test(NAME test_io_backend COMMAND test_io_backend)
 
+add_executable(test_io_uring_test_utils test_io_uring_test_utils.cpp)
+target_link_libraries(test_io_uring_test_utils PUBLIC
+    gtest
+    gtest_main
+    uring
+    pthread
+)
+add_test(NAME test_io_uring_test_utils COMMAND test_io_uring_test_utils)
+
 add_executable(test_factory test_factory.cpp)
 target_link_libraries(test_factory PUBLIC
     extendible_hash
@@ -113,6 +138,320 @@ target_link_libraries(test_index PUBLIC
 )
 add_test(NAME test_index COMMAND test_index)
 
+add_executable(test_ps_client_factory test_ps_client_factory.cpp)
+target_sources(test_ps_client_factory PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/framework/common/ps_client_config_adapter.cc
+    ${PROJECT_SOURCE_DIR}/src/ps/client_factory.cc
+    ${PROJECT_SOURCE_DIR}/src/ps/rdma/rdma_ps_client_adapter.cc
+)
+target_link_libraries(test_ps_client_factory PUBLIC
+    base
+    wq_ps_client
+    grpc_ps_client
+    brpc_ps_client
+    local_shm_ps_client
+    gflags
+    glog
+    gtest
+    gtest_main
+    pthread
+)
+target_link_options(test_ps_client_factory PUBLIC -Wl,--no-as-needed)
+add_test(NAME test_ps_client_factory COMMAND test_ps_client_factory)
+
+add_executable(test_local_shm_protocol test_local_shm_protocol.cpp)
+target_link_libraries(test_local_shm_protocol PUBLIC
+    base
+    gtest
+    gtest_main
+    pthread
+)
+add_test(NAME test_local_shm_protocol COMMAND test_local_shm_protocol)
+
+add_executable(test_local_shm_region test_local_shm_region.cpp)
+target_link_libraries(test_local_shm_region PUBLIC
+    base
+    local_shm_common
+    gtest
+    gtest_main
+    pthread
+)
+add_test(NAME test_local_shm_region COMMAND test_local_shm_region)
+
+add_executable(test_local_shm_futex test_local_shm_futex.cpp)
+target_link_libraries(test_local_shm_futex PUBLIC
+    local_shm_common
+    gtest
+    gtest_main
+    pthread
+)
+add_test(NAME test_local_shm_futex COMMAND test_local_shm_futex)
+
+add_executable(test_local_shm_queue test_local_shm_queue.cpp)
+target_link_libraries(test_local_shm_queue PUBLIC
+    local_shm_common
+    gtest
+    gtest_main
+    pthread
+)
+add_test(NAME test_local_shm_queue COMMAND test_local_shm_queue)
+
+add_executable(test_local_shm_ps_client test_local_shm_ps_client.cpp)
+target_link_libraries(test_local_shm_ps_client PUBLIC
+    base
+    local_shm_ps_client
+    local_shm_ps_server_runtime
+    gtest
+    gtest_main
+    pthread
+)
+add_test(NAME test_local_shm_ps_client COMMAND test_local_shm_ps_client)
+set_tests_properties(test_local_shm_ps_client PROPERTIES
+    TIMEOUT 30
+    RUN_SERIAL TRUE
+    RESOURCE_LOCK local_shm_tests
+)
+
+add_executable(test_op_runtime_support test_op_runtime_support.cpp)
+target_sources(test_op_runtime_support PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/framework/common/op_runtime_support.cc
+    ${PROJECT_SOURCE_DIR}/src/framework/common/ps_client_config_adapter.cc
+    ${PROJECT_SOURCE_DIR}/src/ps/client_factory.cc
+    ${PROJECT_SOURCE_DIR}/src/ps/rdma/rdma_ps_client_adapter.cc
+)
+target_link_libraries(test_op_runtime_support PUBLIC
+    base
+    wq_ps_client
+    grpc_ps_client
+    brpc_ps_client
+    local_shm_ps_client
+    gflags
+    glog
+    gtest
+    gtest_main
+    pthread
+)
+add_test(NAME test_op_runtime_support COMMAND test_op_runtime_support)
+
+add_executable(test_op test_op.cpp)
+target_sources(test_op PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/framework/op.cc
+    ${PROJECT_SOURCE_DIR}/src/framework/op_local_shm.cc
+    ${PROJECT_SOURCE_DIR}/src/framework/common/hierkv_local_runtime.cc
+    ${PROJECT_SOURCE_DIR}/src/framework/common/local_shm_op_component.cc
+    ${PROJECT_SOURCE_DIR}/src/framework/common/op_runtime_support.cc
+    ${PROJECT_SOURCE_DIR}/src/framework/common/ps_client_config_adapter.cc
+    ${PROJECT_SOURCE_DIR}/src/ps/client_factory.cc
+    ${PROJECT_SOURCE_DIR}/src/ps/rdma/rdma_ps_client_adapter.cc
+)
+target_link_libraries(test_op PUBLIC
+    base
+    wq_ps_client
+    grpc_ps_client
+    brpc_ps_client
+    local_shm_ps_client
+    gflags
+    glog
+    gtest
+    gtest_main
+    pthread
+)
+add_test(NAME test_op COMMAND test_op)
+
+add_executable(test_local_shm_op_component test_local_shm_op_component.cpp)
+target_sources(test_local_shm_op_component PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/framework/common/local_shm_op_component.cc
+)
+target_link_libraries(test_local_shm_op_component PUBLIC
+    base
+    local_shm_ps_client
+    local_shm_ps_server_runtime
+    gtest
+    gtest_main
+    pthread
+)
+add_test(NAME test_local_shm_op_component COMMAND test_local_shm_op_component)
+set_tests_properties(test_local_shm_op_component PROPERTIES
+    TIMEOUT 30
+    RUN_SERIAL TRUE
+    RESOURCE_LOCK local_shm_tests
+)
+
+add_python_unittest(
+    test_run_local_shm_mixed_benchmark_py
+    src/test/scripts/test_run_local_shm_mixed_benchmark.py
+)
+set_tests_properties(
+    test_run_local_shm_mixed_benchmark_py
+    PROPERTIES
+    LABELS "local_shm;python"
+)
+
+add_python_unittest(
+    test_run_local_shm_multi_process_benchmark_py
+    src/test/scripts/test_run_local_shm_multi_process_benchmark.py
+)
+set_tests_properties(
+    test_run_local_shm_multi_process_benchmark_py
+    PROPERTIES
+    LABELS "local_shm;python"
+)
+
+add_python_unittest(
+    test_run_hierkv_recstore_mixed_benchmark_py
+    src/test/scripts/test_run_hierkv_recstore_mixed_benchmark.py
+)
+set_tests_properties(
+    test_run_hierkv_recstore_mixed_benchmark_py
+    PROPERTIES
+    LABELS "hierkv;python"
+)
+
+add_python_unittest(
+    test_hierkv_python_ops_py
+    src.python.pytorch.recstore.unittest.test_kvclient_local_fast_path
+    src.python.pytorch.recstore.unittest.test_hierkv_integration
+    src.python.pytorch.recstore.unittest.test_embeddingbag_single_node_distributed
+    src.python.pytorch.recstore.unittest.test_sparse_optimizer_single_node_distributed
+    model_zoo.rs_demo.tests.test_recstore_distributed
+)
+set_tests_properties(
+    test_hierkv_python_ops_py
+    PROPERTIES
+    LABELS "hierkv;python;integration"
+)
+
+add_python_unittest(
+    test_hierkv_rs_demo_py
+    model_zoo.rs_demo.tests.test_hybrid_dlrm
+    model_zoo.rs_demo.tests.test_recstore_runner
+)
+set_tests_properties(
+    test_hierkv_rs_demo_py
+    PROPERTIES
+    LABELS "hierkv;python;rs_demo"
+)
+
+set(HUGECTR_TENSOR2_HEADER
+    ${PROJECT_SOURCE_DIR}/third_party/HugeCTR/HugeCTR/include/tensor2.hpp
+)
+set(HUGECTR_CONFIG_TEMPLATE
+    ${PROJECT_SOURCE_DIR}/third_party/HugeCTR/HugeCTR/include/config.hpp.in
+)
+
+if(ENABLE_CUDA AND CMAKE_CUDA_COMPILER AND
+   EXISTS ${HUGECTR_TENSOR2_HEADER} AND
+   EXISTS ${HUGECTR_CONFIG_TEMPLATE})
+    set(HUGECTR_TEST_GENERATED_INCLUDE_DIR
+        ${PROJECT_BINARY_DIR}/third_party/HugeCTR/HugeCTR/include
+    )
+    file(MAKE_DIRECTORY ${HUGECTR_TEST_GENERATED_INCLUDE_DIR})
+    configure_file(
+        ${PROJECT_SOURCE_DIR}/third_party/HugeCTR/HugeCTR/include/config.hpp.in
+        ${HUGECTR_TEST_GENERATED_INCLUDE_DIR}/config.hpp
+        @ONLY
+    )
+
+    add_executable(test_hugectr_emb
+        test_hugectr_emb.cpp
+        ${PROJECT_SOURCE_DIR}/src/framework/hugectr/op_hugectr.cc
+        ${PROJECT_SOURCE_DIR}/src/framework/hugectr/hierkv_backend.cc
+        ${PROJECT_SOURCE_DIR}/src/framework/op.cc
+        ${PROJECT_SOURCE_DIR}/src/framework/op_local_shm.cc
+        ${PROJECT_SOURCE_DIR}/src/framework/common/hierkv_local_runtime.cc
+        ${PROJECT_SOURCE_DIR}/src/framework/common/local_shm_op_component.cc
+        ${PROJECT_SOURCE_DIR}/src/framework/common/op_runtime_support.cc
+        ${PROJECT_SOURCE_DIR}/src/framework/common/ps_client_config_adapter.cc
+        ${PROJECT_SOURCE_DIR}/src/ps/client_factory.cc
+        ${PROJECT_SOURCE_DIR}/src/ps/rdma/rdma_ps_client_adapter.cc
+    )
+    target_include_directories(test_hugectr_emb PRIVATE
+        ${PROJECT_SOURCE_DIR}/src
+        ${PROJECT_SOURCE_DIR}/src/ps/grpc
+        ${PROJECT_SOURCE_DIR}/third_party/HugeCTR/HugeCTR
+        ${PROJECT_SOURCE_DIR}/third_party/HugeCTR/HugeCTR/include
+        ${HUGECTR_TEST_GENERATED_INCLUDE_DIR}
+        ${CUDA_TOOLKIT_INCLUDE}
+    )
+    target_link_libraries(test_hugectr_emb PUBLIC
+        base
+        wq_ps_client
+        grpc_ps_client
+        brpc_ps_client
+        local_shm_ps_client
+        protobuf::libprotobuf
+        gRPC::grpc++
+        glog::glog
+        ${CUDA_CUDART_LIBRARY}
+    )
+    target_link_options(test_hugectr_emb PUBLIC -Wl,--no-as-needed)
+    add_test(NAME test_hugectr_emb COMMAND test_hugectr_emb)
+    set_tests_properties(test_hugectr_emb PROPERTIES LABELS "hierkv;hugectr")
+else()
+    message(STATUS
+        "Skipping HugeCTR runtime tests: CUDA or HugeCTR headers/templates are unavailable."
+    )
+endif()
+
+add_executable(brpc_ps_server_unit_test
+    test_brpc_ps_server.cpp
+    ${PROJECT_SOURCE_DIR}/src/ps/brpc/brpc_ps_server.cpp
+)
+target_include_directories(brpc_ps_server_unit_test PUBLIC ${BRPC_INCLUDE_PATH})
+target_include_directories(brpc_ps_server_unit_test PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/ps/brpc
+)
+target_compile_definitions(brpc_ps_server_unit_test PRIVATE RECSTORE_NO_SERVER_MAIN)
+target_link_libraries(brpc_ps_server_unit_test PUBLIC
+    base
+    ps_base
+    ps_proto
+    ${BRPC_LIB}
+    ${CUSTOM_PROTOBUF_LIB}
+    ${SYSTEM_OPENSSL_SSL_LIB}
+    ${SYSTEM_OPENSSL_CRYPTO_LIB}
+    ZLIB::ZLIB
+    Threads::Threads
+    dl
+    stdc++fs
+    kv_engine
+    sparse_tensor
+    gflags
+    leveldb
+    TBB::tbb
+    gtest
+    gtest_main
+)
+add_test(NAME brpc_ps_server_unit_test COMMAND brpc_ps_server_unit_test)
+set_tests_properties(brpc_ps_server_unit_test PROPERTIES LABELS "ps_unit")
+
+add_executable(test_rdma_protocol test_rdma_protocol.cpp)
+target_link_libraries(test_rdma_protocol PUBLIC
+    base
+    gtest
+    gtest_main
+    pthread
+)
+add_test(NAME test_rdma_protocol COMMAND test_rdma_protocol)
+
+add_executable(test_allshards_ps_client test_allshards_ps_client.cpp)
+target_link_libraries(test_allshards_ps_client PUBLIC
+    base
+    wq_ps_client
+    gtest
+    gtest_main
+    pthread
+)
+add_test(NAME test_allshards_ps_client COMMAND test_allshards_ps_client)
+
+add_executable(test_ps_transport_benchmark test_ps_transport_benchmark.cpp)
+target_link_libraries(test_ps_transport_benchmark PUBLIC
+    base
+    gtest
+    gtest_main
+    pthread
+)
+add_test(NAME test_ps_transport_benchmark COMMAND test_ps_transport_benchmark)
 add_executable(test_storage_cache_lru test_storage_cache_lru.cpp)
 target_link_libraries(test_storage_cache_lru PUBLIC
     gtest

@@ -116,9 +116,11 @@ if ! shopt -oq posix; then
   fi
 fi
 
-export PATH=/opt/hpcx/ompi/bin/:$PATH:/usr/local/cuda/bin
-export LD_LIBRARY_PATH=/opt/hpcx/ompi/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+# HPC/IB runtime paths - uncomment if needed in your environment
+# export PATH=/opt/hpcx/ompi/bin/:$PATH:/usr/local/cuda/bin
+# export LD_LIBRARY_PATH=/opt/hpcx/ompi/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 
+# Proxy settings - uncomment if needed
 # export http_proxy=http://10.0.3.8:7890
 # export https_proxy=http://10.0.3.8:7890
 # export all_proxy=socks5://10.0.3.8:7890
@@ -127,6 +129,7 @@ alias sudo="sudo env PATH=$PATH"
 
 ulimit -c 0
 
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
-[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+# Node.js version manager (NVM) - uncomment if needed
+# export NVM_DIR="$HOME/.nvm"
+# [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+# [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"

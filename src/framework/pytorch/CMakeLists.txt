@@ -3,6 +3,13 @@ find_package(Torch REQUIRED)
 add_library(recstore_torch_ops SHARED
     op_torch.cc
     ../op.cc
+    ../op_local_shm.cc
+    ../common/hierkv_local_runtime.cc
+    ../common/op_runtime_support.cc
+    ../common/local_shm_op_component.cc
+    ../common/ps_client_config_adapter.cc
+    ../../ps/client_factory.cc
+    ${PROJECT_SOURCE_DIR}/src/ps/rdma/rdma_ps_client_adapter.cc
 )
 
 target_compile_definitions(recstore_torch_ops PRIVATE _GLIBCXX_USE_CXX11_ABI=1)
@@ -28,13 +35,20 @@ endif()
 find_package(Protobuf REQUIRED)
 find_package(gRPC REQUIRED)
 target_link_libraries(recstore_torch_ops PRIVATE
+    wq_ps_client
     grpc_ps_client
     brpc_ps_client
+    local_shm_ps_client
     protobuf::libprotobuf
     gRPC::grpc++
     glog::glog
     ${TORCH_LIBRARIES}
 )
+
+if(TARGET framework_gpu_cache)
+    target_compile_definitions(recstore_torch_ops PRIVATE RECSTORE_ENABLE_GPU_CACHE)
+    target_link_libraries(recstore_torch_ops PRIVATE framework_gpu_cache)
+endif()
 
 target_link_options(recstore_torch_ops PRIVATE -Wl,--no-as-needed)
 
@@ -48,4 +62,3 @@ set_target_properties(recstore_torch_ops PROPERTIES
 set_target_properties(recstore_torch_ops PROPERTIES
     OUTPUT_NAME "_recstore_ops"
 )
-

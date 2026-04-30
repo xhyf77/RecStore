@@ -3,6 +3,10 @@
 import os
 import socket
 import json
+import glob
+
+
+RDMA_SKIP_EXIT_CODE = 77
 
 
 def find_ps_server_binary():
@@ -60,16 +64,56 @@ def find_config_file():
     return None
 
 
-def get_ports_from_config():
-    """Extract ports from recstore_config.json."""
+def load_config():
+    """Load the active RecStore config file."""
     config_path = find_config_file()
     if not config_path:
+        return None, {}
+
+    with open(config_path, 'r') as f:
+        return config_path, json.load(f)
+
+
+def get_backend_type():
+    """Return the configured backend type for the current test run."""
+    _config_path, config = load_config()
+    cache_ps = config.get('cache_ps', {})
+    return str(cache_ps.get('ps_type', 'GRPC')).upper()
+
+
+def get_rdma_runner_config():
+    """Extract the RDMA runner settings needed by the PetPS test harness."""
+    _config_path, config = load_config()
+    cache_ps = config.get('cache_ps', {})
+    dist_client = config.get('distributed_client', {})
+    base_kv = cache_ps.get('base_kv_config', {})
+    return {
+        'num_servers': int(dist_client.get('num_shards', cache_ps.get('num_shards', 1))),
+        'value_size': int(base_kv.get('value_size', 512)),
+        'max_kv_num_per_request': int(dist_client.get('max_keys_per_request', 64)),
+    }
+
+
+def get_rdma_skip_reason():
+    """Return skip reason when RDMA verbs devices are not available."""
+    rdma_device_dir = '/dev/infiniband'
+    if not os.path.isdir(rdma_device_dir):
+        return f"RDMA verbs device directory is unavailable: {rdma_device_dir}"
+
+    uverbs_devices = sorted(glob.glob(os.path.join(rdma_device_dir, 'uverbs*')))
+    if not uverbs_devices:
+        return f"RDMA verbs devices are unavailable under {rdma_device_dir}"
+
+    return None
+
+
+def get_ports_from_config():
+    """Extract ports from recstore_config.json."""
+    config_path, config = load_config()
+    if not config_path:
         return [15000, 15001, 15002, 15003]
-    
+
     try:
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-        
         ports = []
         # Try to get ports from cache_ps.servers
         cache_ps = config.get('cache_ps', {})

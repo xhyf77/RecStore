@@ -48,6 +48,10 @@ DEFINE_string(brpc_config_path,
               RECSTORE_PATH "/recstore_config.json",
               "config file path");
 DEFINE_int32(brpc_server_port, 15000, "bRPC server port");
+DEFINE_int32(local_shard_id,
+             -1,
+             "Only start the specified shard in multi-shard bRPC mode; "
+             "-1 means start all configured shards");
 DEFINE_int32(brpc_server_num_threads,
              0,
              "Number of threads for bRPC server, 0 means auto");
@@ -88,7 +92,38 @@ bool ExtractPayloadBytes(
   return false;
 }
 
+std::vector<nlohmann::json>
+SelectShardConfigsInternal(const nlohmann::json& cache_ps_config,
+                           const std::optional<int>& local_shard_id) {
+  std::vector<nlohmann::json> selected;
+  if (!cache_ps_config.contains("servers") ||
+      !cache_ps_config["servers"].is_array()) {
+    return selected;
+  }
+
+  for (const auto& server_config : cache_ps_config["servers"]) {
+    if (!local_shard_id.has_value()) {
+      selected.push_back(server_config);
+      continue;
+    }
+    if (!server_config.contains("shard") ||
+        !server_config["shard"].is_number_integer()) {
+      continue;
+    }
+    if (server_config["shard"].get<int>() == *local_shard_id) {
+      selected.push_back(server_config);
+    }
+  }
+  return selected;
+}
+
 } // namespace
+
+std::vector<nlohmann::json>
+SelectBRPCShardConfigs(const nlohmann::json& cache_ps_config,
+                       const std::optional<int>& local_shard_id) {
+  return SelectShardConfigsInternal(cache_ps_config, local_shard_id);
+}
 
 BRPCParameterServiceImpl::BRPCParameterServiceImpl(CachePS* cache_ps)
     : cache_ps_(cache_ps) {
@@ -635,6 +670,10 @@ public:
     if (config_["cache_ps"].contains("num_shards")) {
       num_shards = config_["cache_ps"]["num_shards"];
     }
+    const std::optional<int> local_shard_id =
+        FLAGS_local_shard_id >= 0
+            ? std::make_optional(FLAGS_local_shard_id)
+            : std::nullopt;
 
     if (num_shards > 1) {
       // Multi-server startup
@@ -647,10 +686,25 @@ public:
         return;
       }
 
-      auto servers = config_["cache_ps"]["servers"];
-      if (servers.size() != num_shards) {
-        LOG(FATAL) << "servers count (" << servers.size()
-                   << ") does not match num_shards (" << num_shards << ")";
+      const auto& cache_ps_config = config_["cache_ps"];
+      auto servers =
+          SelectShardConfigsInternal(cache_ps_config, local_shard_id);
+      const auto configured_servers = cache_ps_config["servers"];
+      if (configured_servers.size() != num_shards) {
+        LOG(FATAL) << "servers 配置数量 (" << configured_servers.size()
+                   << ") 与 num_shards (" << num_shards << ") 不匹配";
+        return;
+      }
+      if (local_shard_id.has_value() && servers.empty()) {
+        LOG(FATAL) << "local_shard_id=" << *local_shard_id
+                   << " is not present in cache_ps.servers";
+        return;
+      }
+      if (!local_shard_id.has_value() &&
+          servers.size() != configured_servers.size()) {
+        LOG(FATAL) << "Selected shard count (" << servers.size()
+                   << ") does not match configured server count ("
+                   << configured_servers.size() << ")";
         return;
       }
 
@@ -665,6 +719,8 @@ public:
           std::string server_address = host + ":" + std::to_string(port);
 
           nlohmann::json shard_config = config_["cache_ps"];
+          shard_config["num_shards"]  = 1;
+          shard_config["servers"]     = nlohmann::json::array({server_config});
           if (shard_config.contains("base_kv_config") &&
               shard_config["base_kv_config"].is_object()) {
             auto& base_kv_config = shard_config["base_kv_config"];

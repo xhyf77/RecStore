@@ -99,7 +99,7 @@ if(brpc_FOUND)
 
     # bRPC PS Client Test
     add_executable(brpc_ps_client_test
-        brpc_ps_client_test.cpp
+        ${PROJECT_SOURCE_DIR}/src/test/ps/brpc/brpc_ps_client_test.cpp
         ${PROJECT_SOURCE_DIR}/src/test/server_mgr/ps_server_launcher.cpp
     )
     target_link_libraries(brpc_ps_client_test PUBLIC
@@ -170,7 +170,7 @@ if(brpc_FOUND)
 
     # Distributed bRPC PS Client Test
     add_executable(dist_brpc_ps_client_test
-        dist_brpc_ps_client_test.cpp
+        ${PROJECT_SOURCE_DIR}/src/test/ps/brpc/dist_brpc_ps_client_test.cpp
         ${PROJECT_SOURCE_DIR}/src/test/server_mgr/ps_server_launcher.cpp
     )
     target_link_libraries(dist_brpc_ps_client_test PUBLIC

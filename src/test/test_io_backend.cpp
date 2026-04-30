@@ -1,6 +1,5 @@
 #include <chrono>
 #include <cctype>
-#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -14,6 +13,7 @@
 #include "base/factory.h"
 #include "storage/io_backend/force_link.h"
 #include "storage/io_backend/io_backend.h"
+#include "test_io_uring_helper.h"
 
 using boost::coroutines2::coroutine;
 
@@ -59,6 +59,16 @@ bool CanUseSpdkBackend(std::string* reason) {
     return false;
   }
   return true;
+}
+
+bool HasRegisteredBackend(const std::string& backend, std::string* reason) {
+  using IOF            = base::Factory<IOBackend, const BaseKVConfig&>;
+  const auto& creators = IOF::creators();
+  if (creators.find(backend) != creators.end())
+    return true;
+  if (reason != nullptr)
+    *reason = "backend factory is not registered for " + backend;
+  return false;
 }
 
 std::string ResolveBackendFromEnv() {
@@ -110,6 +120,16 @@ protected:
         backend_ = "IOURING";
       }
     }
+
+    if (backend_ == "IOURING") {
+      std::string io_uring_unavailable_reason;
+      if (!test_utils::CanUseIoUring(&io_uring_unavailable_reason))
+        GTEST_SKIP() << io_uring_unavailable_reason;
+    }
+
+    std::string backend_registration_reason;
+    if (!HasRegisteredBackend(backend_, &backend_registration_reason))
+      GTEST_SKIP() << backend_registration_reason;
 
     const auto ts =
         std::chrono::duration_cast<std::chrono::nanoseconds>(

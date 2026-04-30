@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-#include "ps/base_client.h"
+#include "ps/rdma/base_client.h"
 
 #include "benchmark/benchmark_client_common.h"
 #include "third_party/Mayfly-main/include/DSM.h"

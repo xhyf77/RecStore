@@ -1,0 +1,50 @@
+{
+  "cache_ps": {
+    "ps_type": "GRPC",
+    "max_batch_keys_size": 65536,
+    "num_threads": 32,
+    "num_shards": 2,
+    "servers": [
+      {
+        "host": "127.0.0.1",
+        "port": 25000,
+        "shard": 0
+      },
+      {
+        "host": "127.0.0.1",
+        "port": 25001,
+        "shard": 1
+      }
+    ],
+    "base_kv_config": {
+      "path": "/tmp/recstore_data_rdma_multishard_test",
+      "capacity": 1000000,
+      "value_size": 16,
+      "value_type": "DRAM",
+      "index_type": "DRAM",
+      "value_memory_management": "PersistLoopShmMalloc"
+    }
+  },
+  "distributed_client": {
+    "num_shards": 2,
+    "hash_method": "city_hash",
+    "max_keys_per_request": 500,
+    "servers": [
+      {
+        "host": "127.0.0.1",
+        "port": 25000,
+        "shard": 0
+      },
+      {
+        "host": "127.0.0.1",
+        "port": 25001,
+        "shard": 1
+      }
+    ]
+  },
+  "client": {
+    "host": "127.0.0.1",
+    "port": 25000,
+    "shard": 0
+  }
+}

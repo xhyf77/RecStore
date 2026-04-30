@@ -75,7 +75,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "chore: apply clang-format"
+          git commit -am "chore: apply clang-format[skip changelog][skip ci]"
           git push
 
       - name: Auto-commit on PR (same repo)
@@ -84,7 +84,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "chore: apply clang-format"
+          git commit -am "chore: apply clang-format[skip changelog][skip ci]"
           # Push back to the PR branch
           git push origin "HEAD:${{ github.head_ref }}"
 

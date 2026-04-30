@@ -148,6 +148,13 @@ jobs:
           bash ci/pack/pack_artifact.sh "build/recstore-${RELEASE_VERSION}-linux-x86_64-recstore_ops.tar.gz" build/lib/lib_recstore_ops.so
           bash ci/pack/pack_artifact.sh "build/recstore-${RELEASE_VERSION}-linux-x86_64-ycsb.tar.gz" build/bin/ycsb
 
+      - name: Pack third_party sources
+        run: |
+          set -euo pipefail
+          tar -czf "build/recstore-${RELEASE_VERSION}-linux-x86_64-third_party.tar.gz" third_party
+          echo "Packed third_party archive:"
+          ls -lh "build/recstore-${RELEASE_VERSION}-linux-x86_64-third_party.tar.gz"
+
       - name: Extract release packages
         run: |
           set -euo pipefail
@@ -199,10 +206,23 @@ jobs:
           PKG_ROOT=runner/extracted/ps-server/package
           python3 ci/pack/runner.py "${PKG_ROOT}" bin/ps_server --ready-pattern "listening on" --timeout 180 --log runner/logs/recstore-release-ps-server.log --inject-rpath --keep-alive
 
-      - name: Run ci/test/test_op.sh
+      - name: Run packaged OP Python tests
         run: |
           set -euo pipefail
-          bash ci/test/test_op.sh
+          export LD_LIBRARY_PATH="${GITHUB_WORKSPACE}/build/lib:${LD_LIBRARY_PATH:-}"
+          export PYTHONPATH="${GITHUB_WORKSPACE}/src/python/pytorch:${PYTHONPATH:-}"
+
+          echo "[1/2] Running pytorch_client_test"
+          (
+            cd src/test/framework/pytorch
+            python3 test_client.py "${GITHUB_WORKSPACE}/build/lib/lib_recstore_ops.so"
+          )
+
+          echo "[2/2] Running dist_emb_unittest"
+          (
+            cd src/python/pytorch
+            python3 -m unittest recstore.unittest.test_dist_emb
+          )
 
       - name: Stop ps_server
         if: always()
@@ -232,6 +252,7 @@ jobs:
             build/recstore-${{ needs.prepare-release.outputs.version }}-linux-x86_64-ps_server.tar.gz
             build/recstore-${{ needs.prepare-release.outputs.version }}-linux-x86_64-recstore_ops.tar.gz
             build/recstore-${{ needs.prepare-release.outputs.version }}-linux-x86_64-ycsb.tar.gz
+            build/recstore-${{ needs.prepare-release.outputs.version }}-linux-x86_64-third_party.tar.gz
             binary/torch-${{ env.TORCH_VERSION }}*linux_x86_64.whl
 
   skip-no-changes:

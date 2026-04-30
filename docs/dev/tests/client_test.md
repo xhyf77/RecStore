@@ -1,6 +1,6 @@
 # Python 客户端基础测试
 
-**代码位置**: `src/framework/pytorch/python_client/client_test.py`
+**代码位置**: `src/test/framework/pytorch/test_client.py`
 
 ## 简介
 该测试验证 Client 端与 Parameter Server 的基础交互语义。它不依赖 PyTorch 的 `nn.Module`，而是直接调用 `RecstoreClient` 的底层接口。

@@ -38,6 +38,8 @@ class PSServerRunner:
         self.stderr_thread = None
         self.ready_event = threading.Event()
         self.shard_ready = set()
+        self._stopping = False
+        self._suppressing_shutdown_stderr = False
         
         self.log_dir.mkdir(parents=True, exist_ok=True)
         
@@ -64,6 +66,33 @@ class PSServerRunner:
             self.log_file.write(log_line)
         if self.verbose:
             print(log_line.rstrip())
+
+    def _should_suppress_shutdown_stderr(self, line: str) -> bool:
+        if not self._stopping:
+            self._suppressing_shutdown_stderr = False
+            return False
+
+        block_start_markers = (
+            "*** Aborted at ",
+            "*** Signal 15 (SIGTERM)",
+            "folly::symbolizer::",
+        )
+        if any(marker in line for marker in block_start_markers):
+            self._suppressing_shutdown_stderr = True
+            return True
+
+        if self._suppressing_shutdown_stderr:
+            stack_frame_prefixes = (
+                "    @ ",
+                "\t@ ",
+                "                       /",
+                "/app/RecStore/",
+            )
+            if line.startswith(stack_frame_prefixes):
+                return True
+            self._suppressing_shutdown_stderr = False
+
+        return False
     
     def _monitor_output(self, pipe, stream_name: str):
         try:
@@ -71,6 +100,10 @@ class PSServerRunner:
                 if not line:
                     break
                 line = line.rstrip()
+
+                if stream_name == "STDERR" and self._should_suppress_shutdown_stderr(line):
+                    continue
+
                 self._log(f"[{stream_name}] {line}")
                 
                 if "listening on" in line:
@@ -170,6 +203,8 @@ class PSServerRunner:
             return
         
         self._log("Stopping PS Server...")
+        self._stopping = True
+        self._suppressing_shutdown_stderr = False
         
         try:
             if self.process.poll() is None:
@@ -195,6 +230,8 @@ class PSServerRunner:
             self._log = lambda msg: None
         
         self.process = None
+        self._stopping = False
+        self._suppressing_shutdown_stderr = False
     
     def is_running(self) -> bool:
         return self.process is not None and self.process.poll() is None

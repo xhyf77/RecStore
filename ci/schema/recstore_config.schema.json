@@ -136,6 +136,48 @@
       "pattern": "^https?://.+",
       "default": "http://127.0.0.1:8081/report",
       "description": "HTTP endpoint for async report() ingestion service (typically writes to ClickHouse for Grafana dashboards)."
+    },
+    "hugectr": {
+      "type": "object",
+      "description": "HugeCTR frontend runtime backend selection.",
+      "additionalProperties": true,
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": [
+            "recstore",
+            "hierkv"
+          ],
+          "description": "HugeCTR runtime backend choice."
+        }
+      }
+    },
+    "hierkv": {
+      "type": "object",
+      "description": "HugeCTR HierarchicalKV backend configuration.",
+      "additionalProperties": true,
+      "properties": {
+        "max_capacity": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_hbm_for_vectors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dim": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "device_id": {
+          "type": "integer"
+        },
+        "reserved_key_start_bit": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 62
+        }
+      }
     }
   },
   "$defs": {

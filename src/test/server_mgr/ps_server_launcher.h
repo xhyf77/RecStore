@@ -22,6 +22,7 @@ struct LauncherOptions {
   std::filesystem::path config_path;
   std::optional<std::string> override_ps_type;
   std::vector<int> override_ports;
+  std::optional<int> local_shard_id;
   std::filesystem::path log_dir     = "./logs";
   int startup_timeout_sec           = 60;
   int graceful_shutdown_timeout_sec = 5;
@@ -67,6 +68,10 @@ public:
 
   const LaunchResult& GetResult() const { return result_; }
   const std::string& GetLastError() const { return last_error_; }
+  std::filesystem::path PrepareConfigForLaunchForTest() {
+    return PrepareConfigForLaunch();
+  }
+  void CleanupLaunchConfigForTest() { CleanupLaunchConfig(); }
 
 private:
   static std::filesystem::path FindPsServerBinary();

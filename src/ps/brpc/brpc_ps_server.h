@@ -6,9 +6,11 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "base/json.h"
 #include "ps/base/cache_ps_impl.h"
 #include "ps_brpc.pb.h"
 
@@ -61,5 +63,9 @@ private:
   std::atomic<uint64_t> total_put_bytes_{0};
   std::chrono::steady_clock::time_point start_time_;
 };
+
+std::vector<nlohmann::json>
+SelectBRPCShardConfigs(const nlohmann::json& cache_ps_config,
+                       const std::optional<int>& local_shard_id);
 
 } // namespace recstore

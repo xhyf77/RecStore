@@ -67,6 +67,7 @@ source "${target_dir}/.bashrc"
 step_base() {
     sudo apt update
     sudo apt install -y libmemcached-dev ca-certificates lsb-release wget python3-dev pybind11-dev
+    sudo apt install -y memcached
     pip3 install pymemcache
 }
 

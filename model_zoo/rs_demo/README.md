@@ -73,6 +73,49 @@ python3 model_zoo/rs_demo/run_mock_stress.py \
   --no-start-server
 ```
 
+双机公平对齐 lane（单 trainer + 远端 embedding worker）：
+
+机器 A（`node-rank 0`，trainer）：
+
+```bash
+python3 model_zoo/rs_demo/run_mock_stress.py \
+  --backend torchrec \
+  --nnodes 2 \
+  --node-rank 0 \
+  --nproc-per-node 1 \
+  --master-addr <machine-a-ip> \
+  --master-port 29500 \
+  --rdzv-id rs-demo-fair \
+  --run-id rs-demo-fair \
+  --output-root /nas/home/shq/docker/rs_demo \
+  --steps 60 \
+  --batch-size 4096 \
+  --torchrec-dist-mode fair_remote \
+  --no-start-server
+```
+
+机器 B（`node-rank 1`，embedding worker）：
+
+```bash
+python3 model_zoo/rs_demo/run_mock_stress.py \
+  --backend torchrec \
+  --nnodes 2 \
+  --node-rank 1 \
+  --nproc-per-node 1 \
+  --master-addr <machine-a-ip> \
+  --master-port 29500 \
+  --rdzv-id rs-demo-fair \
+  --run-id rs-demo-fair \
+  --output-root /nas/home/shq/docker/rs_demo \
+  --steps 60 \
+  --batch-size 4096 \
+  --torchrec-dist-mode fair_remote \
+  --no-start-server
+```
+
+该 lane 会让非 `rank0` 只保留 embedding worker 角色；主 `torchrec_main.csv` 只汇总 trainer 行，便于和单 trainer 的远端 RecStore lane 做公平主结论对比。
+为保证 sparse update 语义正确，`fair_remote` 会让所有 rank 使用相同 batch 顺序；它不是多 trainer 吞吐测试语义。
+
 机器 B（`node-rank 1`）：
 
 ```bash
@@ -136,6 +179,10 @@ python3 model_zoo/rs_demo/run_mock_stress.py \
 - `--torchrec-main-csv`：TorchRec 主报表 CSV 路径
 - `--torchrec-main-agg-csv`：TorchRec 主报表聚合 CSV 路径（mean/p50/p95/max）
 - `--torchrec-profiler`：启用 Torch profiler 并导出 trace 聚合 CSV
+- `--torchrec-dist-mode`：TorchRec distributed 运行语义，默认 `replicated`
+  - `replicated`：保留当前 distributed training 观测语义
+  - `fair_remote`：单 trainer + 远端 embedding worker 的公平对齐语义
+  - `fair_remote` 要求 `world_size > 1`
 - `--torchrec-trace-dir`：Torch profiler trace 输出目录
 - `--torchrec-trace-csv`：Torch profiler trace 聚合 CSV 路径
 - `--torchrec-compare-recstore-csv`：可选，指定 RecStore CSV 以导出对照差值表
@@ -156,6 +203,7 @@ python3 model_zoo/rs_demo/run_mock_stress.py \
 
 TorchRec 主报表（`--torchrec-main-csv`）关键列：
 
+- `embed_transport_ms`：用于和远端 RecStore lane 对齐的归一 transport 列；当前等于 `collective_total_ms`
 - `collective_total_ms`：collective launch + wait 的总耗时
 - `kv_local_only_ms`：本地 embedding lookup + pool 的耗时（不含 pack/unpack）
 - `kv_extended_ms`：输入打包 + 本地 lookup/pool + 输出解包的总耗时

@@ -1,6 +1,8 @@
 #include "storage/index/ssd_cceh/CCEH.h"
+#include "test_io_uring_helper.h"
 #include "gtest/gtest.h"
 #include <filesystem>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -22,6 +24,10 @@ BaseKVConfig config{
 class CCEHTest : public ::testing::Test {
 protected:
   void SetUp() override {
+    std::string reason;
+    if (!test_utils::CanUseIoUring(&reason))
+      GTEST_SKIP() << reason;
+
     const std::filesystem::path file_path =
         config.json_config_.at("file_path").get<std::string>();
     std::filesystem::create_directories(file_path.parent_path());

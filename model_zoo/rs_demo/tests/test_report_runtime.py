@@ -1,11 +1,21 @@
+import os
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from model_zoo.rs_demo.runtime.report import analyze_embupdate
+from model_zoo.rs_demo.runtime.report import analyze_embupdate, setup_local_report_env
 
 
 class ReportRuntimeTest(unittest.TestCase):
+    def test_setup_local_report_env_uses_jsonl_only_by_default(self) -> None:
+        with mock.patch("model_zoo.rs_demo.runtime.report.Path.mkdir"), mock.patch(
+            "builtins.open", mock.mock_open()
+        ), mock.patch.dict("model_zoo.rs_demo.runtime.report.os.environ", {}, clear=True):
+            setup_local_report_env("/tmp/recstore_events.jsonl")
+
+            self.assertEqual("jsonl", os.environ["RECSTORE_REPORT_LOCAL_SINK"])
+            self.assertEqual("256", os.environ["RECSTORE_REPORT_FLUSH_EVERY_N"])
+
     def test_analyze_embupdate_includes_server_log_when_present(self) -> None:
         repo_root = Path("/repo")
         with mock.patch("model_zoo.rs_demo.runtime.report.subprocess.run") as run_mock:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import fcntl
 import hashlib
 import json
 import os
@@ -16,24 +17,60 @@ import torch
 from ..config import RunConfig, ensure_shared_dir, validate_recstore_config
 from ..data.dlrm_source import (
     build_kjt_batch_from_dense_sparse_labels,
-    build_table_offsets_from_eb_configs,
     build_train_dataloader,
-    convert_kjt_ids_to_fused_ids,
     get_default_cat_names,
     inject_project_paths,
 )
 from ..runtime.hybrid_dlrm import (
     build_hybrid_dense_arch,
-    flatten_embedded_sparse_grad_for_recstore,
     parse_layer_sizes,
     prepare_hybrid_dlrm_input,
-    reshape_recstore_embeddings_for_dlrm,
+    reshape_torchrec_embeddings_for_dlrm,
     run_hybrid_backward,
     sync_device,
 )
 from ..runtime.recstore_distributed import ShardedRecstoreClient
 from ..runtime.report import finalize_recstore_row, summarize_us, write_stage_csv
 from .base import BenchmarkRunner
+
+FAST_PATH_LOOKUP_PROFILE_KEYS = (
+    "lookup_exchange_ids_ms",
+    "lookup_local_lookup_ms",
+    "lookup_exchange_responses_ms",
+    "lookup_rebuild_ms",
+    "lookup_post_rebuild_h2d_ms",
+    "lookup_cpp_total_ms",
+    "lookup_keys_stage_ms",
+    "lookup_submit_ms",
+    "lookup_wait_ms",
+    "lookup_payload_pin_ms",
+    "lookup_fallback_copy_ms",
+    "lookup_values_h2d_enqueue_ms",
+)
+
+FAST_PATH_UPDATE_PROFILE_KEYS = (
+    "trace_collect_ms",
+    "trace_aggregate_ms",
+    "exchange_ms",
+    "owner_aggregate_ms",
+    "local_update_ms",
+    "local_update_cpp_total_ms",
+    "local_update_keys_stage_ms",
+    "local_update_grads_stage_ms",
+    "local_update_shm_call_ms",
+    "local_update_stage_wait_ms",
+)
+
+GPU_CACHE_PROFILE_KEYS = (
+    "gpu_cache_query_ms",
+    "gpu_cache_backend_lookup_ms",
+    "gpu_cache_fill_ms",
+    "gpu_cache_update_ms",
+    "gpu_cache_hit_count",
+    "gpu_cache_invalidate_ms",
+    "gpu_cache_request_count",
+    "gpu_cache_miss_count",
+)
 
 
 @contextmanager
@@ -49,6 +86,31 @@ def _bool_int(flag: bool) -> int:
     return 1 if flag else 0
 
 
+def _consume_perf_stats(obj: Any) -> dict[str, float]:
+    if obj is None:
+        return {}
+    consume = getattr(obj, "consume_perf_stats", None)
+    if consume is None:
+        return {}
+    stats = consume(reset=True)
+    return stats if isinstance(stats, dict) else {}
+
+
+def _merge_consumed_perf_stats(row: dict[str, Any], stats: dict[str, float]) -> None:
+    for key, value in stats.items():
+        if key in row and row[key] not in (0, 0.0, "", None):
+            continue
+        row[key] = value
+
+
+def _reset_perf_stats(obj: Any) -> None:
+    if obj is None:
+        return
+    reset = getattr(obj, "reset_perf_stats", None)
+    if reset is not None:
+        reset()
+
+
 def _load_rows(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8") as f:
         return list(csv.DictReader(f))
@@ -56,6 +118,79 @@ def _load_rows(path: Path) -> list[dict[str, str]]:
 
 def _write_rows(path: Path, rows: list[dict[str, Any]]) -> None:
     write_stage_csv(path, rows)
+
+
+def _merge_numeric_fields(
+    row: dict[str, Any],
+    profile: Any,
+    keys: tuple[str, ...],
+) -> None:
+    if not isinstance(profile, dict):
+        for key in keys:
+            row.setdefault(key, 0.0)
+        return
+    for key in keys:
+        value = profile.get(key, 0.0)
+        row[key] = float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def _merge_gpu_cache_profile(
+    row: dict[str, Any],
+    kv_client: Any,
+    prefix: str,
+) -> None:
+    getter = getattr(kv_client, "get_last_gpu_cache_profile", None)
+    profile = getter() if callable(getter) else {}
+    if not isinstance(profile, dict):
+        profile = {}
+    for key in GPU_CACHE_PROFILE_KEYS:
+        value = profile.get(key, 0.0)
+        row[f"{prefix}_{key}"] = float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def _maybe_warmup_gpu_local_shm_fast_path(
+    cfg: RunConfig,
+    client: Any,
+    device: torch.device,
+) -> bool:
+    if not cfg.enable_single_node_distributed_fast_path:
+        return False
+    if device.type != "cuda":
+        return False
+    is_shared_local_shm_table = getattr(client, "is_shared_local_shm_table", None)
+    if not callable(is_shared_local_shm_table) or not is_shared_local_shm_table():
+        return False
+    activate_shard = getattr(client, "activate_shard", None)
+    if callable(activate_shard):
+        activate_shard(0)
+    current_ps_backend = getattr(client, "current_ps_backend", None)
+    set_ps_backend = getattr(client, "set_ps_backend", None)
+    if callable(current_ps_backend) and callable(set_ps_backend):
+        if current_ps_backend() != "local_shm":
+            set_ps_backend("local_shm")
+    warmup = getattr(client, "warmup_local_lookup_flat_cuda_region", None)
+    if not callable(warmup):
+        return False
+    return bool(warmup())
+
+
+def _configure_gpu_cache(
+    embedding_module: Any,
+    cfg: RunConfig,
+    *,
+    embedding_dim: int,
+) -> None:
+    if not getattr(cfg, "enable_gpu_cache", False):
+        return
+    kv_client = getattr(embedding_module, "kv_client", None)
+    if kv_client is None:
+        raise RuntimeError("GPU cache requires embedding module kv_client")
+    enable = getattr(kv_client, "enable_gpu_cache", None)
+    if not callable(enable):
+        raise RuntimeError("GPU cache requires kv_client.enable_gpu_cache support")
+    enabled = bool(enable(int(cfg.gpu_cache_capacity), int(embedding_dim)))
+    if not enabled:
+        raise RuntimeError("GPU cache enable request returned False")
 
 
 def _pick_socket_ifname() -> str | None:
@@ -83,7 +218,9 @@ def _append_worker_debug(cfg: RunConfig, rank: int, message: str) -> None:
 
 
 def _build_worker_fingerprint(repo_root: Path) -> dict[str, dict[str, str]]:
+    fallback_repo_root = Path(__file__).resolve().parents[3]
     rel_paths = [
+        "model_zoo/rs_demo/cli.py",
         "model_zoo/rs_demo/config.py",
         "model_zoo/rs_demo/runners/recstore_runner.py",
         "model_zoo/rs_demo/runtime/hybrid_dlrm.py",
@@ -91,6 +228,8 @@ def _build_worker_fingerprint(repo_root: Path) -> dict[str, dict[str, str]]:
     files: dict[str, str] = {}
     for rel_path in rel_paths:
         path = repo_root / rel_path
+        if not path.exists():
+            path = fallback_repo_root / rel_path
         files[rel_path] = hashlib.md5(path.read_bytes()).hexdigest()
     return {"files": files}
 
@@ -103,23 +242,27 @@ def _write_or_verify_worker_fingerprint(
 ) -> None:
     del world_size
     fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-    if fingerprint_path.exists():
-        all_fingerprints = json.loads(fingerprint_path.read_text(encoding="utf-8"))
-    else:
-        all_fingerprints = {}
+    lock_path = fingerprint_path.with_suffix(fingerprint_path.suffix + ".lock")
+    with lock_path.open("w", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        if fingerprint_path.exists():
+            content = fingerprint_path.read_text(encoding="utf-8")
+            all_fingerprints = json.loads(content) if content.strip() else {}
+        else:
+            all_fingerprints = {}
 
-    all_fingerprints[str(rank)] = fingerprint
-    fingerprint_path.write_text(
-        json.dumps(all_fingerprints, sort_keys=True, indent=2),
-        encoding="utf-8",
-    )
+        all_fingerprints[str(rank)] = fingerprint
+        fingerprint_path.write_text(
+            json.dumps(all_fingerprints, sort_keys=True, indent=2),
+            encoding="utf-8",
+        )
 
-    if rank != 0:
-        baseline = all_fingerprints.get("0")
-        if baseline is not None and baseline != fingerprint:
-            raise RuntimeError(
-                f"worker fingerprint mismatch: rank0={baseline} rank{rank}={fingerprint}"
-            )
+        if rank != 0:
+            baseline = all_fingerprints.get("0")
+            if baseline is not None and baseline != fingerprint:
+                raise RuntimeError(
+                    f"worker fingerprint mismatch: rank0={baseline} rank{rank}={fingerprint}"
+                )
 
 
 def _merge_rank_outputs(paths: list[Path], out_path: Path) -> list[dict[str, Any]]:
@@ -156,25 +299,40 @@ def _barrier_for_step_alignment(dist, device, local_rank: int, use_dist: bool) -
         dist.barrier()
 
 
-def _known_ids_path(cfg: RunConfig) -> Path:
-    return Path(cfg.output_root) / "outputs" / cfg.run_id / "recstore_known_fused_ids.json"
-
-
-def _write_known_ids_snapshot(path: Path, known_ids: set[int]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(sorted(int(key) for key in known_ids)),
-        encoding="utf-8",
+def _build_train_dataloader_for_mode(
+    repo_root: Path,
+    cfg: RunConfig,
+    rank: int,
+):
+    world_size = cfg.nnodes * cfg.nproc_per_node
+    return build_train_dataloader(
+        repo_root=repo_root,
+        data_dir_rel=cfg.data_dir,
+        train_ratio=cfg.train_ratio,
+        num_embeddings=cfg.num_embeddings,
+        batch_size=cfg.batch_size,
+        shuffle=True,
+        seed=cfg.seed,
+        rank=rank if world_size > 1 else None,
+        world_size=world_size if world_size > 1 else None,
     )
 
 
-def _load_known_ids_snapshot(path: Path) -> set[int]:
-    if not path.exists():
-        return set()
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, list):
-        raise RuntimeError(f"invalid known ids snapshot: {path}")
-    return {int(item) for item in data}
+def _maybe_wrap_dense_module_for_dist(
+    dense_module: torch.nn.Module,
+    device: torch.device,
+    local_rank: int,
+    use_dist: bool,
+) -> torch.nn.Module:
+    if not use_dist:
+        return dense_module
+    if device.type == "cuda":
+        return torch.nn.parallel.DistributedDataParallel(
+            dense_module,
+            device_ids=[local_rank],
+            output_device=local_rank,
+        )
+    return torch.nn.parallel.DistributedDataParallel(dense_module)
 
 
 def detect_library_path(repo_root: Path, user_path: str) -> Path:
@@ -207,7 +365,7 @@ class RecStoreRunner(BenchmarkRunner):
 
     def _build_torchrun_cmd(self, repo_root: Path, cfg: RunConfig) -> list[str]:
         rdzv_endpoint = f"{cfg.master_addr}:{cfg.master_port}"
-        return [
+        cmd = [
             sys.executable,
             "-m",
             "torch.distributed.run",
@@ -272,12 +430,35 @@ class RecStoreRunner(BenchmarkRunner):
             str(Path(cfg.recstore_main_csv)),
             "--recstore-main-agg-csv",
             str(Path(cfg.recstore_main_agg_csv)),
+            "--recstore-runtime-dir",
+            str(cfg.recstore_runtime_dir),
             "--library-path",
             str(cfg.library_path),
             "--read-mode",
             str(cfg.read_mode),
             "--no-start-server",
         ]
+        if cfg.enable_single_node_distributed_fast_path:
+            cmd.extend(
+                [
+                    "--enable-single-node-distributed-fast-path",
+                    "--single-node-ps-backend",
+                    str(cfg.single_node_ps_backend),
+                    "--single-node-owner-policy",
+                    str(cfg.single_node_owner_policy),
+                ]
+            )
+        if cfg.enable_gpu_cache:
+            cmd.extend(
+                [
+                    "--enable-gpu-cache",
+                    "--gpu-cache-capacity",
+                    str(cfg.gpu_cache_capacity),
+                ]
+            )
+        if not cfg.read_before_update:
+            cmd.append("--no-read-before-update")
+        return cmd
 
     def _run_single_process(self, repo_root: Path, cfg: RunConfig) -> dict[str, Any]:
         return self._run_local_worker(
@@ -338,6 +519,10 @@ class RecStoreRunner(BenchmarkRunner):
     ) -> dict[str, Any]:
         inject_project_paths(repo_root)
         from client import RecstoreClient  # type: ignore
+        from python.pytorch.recstore.optimizer import SparseSGD  # type: ignore
+        from python.pytorch.torchrec_kv.EmbeddingBag import (  # type: ignore
+            RecStoreEmbeddingBagCollection,
+        )
         from torch import distributed as dist
         default_cat_names = get_default_cat_names()
 
@@ -382,17 +567,18 @@ class RecStoreRunner(BenchmarkRunner):
                 _append_worker_debug(cfg, rank, f"worker_fingerprint {fingerprint}")
             raw_client = RecstoreClient(library_path=str(library_path))
             client = ShardedRecstoreClient(raw_client, self.runtime_dir)
+            if cfg.enable_single_node_distributed_fast_path:
+                client.set_ps_backend(cfg.single_node_ps_backend)
+                client.activate_shard(rank)
             if cfg.read_before_update and cfg.read_mode == "prefetch":
                 print("[rs_demo] sharded recstore path uses prefetch read mode")
             elif cfg.read_mode != "direct":
                 print("[rs_demo] unknown read mode, fallback to direct read mode")
 
-            dataset, dataloader = build_train_dataloader(
+            dataset, dataloader = _build_train_dataloader_for_mode(
                 repo_root=repo_root,
-                data_dir_rel=cfg.data_dir,
-                train_ratio=cfg.train_ratio,
-                num_embeddings=cfg.num_embeddings,
-                batch_size=cfg.batch_size,
+                cfg=cfg,
+                rank=rank,
             )
 
             eb_configs = [
@@ -405,63 +591,41 @@ class RecStoreRunner(BenchmarkRunner):
                 for feature_name in default_cat_names
             ]
 
-            if rank == 0:
-                t0 = time.perf_counter()
-                for table_cfg in eb_configs:
-                    ok = client.init_embedding_table(
-                        table_cfg["name"],
-                        table_cfg["num_embeddings"],
-                        table_cfg["embedding_dim"],
-                    )
-                    if not ok:
-                        raise RuntimeError(f"init_embedding_table failed: {table_cfg['name']}")
-                print(
-                    f"[rs_demo] init {len(eb_configs)} tables done in {(time.perf_counter() - t0):.3f}s"
-                )
-
-            table_offsets = build_table_offsets_from_eb_configs(eb_configs, cfg.fuse_k)
-            init_rows = min(int(cfg.init_rows), len(dataset))
-            init_loader = torch.utils.data.DataLoader(
-                dataset,
-                batch_size=min(cfg.batch_size, init_rows),
-                shuffle=False,
-                drop_last=False,
-                pin_memory=False,
-                num_workers=0,
+            embedding_module = RecStoreEmbeddingBagCollection(
+                embedding_bag_configs=eb_configs,
+                enable_fusion=True,
+                fusion_k=cfg.fuse_k,
+                kv_client=client,
+                initialize_tables=(rank == 0),
             )
-
-            known_fused_ids: set[int] = set()
-            known_ids_path = _known_ids_path(cfg)
-            if rank == 0:
-                init_written = 0
-                t0 = time.perf_counter()
-                for dense_batch, sparse_batch, labels_batch in init_loader:
-                    _, sparse_features = build_kjt_batch_from_dense_sparse_labels(
-                        dense_batch, sparse_batch, labels_batch
-                    )
-                    fused_ids = convert_kjt_ids_to_fused_ids(sparse_features, table_offsets)
-                    if fused_ids.numel() == 0:
-                        continue
-                    vals = (
-                        torch.randn(fused_ids.numel(), cfg.embedding_dim, dtype=torch.float32) * 0.01
-                    )
-                    client.emb_write(fused_ids, vals)
-                    known_fused_ids.update(fused_ids.tolist())
-                    init_written += fused_ids.numel()
-                    if init_written >= init_rows * 26:
-                        break
-                _write_known_ids_snapshot(known_ids_path, known_fused_ids)
-                print(
-                    f"[rs_demo] initial emb_write fused_rows={init_written} in {(time.perf_counter() - t0):.3f}s"
-                )
+            if cfg.enable_single_node_distributed_fast_path:
+                embedding_module.enable_single_node_distributed_fast_path = True
+                embedding_module.single_node_distributed_mode = "single_node"
+                embedding_module.single_node_ps_backend = cfg.single_node_ps_backend
+                embedding_module.single_node_owner_policy = cfg.single_node_owner_policy
+            _configure_gpu_cache(
+                embedding_module,
+                cfg,
+                embedding_dim=cfg.embedding_dim,
+            )
+            _append_worker_debug(
+                cfg,
+                rank,
+                "fast_path_state "
+                f"enabled={getattr(embedding_module, 'enable_single_node_distributed_fast_path', False)} "
+                f"mode={getattr(embedding_module, 'single_node_distributed_mode', None)} "
+                f"backend={getattr(embedding_module, 'single_node_ps_backend', None)} "
+                f"owner_policy={getattr(embedding_module, 'single_node_owner_policy', None)} "
+                f"dist_initialized={dist.is_initialized()} "
+                f"dist_world_size={dist.get_world_size() if dist.is_initialized() else 'na'} "
+                f"can_use={embedding_module._can_use_single_node_distributed_fast_path()}",
+            )
             _barrier_for_step_alignment(
                 dist=dist,
                 device=device,
                 local_rank=local_rank,
                 use_dist=use_dist,
             )
-            if use_dist and rank != 0:
-                known_fused_ids = _load_known_ids_snapshot(known_ids_path)
             dense_module = build_hybrid_dense_arch(
                 torch=torch,
                 dense_in_features=13,
@@ -471,8 +635,28 @@ class RecStoreRunner(BenchmarkRunner):
                 over_arch_layer_sizes=parse_layer_sizes(cfg.over_arch_layer_sizes),
                 device=device,
             )
+            dense_module = _maybe_wrap_dense_module_for_dist(
+                dense_module=dense_module,
+                device=device,
+                local_rank=local_rank,
+                use_dist=use_dist,
+            )
             criterion = torch.nn.BCEWithLogitsLoss()
             dense_optimizer = torch.optim.SGD(dense_module.parameters(), lr=0.01)
+            sparse_optimizer = SparseSGD([embedding_module], lr=0.01)
+            fast_path_region_warmed = _maybe_warmup_gpu_local_shm_fast_path(
+                cfg=cfg,
+                client=client,
+                device=device,
+            )
+            if fast_path_region_warmed:
+                print("[rs_demo] warmed local_shm lookup payload region for GPU fast path")
+                _barrier_for_step_alignment(
+                    dist=dist,
+                    device=device,
+                    local_rank=local_rank,
+                    use_dist=use_dist,
+                )
 
             read_lat_us: list[float] = []
             update_lat_us: list[float] = []
@@ -503,47 +687,45 @@ class RecStoreRunner(BenchmarkRunner):
 
                 with stage_timer(row, "input_pack_ms"):
                     _, sparse_features = build_kjt_batch_from_dense_sparse_labels(
-                        dense_batch, sparse_batch, labels_batch
+                        dense_batch,
+                        sparse_batch,
+                        labels_batch,
+                        device=device,
                     )
-                    fused_ids = convert_kjt_ids_to_fused_ids(sparse_features, table_offsets)
-                if fused_ids.numel() == 0:
-                    continue
 
-                read_ids = fused_ids.contiguous()
-                batch_rows = dense_batch.shape[0]
-
-                # Ensure read-before-update does not hit missing keys and crash.
-                if cfg.read_before_update:
-                    cur_ids = read_ids.tolist()
-                    missing_ids = [x for x in cur_ids if x not in known_fused_ids]
-                    if missing_ids:
-                        warm_ids = torch.tensor(missing_ids, dtype=torch.int64)
-                        warm_vals = torch.zeros(len(missing_ids), cfg.embedding_dim, dtype=torch.float32)
-                        client.emb_write(warm_ids, warm_vals)
-                        known_fused_ids.update(missing_ids)
-
+                _reset_perf_stats(embedding_module)
+                _reset_perf_stats(sparse_optimizer)
+                sparse_optimizer.zero_grad()
                 embeddings = None
                 with stage_timer(row, "embed_lookup_local_ms"):
+                    sync_device(torch, device)
                     if cfg.read_before_update and cfg.read_mode == "prefetch":
-                        embeddings = client.emb_read_prefetch(read_ids, cfg.embedding_dim)
-                    else:
-                        embeddings = client.emb_read(read_ids, cfg.embedding_dim)
+                        embedding_module.issue_fused_prefetch(sparse_features)
+                    embeddings = embedding_module(sparse_features)
+                    sync_device(torch, device)
+                _merge_numeric_fields(
+                    row,
+                    getattr(embedding_module, "_single_node_forward_profile", None),
+                    FAST_PATH_LOOKUP_PROFILE_KEYS,
+                )
+                _merge_gpu_cache_profile(row, client, "lookup")
                 if embeddings is None:
-                    raise RuntimeError("recstore emb_read returned no embeddings")
+                    raise RuntimeError("recstore embedding module returned no embeddings")
                 if step >= cfg.warmup_steps:
                     read_lat_us.append(row["embed_lookup_local_ms"] * 1e3)
 
                 with stage_timer(row, "embed_pool_local_ms"):
-                    embedded_sparse_cpu = reshape_recstore_embeddings_for_dlrm(
+                    embedded_sparse_source = reshape_torchrec_embeddings_for_dlrm(
                         embeddings=embeddings,
-                        batch_rows=batch_rows,
-                        num_sparse_features=len(default_cat_names),
+                        feature_names=default_cat_names,
+                        torch=torch,
                     )
+                    sync_device(torch, device)
 
                 with stage_timer(row, "output_unpack_ms"):
                     dense_features, embedded_sparse, labels = prepare_hybrid_dlrm_input(
                         dense_batch=dense_batch,
-                        embedded_sparse_source=embedded_sparse_cpu,
+                        embedded_sparse_source=embedded_sparse_source,
                         labels_batch=labels_batch,
                         torch=torch,
                         device=device,
@@ -573,15 +755,46 @@ class RecStoreRunner(BenchmarkRunner):
 
                 with stage_timer(row, "sparse_update_ms"):
                     sync_device(torch, device)
-                    update_grads = flatten_embedded_sparse_grad_for_recstore(
-                        embedded_sparse_grad.to("cpu")
+                    replay_start = time.perf_counter()
+                    embedded_sparse_source.backward(
+                        embedded_sparse_grad.to(embedded_sparse_source.device)
                     )
-                    client.emb_update_table("t_cat_0", read_ids, update_grads)
                     sync_device(torch, device)
+                    row["sparse_backward_replay_ms"] = (
+                        time.perf_counter() - replay_start
+                    ) * 1e3
 
+                    optimizer_step_start = time.perf_counter()
+                    sparse_optimizer.step()
+                    sync_device(torch, device)
+                    row["sparse_optimizer_step_ms"] = (
+                        time.perf_counter() - optimizer_step_start
+                    ) * 1e3
+
+                    flush_start = time.perf_counter()
+                    sparse_optimizer.flush()
+                    sync_device(torch, device)
+                    row["sparse_optimizer_flush_ms"] = (
+                        time.perf_counter() - flush_start
+                    ) * 1e3
+
+                    zero_grad_start = time.perf_counter()
+                    sparse_optimizer.zero_grad()
+                    row["sparse_zero_grad_ms"] = (
+                        time.perf_counter() - zero_grad_start
+                    ) * 1e3
+                    sync_device(torch, device)
+                _merge_numeric_fields(
+                    row,
+                    getattr(sparse_optimizer, "_last_step_profile", None),
+                    FAST_PATH_UPDATE_PROFILE_KEYS,
+                )
+                _merge_gpu_cache_profile(row, client, "update")
+
+                _merge_consumed_perf_stats(row, _consume_perf_stats(embedding_module))
+                _merge_consumed_perf_stats(row, _consume_perf_stats(sparse_optimizer))
                 if step >= cfg.warmup_steps:
                     update_lat_us.append(row["sparse_update_ms"] * 1e3)
-                known_fused_ids.update(read_ids.tolist())
                 row["step_total_ms"] = (time.perf_counter() - step_start) * 1e3
                 rows.append(finalize_recstore_row(row))
                 _barrier_for_step_alignment(

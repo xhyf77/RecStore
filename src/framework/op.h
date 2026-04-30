@@ -1,7 +1,10 @@
 #pragma once
 
 #include "base/tensor.h"
+#include "framework/common/op_runtime_support.h"
 #include "ps/base/base_client.h"
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <mutex>
 #include <unordered_map>
@@ -10,8 +13,8 @@
 using base::RecTensor;
 
 namespace recstore {
-void ConfigureLogging();
 enum class InitStrategyType { Normal, Uniform, Xavier, Zero };
+struct LocalShmFlatGetHandle;
 
 struct InitStrategy {
   InitStrategy() = delete;
@@ -149,10 +152,24 @@ public:
   void SaveToFile(const std::string& path) override;
   void LoadFromFile(const std::string& path) override;
   void SetPSConfig(const std::string& host, int port);
+  void SetPSBackend(const std::string& backend);
+  std::string CurrentPSBackend() const;
+  void LocalLookupFlat(const base::RecTensor& keys, base::RecTensor& values);
+  int SubmitLocalLookupFlat(const base::RecTensor& keys,
+                            int64_t embedding_dim,
+                            LocalShmFlatGetHandle* handle);
+  int WaitLocalLookupFlat(LocalShmFlatGetHandle* handle);
+  void ReleaseLocalLookupFlat(LocalShmFlatGetHandle* handle);
+  bool GetLocalLookupFlatPayloadRegion(const void** base, std::size_t* bytes);
+  void LocalUpdateFlat(const std::string& table_name,
+                       const base::RecTensor& keys,
+                       const base::RecTensor& grads);
 
 private:
   int64_t embedding_dim_;
+  std::string ps_backend_name_ = "unknown";
   static BasePSClient* ps_client_;
+  static std::unique_ptr<BasePSClient> ps_client_holder_;
 
 #ifdef USE_FAKE_KVCLIENT
   std::unordered_map<uint64_t, std::vector<float>> store_;

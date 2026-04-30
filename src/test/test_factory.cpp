@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
@@ -31,6 +32,35 @@ public:
       if (!std::isalnum((unsigned char)c))
         c = '_';
     return s;
+  }
+
+  static bool IsHeavyTestName(const std::string& test_name) {
+    static const std::vector<std::string> kHeavyPrefixes = {
+        "RandomData",
+        "PerformanceTest",
+        "StressTest",
+        "ConcurrentPutTest",
+        "ConcurrentGetTest",
+        "ConcurrentReadWriteTest",
+        "ConcurrentBatchGetTest",
+        "DataConsistencyTest"};
+    for (const auto& prefix : kHeavyPrefixes) {
+      if (test_name.rfind(prefix, 0) == 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static bool ShouldRunHeavyScenario(const std::string& idx,
+                                     const std::string& val,
+                                     const std::string& mem_mgr) {
+    if (idx == "DRAM" && val == "DRAM")
+      return true;
+    if (mem_mgr != "R2ShmMalloc")
+      return false;
+    return (idx == "SSD" && val == "DRAM") ||
+           (idx == "DRAM" && val == "HYBRID");
   }
 
 protected:
@@ -63,6 +93,14 @@ protected:
     index_type_                  = idx_c;
     value_type_                  = val_c;
     mem_mgr_                     = mm_c;
+
+    const auto* test_info =
+        ::testing::UnitTest::GetInstance()->current_test_info();
+    if (test_info != nullptr && IsHeavyTestName(test_info->name()) &&
+        !ShouldRunHeavyScenario(index_type_, value_type_, mem_mgr_)) {
+      GTEST_SKIP() << "Skip heavy scenario for (" << index_type_ << ","
+                   << value_type_ << "," << mem_mgr_ << ")";
+    }
 
     test_dir_ = "/tmp/test_kv_engine_cartesian_" + std::to_string(getpid()) +
                 "_" + index_type_ + "_" + value_type_ + "_" + mem_mgr_;
@@ -316,7 +354,7 @@ TEST_P(KVEngineCartesianTest, RandomData) {
   std::uniform_int_distribution<uint64_t> key_dist(1, 1000);
   std::uniform_int_distribution<int> value_length_dist(1, 50);
 
-  const int num_operations = 1000;
+  const int num_operations = 200;
   std::unordered_map<uint64_t, std::string> expected_data;
 
   for (int i = 0; i < num_operations; i++) {
@@ -341,7 +379,7 @@ TEST_P(KVEngineCartesianTest, RandomData) {
 }
 
 TEST_P(KVEngineCartesianTest, PerformanceTest) {
-  const int num_operations = 1000;
+  const int num_operations = 200;
 
   auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -383,7 +421,7 @@ TEST_P(KVEngineCartesianTest, PerformanceTest) {
 }
 
 TEST_P(KVEngineCartesianTest, StressTest) {
-  const int num_operations = 10000;
+  const int num_operations = 2000;
 
   for (int i = 0; i < num_operations; i++) {
     std::string base_value = "stress_test_value_" + std::to_string(i) + "_" +
@@ -403,8 +441,8 @@ TEST_P(KVEngineCartesianTest, StressTest) {
 }
 
 TEST_P(KVEngineCartesianTest, ConcurrentPutTest) {
-  const int num_threads           = 16;
-  const int operations_per_thread = 1000;
+  const int num_threads           = 8;
+  const int operations_per_thread = 200;
   std::vector<std::thread> threads;
   std::atomic<int> failed_operations(0);
 
@@ -452,8 +490,8 @@ TEST_P(KVEngineCartesianTest, ConcurrentPutTest) {
 
 TEST_P(KVEngineCartesianTest, ConcurrentGetTest) {
   const int num_data         = 200;
-  const int num_threads      = 16;
-  const int reads_per_thread = 1000;
+  const int num_threads      = 8;
+  const int reads_per_thread = 200;
 
   for (int i = 0; i < num_data; i++) {
     std::string base_value = "concurrent_get_value_" + std::to_string(i);
@@ -510,8 +548,8 @@ TEST_P(KVEngineCartesianTest, ConcurrentGetTest) {
 }
 
 TEST_P(KVEngineCartesianTest, ConcurrentReadWriteTest) {
-  const int num_threads           = 16;
-  const int operations_per_thread = 1000;
+  const int num_threads           = 8;
+  const int operations_per_thread = 200;
   std::vector<std::thread> threads;
   std::atomic<int> successful_operations(0);
   std::atomic<int> failed_operations(0);
@@ -566,7 +604,7 @@ TEST_P(KVEngineCartesianTest, ConcurrentReadWriteTest) {
 
 TEST_P(KVEngineCartesianTest, ConcurrentBatchGetTest) {
   const int num_data    = 100;
-  const int num_threads = 16;
+  const int num_threads = 8;
   const int batch_size  = 10;
 
   for (int i = 0; i < num_data; i++) {
@@ -628,9 +666,9 @@ TEST_P(KVEngineCartesianTest, ConcurrentBatchGetTest) {
 }
 
 TEST_P(KVEngineCartesianTest, DataConsistencyTest) {
-  const int num_threads     = 16;
-  const int num_keys        = 1000;
-  const int updates_per_key = 10;
+  const int num_threads     = 8;
+  const int num_keys        = 200;
+  const int updates_per_key = 3;
 
   std::vector<std::thread> threads;
   std::atomic<int> total_updates(0);

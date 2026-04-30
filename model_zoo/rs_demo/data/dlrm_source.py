@@ -10,7 +10,7 @@ import torch
 def inject_project_paths(repo_root: Path) -> None:
     recstore_src = str(repo_root / "src")
     dlrm_root = str(repo_root / "model_zoo/torchrec_dlrm")
-    py_client = str(repo_root / "src/framework/pytorch/python_client")
+    py_client = str(repo_root / "src/test/framework/pytorch")
     for p in (recstore_src, dlrm_root, py_client):
         if p not in sys.path:
             sys.path.insert(0, p)
@@ -20,11 +20,15 @@ def build_kjt_batch_from_dense_sparse_labels(
     dense_batch: torch.Tensor,
     sparse_batch: torch.Tensor,
     labels_batch: torch.Tensor,
+    *,
+    device: torch.device | None = None,
 ):
     del labels_batch
     cat_names = get_default_cat_names()
 
     sparse_mat = sparse_batch.to(torch.long)
+    if device is not None and sparse_mat.device != device:
+        sparse_mat = sparse_mat.to(device)
     batch_size = sparse_mat.shape[0]
     values_list = [sparse_mat[:, i] for i in range(26)]
     values = torch.cat(values_list, dim=0)
@@ -43,12 +47,16 @@ def get_default_cat_names() -> list[str]:
         return [f"cat_{idx}" for idx in range(26)]
 
 
-class _SimpleJaggedValues:
-    def __init__(self, values: torch.Tensor) -> None:
+class _SimpleJaggedFeature:
+    def __init__(self, values: torch.Tensor, lengths: torch.Tensor) -> None:
         self._values = values
+        self._lengths = lengths
 
     def values(self) -> torch.Tensor:
         return self._values
+
+    def lengths(self) -> torch.Tensor:
+        return self._lengths
 
 
 class _SimpleKeyedJaggedTensor:
@@ -58,18 +66,27 @@ class _SimpleKeyedJaggedTensor:
         self._lengths = lengths
         self._mapping = self._build_mapping()
 
-    def _build_mapping(self) -> dict[str, _SimpleJaggedValues]:
-        mapping: dict[str, _SimpleJaggedValues] = {}
+    def _build_mapping(self) -> dict[str, _SimpleJaggedFeature]:
+        mapping: dict[str, _SimpleJaggedFeature] = {}
         batch_size = self._lengths.shape[0] // len(self._keys)
+        value_offset = 0
         for key_idx, key in enumerate(self._keys):
-            chunk = self._values[key_idx * batch_size : (key_idx + 1) * batch_size].contiguous()
-            mapping[key] = _SimpleJaggedValues(chunk)
+            lengths_chunk = self._lengths[
+                key_idx * batch_size : (key_idx + 1) * batch_size
+            ].contiguous()
+            value_count = int(lengths_chunk.sum().item())
+            values_chunk = self._values[value_offset : value_offset + value_count].contiguous()
+            value_offset += value_count
+            mapping[key] = _SimpleJaggedFeature(values_chunk, lengths_chunk)
         return mapping
 
     def keys(self) -> list[str]:
         return list(self._keys)
 
-    def __getitem__(self, key: str) -> _SimpleJaggedValues:
+    def device(self) -> torch.device:
+        return self._values.device
+
+    def __getitem__(self, key: str) -> _SimpleJaggedFeature:
         return self._mapping[key]
 
 
@@ -117,6 +134,11 @@ def build_train_dataloader(
     train_ratio: float,
     num_embeddings: int,
     batch_size: int,
+    *,
+    shuffle: bool = True,
+    seed: int | None = None,
+    rank: int | None = None,
+    world_size: int | None = None,
 ):
     from data.custom_dataloader import CustomCriteoDataset  # type: ignore
 
@@ -131,12 +153,34 @@ def build_train_dataloader(
         train_ratio=train_ratio,
         num_embeddings_per_feature=nep,
     )
+    generator = None
+    if seed is not None:
+        generator = torch.Generator()
+        generator.manual_seed(int(seed))
+
+    sampler = None
+    effective_shuffle = shuffle
+    if world_size is not None and int(world_size) > 1:
+        if rank is None:
+            raise ValueError("rank must be provided when world_size > 1")
+        sampler = torch.utils.data.DistributedSampler(
+            dataset,
+            num_replicas=int(world_size),
+            rank=int(rank),
+            shuffle=shuffle,
+            seed=0 if seed is None else int(seed),
+            drop_last=False,
+        )
+        effective_shuffle = False
+
     dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=effective_shuffle,
+        sampler=sampler,
         drop_last=False,
         pin_memory=False,
         num_workers=0,
+        generator=generator,
     )
     return dataset, dataloader

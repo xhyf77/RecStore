@@ -1,5 +1,15 @@
 #include "framework/op.h"
+#include "framework/common/hierkv_local_runtime.h"
+#include "framework/common/local_shm_op_component.h"
+#include "framework/common/op_runtime_support.h"
+#include "framework/common/ps_client_config_adapter.h"
+#include "ps/client_factory.h"
+#include "ps/rdma/rdma_ps_client_adapter.h"
 #include "base/factory.h"
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <immintrin.h>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
@@ -13,9 +23,7 @@
 #include <emmintrin.h>
 #include <string>
 #include <fstream>
-
 #include "base/tensor.h"
-#include "op.h"
 #include <glog/logging.h>
 #ifdef ENABLE_PERF_REPORT
 #  include "base/report/report_client.h"
@@ -23,23 +31,47 @@
 
 namespace recstore {
 
-json load_config_from_file(const std::string& config_path) {
-  std::ifstream file(config_path);
-  if (!file.is_open()) {
-    throw std::runtime_error("Cannot open config file: " + config_path);
-  }
-
-  std::string content(
-      (std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-  file.close();
-
-  try {
-    return json::parse(content);
-  } catch (const json::exception& e) {
-    throw std::runtime_error(
-        "Failed to parse config file: " + std::string(e.what()));
-  }
+namespace {
+std::string NormalizeBackendName(std::string backend_name) {
+  std::transform(
+      backend_name.begin(),
+      backend_name.end(),
+      backend_name.begin(),
+      [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return backend_name;
 }
+
+bool IsReadWriteSuccess(BasePSClient* client, int ret) {
+  if (dynamic_cast<RDMAPSClientAdapter*>(client) != nullptr ||
+      dynamic_cast<LocalShmPSClient*>(client) != nullptr) {
+    return ret == 0;
+  }
+  // Legacy GRPC/BRPC read/write methods return bool-like int values.
+  return ret != 0;
+}
+
+std::string ResolveBackendNameWithHierKV(const json& config) {
+  if (config.contains("cache_ps") && config["cache_ps"].contains("ps_type")) {
+    const std::string ps_type =
+        NormalizeBackendName(config["cache_ps"]["ps_type"].get<std::string>());
+    if (IsHierKVBackendName(ps_type)) {
+      return ps_type;
+    }
+  }
+  switch (ResolveFrameworkPSClientType(config)) {
+  case PSClientType::kGrpc:
+    return "grpc";
+  case PSClientType::kBrpc:
+    return "brpc";
+  case PSClientType::kRdma:
+    return "rdma";
+  case PSClientType::kLocalShm:
+    return "local_shm";
+  }
+
+  return "unknown";
+}
+} // namespace
 
 void validate_keys(const base::RecTensor& keys) {
   if (keys.dtype() != base::DataType::UINT64) {
@@ -109,108 +141,36 @@ std::shared_ptr<CommonOp> GetKVClientOp() {
 
 namespace recstore {
 
-BasePSClient* create_ps_client_from_config(const json& config) {
-  std::string ps_type = "GRPC";
-  try {
-    if (config.contains("cache_ps") && config["cache_ps"].contains("ps_type")) {
-      ps_type = config["cache_ps"]["ps_type"].get<std::string>();
-    }
-  } catch (...) {
-  }
-
-  if (false && config.contains("distributed_client")) {
-    std::string type_key =
-        (ps_type == "BRPC") ? "distributed_brpc" : "distributed_grpc";
-    BasePSClient* client =
-        base::Factory<BasePSClient, json>::NewInstance(type_key, config);
-    if (client)
-      return client;
-  }
-
-  json client_config;
-  if (config.contains("client")) {
-    client_config = config["client"];
-  } else {
-    client_config = json{{"host", "127.0.0.1"}, {"port", 15000}, {"shard", 0}};
-  }
-
-  std::string type_key = (ps_type == "BRPC") ? "brpc" : "grpc";
-  BasePSClient* client =
-      base::Factory<BasePSClient, json>::NewInstance(type_key, client_config);
-  if (client == nullptr) {
-    throw std::runtime_error(
-        "Failed to create PS client: factory returned null for type_key=\"" +
-        type_key +
-        "\". Ensure the corresponding client is linked and registered.");
-  }
-  return client;
-}
-
-json GetGlobalConfig() {
-  try {
-    auto current_path = std::filesystem::current_path();
-    LOG(INFO) << "Current working directory: " << current_path.string();
-
-    std::filesystem::path config_path;
-    bool config_found = false;
-
-    for (auto p = current_path; p.has_parent_path(); p = p.parent_path()) {
-      if (std::filesystem::exists(p / "recstore_config.json")) {
-        config_path  = p / "recstore_config.json";
-        config_found = true;
-        LOG(INFO) << "Found config file at: " << config_path.string();
-        break;
-      }
-    }
-
-    if (!config_found) {
-      throw std::runtime_error(
-          "Could not find 'recstore_config.json' in current or any parent "
-          "directory starting from: " +
-          current_path.string());
-    }
-
-    std::ifstream test_file(config_path);
-    if (!test_file.good()) {
-      throw std::runtime_error(
-          "Config file not found: " + config_path.string() +
-          ". Please ensure recstore_config.json exists "
-          "in the project root directory.");
-    }
-    test_file.close();
-
-    return load_config_from_file(config_path);
-  } catch (const std::exception& e) {
-    LOG(ERROR) << "Failed to load config: " << std::string(e.what());
-    return json::object();
-  }
-}
-
-void ConfigureLogging() {
-  static std::once_flag log_init_flag;
-  std::call_once(log_init_flag, []() {
-    std::cerr << "[Debug] ConfigureLogging called. Setting flags." << std::endl;
-    FLAGS_log_dir         = "/tmp";
-    FLAGS_alsologtostderr = false;
-    FLAGS_logtostderr     = false;
-    FLAGS_stderrthreshold = google::ERROR;
-
-    google::SetLogDestination(google::INFO, "/tmp/recstore_op_layer_INFO_");
-    google::SetLogDestination(
-        google::WARNING, "/tmp/recstore_op_layer_WARNING_");
-    google::SetLogDestination(google::ERROR, "/tmp/recstore_op_layer_ERROR_");
-
-    google::InitGoogleLogging("recstore_op_layer");
-  });
-}
-
 KVClientOp::KVClientOp() {
-  ConfigureLogging();
-
   if (!ps_client_) {
     try {
-      json config = GetGlobalConfig();
-      ps_client_  = create_ps_client_from_config(config);
+      json config      = GetGlobalConfig();
+      ps_backend_name_ = ResolveBackendNameWithHierKV(config);
+      if (IsHierKVBackendName(ps_backend_name_)) {
+        ConfigureLogging();
+        LOG(INFO) << "Initialized local HierKV backend in KVClientOp.";
+        return;
+      }
+      bool use_rdma = false;
+      try {
+        use_rdma = ResolveFrameworkPSClientType(config) == PSClientType::kRdma;
+      } catch (...) {
+        use_rdma = false;
+      }
+      std::cerr << "[RDMA-DBG] KVClientOp ctor use_rdma="
+                << (use_rdma ? "true" : "false") << std::endl;
+
+      if (use_rdma) {
+        std::cerr << "[RDMA-DBG] InitializeRdmaProcessRuntime before "
+                     "ConfigureLogging"
+                  << std::endl;
+        InitializeRdmaProcessRuntime();
+        ConfigureLogging(false);
+      } else {
+        ConfigureLogging();
+      }
+      ps_client_holder_ = create_ps_client_from_config(config);
+      ps_client_        = ps_client_holder_.get();
 
       LOG(INFO) << "PS client initialized successfully.";
     } catch (const std::exception& e) {
@@ -221,12 +181,16 @@ KVClientOp::KVClientOp() {
 }
 
 BasePSClient* KVClientOp::ps_client_ = nullptr;
+std::unique_ptr<BasePSClient> KVClientOp::ps_client_holder_;
 
 void KVClientOp::SetPSConfig(const std::string& host, int port) {
-  if (ps_client_) {
-    delete ps_client_;
-    ps_client_ = nullptr;
+  if (IsHierKVBackendName(ps_backend_name_)) {
+    LOG(INFO) << "HierKV backend ignores set_ps_config host=" << host
+              << " port=" << port;
+    return;
   }
+  ps_client_holder_.reset();
+  ps_client_ = nullptr;
 
   json file_config = GetGlobalConfig();
   int final_port   = port;
@@ -257,12 +221,48 @@ void KVClientOp::SetPSConfig(const std::string& host, int port) {
   config["client"]["port"]  = final_port;
   config["client"]["shard"] = 0;
 
-  ps_client_ = create_ps_client_from_config(config);
+  ps_client_holder_ = create_ps_client_from_config(config);
+  ps_client_        = ps_client_holder_.get();
+  ps_backend_name_  = ResolveBackendNameWithHierKV(config);
   LOG(INFO) << "Re-initialized PS client with host=" << final_host
             << " port=" << final_port;
 }
 
+void KVClientOp::SetPSBackend(const std::string& backend) {
+  if (backend.empty()) {
+    throw std::invalid_argument("backend must be non-empty");
+  }
+
+  const std::string normalized_backend = NormalizeBackendName(backend);
+  if (IsHierKVBackendName(normalized_backend)) {
+    ps_client_holder_.reset();
+    ps_client_       = nullptr;
+    ps_backend_name_ = normalized_backend;
+    LOG(INFO) << "Switched KVClientOp backend to local HierKV runtime.";
+    return;
+  }
+
+  json config = GetGlobalConfig();
+  if (!config.contains("cache_ps")) {
+    config["cache_ps"] = json::object();
+  }
+  config["cache_ps"]["ps_type"] = NormalizePSType(backend);
+
+  ps_client_holder_.reset();
+  ps_client_        = nullptr;
+  ps_client_holder_ = create_ps_client_from_config(config);
+  ps_client_        = ps_client_holder_.get();
+  ps_backend_name_  = ResolveBackendNameWithHierKV(config);
+  LOG(INFO) << "Re-initialized PS client with backend=" << ps_backend_name_;
+}
+
+std::string KVClientOp::CurrentPSBackend() const { return ps_backend_name_; }
+
 void KVClientOp::EmbRead(const RecTensor& keys, RecTensor& values) {
+  if (IsHierKVBackendName(ps_backend_name_)) {
+    GetHierKVLocalRuntime().Read(keys, values);
+    return;
+  }
   if (ps_client_ == nullptr) {
     throw std::runtime_error("PS client is not initialized. Please call "
                              "KVClientOp::SetPSClient() first.");
@@ -320,8 +320,8 @@ void KVClientOp::EmbRead(const RecTensor& keys, RecTensor& values) {
   const size_t total = static_cast<size_t>(L) * static_cast<size_t>(D);
   std::fill_n(values_data, total, 0.0f);
 
-  bool success = ps_client_->GetParameter(keys_array, values_data);
-  if (!success) {
+  int ret = ps_client_->GetParameter(keys_array, values_data);
+  if (!IsReadWriteSuccess(ps_client_, ret)) {
     throw std::runtime_error("Failed to read embeddings from PS client.");
   }
 
@@ -366,6 +366,10 @@ void KVClientOp::EmbUpdate(const base::RecTensor& keys,
 void KVClientOp::EmbUpdate(const std::string& table_name,
                            const base::RecTensor& keys,
                            const base::RecTensor& grads) {
+  if (IsHierKVBackendName(ps_backend_name_)) {
+    GetHierKVLocalRuntime().Update(table_name, keys, grads);
+    return;
+  }
   if (ps_client_ == nullptr) {
     throw std::runtime_error("PS client is not initialized. Please call "
                              "KVClientOp::SetPSClient() first.");
@@ -462,6 +466,9 @@ void KVClientOp::EmbUpdate(const std::string& table_name,
 
 bool KVClientOp::InitEmbeddingTable(const std::string& table_name,
                                     const EmbeddingTableConfig& config) {
+  if (IsHierKVBackendName(ps_backend_name_)) {
+    return GetHierKVLocalRuntime().InitEmbeddingTable(table_name, config);
+  }
   if (ps_client_ == nullptr) {
     throw std::runtime_error("PS client is not initialized. Please call "
                              "KVClientOp::SetPSClient() first.");
@@ -493,6 +500,10 @@ bool KVClientOp::InitEmbeddingTable(const std::string& table_name,
 }
 
 void KVClientOp::EmbWrite(const RecTensor& keys, const RecTensor& values) {
+  if (IsHierKVBackendName(ps_backend_name_)) {
+    GetHierKVLocalRuntime().Write(keys, values);
+    return;
+  }
   if (ps_client_ == nullptr) {
     throw std::runtime_error("PS client is not initialized. Please call "
                              "KVClientOp::SetPSClient() first.");
@@ -568,8 +579,8 @@ void KVClientOp::EmbWrite(const RecTensor& keys, const RecTensor& values) {
     LOG(INFO) << values_stream.str();
   }
 
-  bool success = ps_client_->PutParameter(keys_array, values_vector);
-  if (!success) {
+  int ret = ps_client_->PutParameter(keys_array, values_vector);
+  if (!IsReadWriteSuccess(ps_client_, ret)) {
     throw std::runtime_error("Failed to write embeddings to PS client.");
   }
 
@@ -599,6 +610,13 @@ void KVClientOp::EmbInit(const base::RecTensor& keys,
 
 uint64_t
 KVClientOp::EmbPrefetch(const base::RecTensor& keys, const RecTensor& values) {
+  if (IsHierKVBackendName(ps_backend_name_)) {
+    int64_t embedding_dim = values.dim() == 2 ? values.shape(1) : -1;
+    if (embedding_dim <= 0) {
+      embedding_dim = GetHierKVLocalRuntime().DefaultEmbeddingDim();
+    }
+    return GetHierKVLocalRuntime().Prefetch(keys, embedding_dim);
+  }
   const uint64_t* keys_data = keys.data_as<uint64_t>();
   int64_t L                 = keys.shape(0);
   base::ConstArray<uint64_t> keys_array(keys_data, L);
@@ -606,15 +624,26 @@ KVClientOp::EmbPrefetch(const base::RecTensor& keys, const RecTensor& values) {
 }
 
 bool KVClientOp::IsPrefetchDone(uint64_t prefetch_id) {
+  if (IsHierKVBackendName(ps_backend_name_)) {
+    return GetHierKVLocalRuntime().IsPrefetchDone(prefetch_id);
+  }
   return ps_client_->IsPrefetchDone(prefetch_id);
 }
 
 void KVClientOp::WaitForPrefetch(uint64_t prefetch_id) {
+  if (IsHierKVBackendName(ps_backend_name_)) {
+    GetHierKVLocalRuntime().WaitForPrefetch(prefetch_id);
+    return;
+  }
   ps_client_->WaitForPrefetch(prefetch_id);
 }
 
 void KVClientOp::GetPretchResult(uint64_t prefetch_id,
                                  std::vector<std::vector<float>>* values) {
+  if (IsHierKVBackendName(ps_backend_name_)) {
+    GetHierKVLocalRuntime().ConsumePrefetch(prefetch_id, values);
+    return;
+  }
   ps_client_->GetPrefetchResult(prefetch_id, values);
 }
 
@@ -623,6 +652,11 @@ void KVClientOp::GetPretchResultFlat(
     std::vector<float>* values,
     int64_t* num_rows,
     int64_t embedding_dim) {
+  if (IsHierKVBackendName(ps_backend_name_)) {
+    GetHierKVLocalRuntime().ConsumePrefetchFlat(
+        prefetch_id, values, num_rows, embedding_dim);
+    return;
+  }
   ps_client_->GetPrefetchResultFlat(
       prefetch_id, values, num_rows, embedding_dim);
 }
@@ -638,6 +672,6 @@ namespace testing {} // namespace testing
 
 #else
 
-#  include "op_mock.cc"
+#  include "common/op_mock.cc"
 
 #endif // USE_FAKE_KVCLIENT

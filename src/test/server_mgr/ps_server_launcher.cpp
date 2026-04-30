@@ -174,6 +174,11 @@ LauncherOptions PSServerLauncher::LoadOptionsFromEnvironment() {
     options.override_ps_type = std::string(override_ps_type);
   }
   options.override_ports = ParsePortsEnv("PS_SERVER_PORTS");
+  if (auto local_shard_id = ParseIntEnv("PS_LOCAL_SHARD_ID");
+      local_shard_id.has_value() && *local_shard_id >= 0) {
+    options.local_shard_id = *local_shard_id;
+    options.num_shards     = 1;
+  }
 
   return options;
 }
@@ -588,6 +593,10 @@ bool PSServerLauncher::SpawnProcess() {
       args.push_back("--config_path");
       args.push_back(launch_config_path.string());
     }
+    if (options_.local_shard_id.has_value()) {
+      args.push_back("--local_shard_id");
+      args.push_back(std::to_string(*options_.local_shard_id));
+    }
 
     std::vector<char*> argv;
     argv.reserve(args.size() + 1);
@@ -620,7 +629,7 @@ bool PSServerLauncher::SpawnProcess() {
 
 std::filesystem::path PSServerLauncher::PrepareConfigForLaunch() {
   if (!options_.override_ps_type.has_value() &&
-      options_.override_ports.empty()) {
+      options_.override_ports.empty() && !options_.local_shard_id.has_value()) {
     return options_.config_path;
   }
 
@@ -650,6 +659,19 @@ std::filesystem::path PSServerLauncher::PrepareConfigForLaunch() {
   }
   if (options_.override_ps_type.has_value()) {
     config["cache_ps"]["ps_type"] = *options_.override_ps_type;
+  }
+
+  if (options_.local_shard_id.has_value()) {
+    if (!config["cache_ps"].contains("servers") ||
+        !config["cache_ps"]["servers"].is_array()) {
+      SetError("Config cache_ps.servers is missing or invalid");
+      return {};
+    }
+    if (!config["cache_ps"].contains("num_shards") ||
+        !config["cache_ps"]["num_shards"].is_number_integer()) {
+      SetError("Config cache_ps.num_shards is missing or invalid");
+      return {};
+    }
   }
 
   if (!options_.override_ports.empty()) {

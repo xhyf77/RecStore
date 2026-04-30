@@ -5,7 +5,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 LIB_PATH="${REPO_ROOT}/build/lib/lib_recstore_ops.so"
-PY_CLIENT_DIR="${REPO_ROOT}/src/framework/pytorch/python_client"
 PY_PKG_ROOT="${REPO_ROOT}/src/python/pytorch"
 
 GRPC_SERVER_PATH="${REPO_ROOT}/build/bin/grpc_ps_server"

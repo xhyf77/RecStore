@@ -11,6 +11,8 @@ except ImportError:
 @dataclass(eq=True)
 class SingleDayLaunchConfig:
     use_torchrec: bool = False
+    use_random_dataset: bool = False
+    dataset_size: int = 4194304
     processed_dataset_path: str = "./processed_day_0_data"
     batch_size: int = 1024
     learning_rate: float = 0.005
@@ -26,6 +28,8 @@ class SingleDayLaunchConfig:
 
 _CONFIG_FIELDS = {
     "use_torchrec",
+    "use_random_dataset",
+    "dataset_size",
     "processed_dataset_path",
     "batch_size",
     "learning_rate",
@@ -43,6 +47,8 @@ _ARG_TO_CONFIG_KEY = {
     "batch_size": "batch_size",
     "learning_rate": "learning_rate",
     "epochs": "epochs",
+    "random_dataset": "use_random_dataset",
+    "dataset_size": "dataset_size",
     "in_memory_binary_criteo_path": "processed_dataset_path",
     "enable_prefetch": "enable_prefetch",
     "prefetch_depth": "prefetch_depth",
@@ -56,6 +62,8 @@ _ARG_TO_CONFIG_KEY = {
 _CLI_OPTION_TO_CONFIG_KEY = {
     "--torchrec": "use_torchrec",
     "--custom": "use_torchrec",
+    "--random-dataset": "use_random_dataset",
+    "--dataset-size": "dataset_size",
     "--dataset-path": "processed_dataset_path",
     "--batch-size": "batch_size",
     "--learning-rate": "learning_rate",

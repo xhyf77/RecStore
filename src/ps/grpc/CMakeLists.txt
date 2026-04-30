@@ -25,7 +25,7 @@ endif()
 
 # gRPC PS Client Test
 add_executable(grpc_ps_client_test
-    grpc_ps_client_test.cpp
+    ${PROJECT_SOURCE_DIR}/src/test/ps/grpc/grpc_ps_client_test.cpp
     ${PROJECT_SOURCE_DIR}/src/test/server_mgr/ps_server_launcher.cpp
 )
 target_link_libraries(grpc_ps_client_test PUBLIC
@@ -81,7 +81,7 @@ endif()
 
 # Distributed gRPC PS Client Test
 add_executable(dist_grpc_ps_client_test
-    dist_grpc_ps_client_test.cpp
+    ${PROJECT_SOURCE_DIR}/src/test/ps/grpc/dist_grpc_ps_client_test.cpp
     ${PROJECT_SOURCE_DIR}/src/test/server_mgr/ps_server_launcher.cpp
 )
 target_link_libraries(dist_grpc_ps_client_test PUBLIC
