@@ -236,6 +236,31 @@ target_link_libraries(test_op_runtime_support PUBLIC
 )
 add_test(NAME test_op_runtime_support COMMAND test_op_runtime_support)
 
+add_executable(test_op test_op.cpp)
+target_sources(test_op PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/framework/op.cc
+    ${PROJECT_SOURCE_DIR}/src/framework/op_local_shm.cc
+    ${PROJECT_SOURCE_DIR}/src/framework/common/hierkv_local_runtime.cc
+    ${PROJECT_SOURCE_DIR}/src/framework/common/local_shm_op_component.cc
+    ${PROJECT_SOURCE_DIR}/src/framework/common/op_runtime_support.cc
+    ${PROJECT_SOURCE_DIR}/src/framework/common/ps_client_config_adapter.cc
+    ${PROJECT_SOURCE_DIR}/src/ps/client_factory.cc
+    ${PROJECT_SOURCE_DIR}/src/ps/rdma/rdma_ps_client_adapter.cc
+)
+target_link_libraries(test_op PUBLIC
+    base
+    wq_ps_client
+    grpc_ps_client
+    brpc_ps_client
+    local_shm_ps_client
+    gflags
+    glog
+    gtest
+    gtest_main
+    pthread
+)
+add_test(NAME test_op COMMAND test_op)
+
 add_executable(test_local_shm_op_component test_local_shm_op_component.cpp)
 target_sources(test_local_shm_op_component PRIVATE
     ${PROJECT_SOURCE_DIR}/src/framework/common/local_shm_op_component.cc
@@ -335,6 +360,10 @@ if(ENABLE_CUDA AND CMAKE_CUDA_COMPILER AND
         ${PROJECT_SOURCE_DIR}/src/framework/hugectr/op_hugectr.cc
         ${PROJECT_SOURCE_DIR}/src/framework/hugectr/hierkv_backend.cc
         ${PROJECT_SOURCE_DIR}/src/framework/op.cc
+        ${PROJECT_SOURCE_DIR}/src/framework/op_local_shm.cc
+        ${PROJECT_SOURCE_DIR}/src/framework/common/hierkv_local_runtime.cc
+        ${PROJECT_SOURCE_DIR}/src/framework/common/local_shm_op_component.cc
+        ${PROJECT_SOURCE_DIR}/src/framework/common/op_runtime_support.cc
         ${PROJECT_SOURCE_DIR}/src/framework/common/ps_client_config_adapter.cc
         ${PROJECT_SOURCE_DIR}/src/ps/client_factory.cc
         ${PROJECT_SOURCE_DIR}/src/ps/rdma/rdma_ps_client_adapter.cc

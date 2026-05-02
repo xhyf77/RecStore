@@ -36,6 +36,7 @@ class RunConfig:
     run_id: str = ""
     jsonl: str = ""
     csv: str = ""
+    local_shm_server_csv: str = ""
     recstore_main_csv: str = ""
     recstore_main_agg_csv: str = ""
     library_path: str = ""
@@ -54,6 +55,8 @@ class RunConfig:
     enable_single_node_distributed_fast_path: bool = False
     single_node_ps_backend: str = "local_shm"
     single_node_owner_policy: str = "hash_mod_world_size"
+    enable_gpu_cache: bool = False
+    gpu_cache_capacity: int = 0
     master_addr: str = "127.0.0.1"
     master_port: int = 29500
     rdzv_backend: str = "c10d"
@@ -102,6 +105,18 @@ def build_parser() -> argparse.ArgumentParser:
         default="hash_mod_world_size",
         choices=["hash_mod_world_size"],
     )
+    parser.add_argument(
+        "--enable-gpu-cache",
+        action="store_true",
+        default=False,
+        help="Enable RecStore GPU read/write training cache for local fast path.",
+    )
+    parser.add_argument(
+        "--gpu-cache-capacity",
+        type=int,
+        default=0,
+        help="Number of embedding rows to keep in the RecStore GPU cache.",
+    )
     parser.add_argument("--master-addr", type=str, default="127.0.0.1")
     parser.add_argument("--master-port", type=int, default=29500)
     parser.add_argument("--rdzv-backend", type=str, default="c10d")
@@ -140,6 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allocator", type=str, default="R2ShmMalloc")
     parser.add_argument("--jsonl", type=str, default="")
     parser.add_argument("--csv", type=str, default="")
+    parser.add_argument("--local-shm-server-csv", type=str, default="")
     parser.add_argument("--recstore-main-csv", type=str, default="")
     parser.add_argument("--recstore-main-agg-csv", type=str, default="")
     parser.add_argument("--library-path", type=str, default="")
@@ -248,6 +264,10 @@ def validate_recstore_config(cfg: RunConfig) -> None:
         raise RuntimeError("--nproc-per-node must be greater than 0.")
     if cfg.node_rank < 0 or cfg.node_rank >= cfg.nnodes:
         raise RuntimeError("--node-rank must be within [0, nnodes).")
+    if cfg.enable_gpu_cache and cfg.gpu_cache_capacity <= 0:
+        raise RuntimeError(
+            "--gpu-cache-capacity must be positive when --enable-gpu-cache is set"
+        )
     if cfg.enable_single_node_distributed_fast_path:
         if cfg.nnodes != 1:
             raise RuntimeError(
@@ -286,6 +306,8 @@ def populate_default_paths(cfg: RunConfig) -> None:
         cfg.jsonl = str(outputs_base / "recstore_events.jsonl")
     if not cfg.csv:
         cfg.csv = str(outputs_base / "recstore_embupdate.csv")
+    if not cfg.local_shm_server_csv:
+        cfg.local_shm_server_csv = str(outputs_base / "recstore_local_shm_server.csv")
     if not cfg.recstore_main_csv:
         cfg.recstore_main_csv = str(outputs_base / "recstore_main.csv")
     if not cfg.recstore_main_agg_csv:
@@ -307,6 +329,7 @@ def populate_default_paths(cfg: RunConfig) -> None:
 def ensure_parent_dirs(cfg: RunConfig) -> None:
     ensure_shared_dir(Path(cfg.jsonl).parent)
     ensure_shared_dir(Path(cfg.csv).parent)
+    ensure_shared_dir(Path(cfg.local_shm_server_csv).parent)
     ensure_shared_dir(Path(cfg.recstore_main_csv).parent)
     ensure_shared_dir(Path(cfg.recstore_main_agg_csv).parent)
     ensure_shared_dir(Path(cfg.server_log).parent)

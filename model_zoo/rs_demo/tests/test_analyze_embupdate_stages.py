@@ -54,6 +54,28 @@ class AnalyzeEmbupdateStagesTest(unittest.TestCase):
         self.assertEqual(derived_100["network_transport_us"], 22_000.0)
         self.assertEqual(derived_100["server_framework_overhead_us"], 1_500.0)
 
+    def test_build_trace_map_accepts_custom_table_name(self) -> None:
+        mod = _load_module()
+        events = [
+            {
+                "table_name": "embupdate_stages",
+                "unique_id": "op_client::EmbUpdate|1",
+                "metric_name": "op_total_us",
+                "metric_value": 100.0,
+            },
+            {
+                "table_name": "local_shm_server_stages",
+                "unique_id": "local_shm_req|2",
+                "metric_name": "server_process_total_us",
+                "metric_value": 200.0,
+            },
+        ]
+
+        by_trace = mod.build_trace_map(events, "", "local_shm_server_stages")
+
+        self.assertEqual(list(by_trace.keys()), ["local_shm_req|2"])
+        self.assertEqual(by_trace["local_shm_req|2"]["server_process_total_us"], 200.0)
+
 
 if __name__ == "__main__":
     unittest.main()

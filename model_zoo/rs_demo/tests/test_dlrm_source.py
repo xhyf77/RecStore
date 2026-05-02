@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
 from unittest import mock
 
+import numpy as np
 import torch
 
 from model_zoo.rs_demo.data import dlrm_source
+from model_zoo.torchrec_dlrm.data.custom_dataloader import CustomCriteoDataset
 
 
 class TestDlrmSourceFallback(unittest.TestCase):
@@ -124,6 +127,31 @@ class TestDlrmSourceFallback(unittest.TestCase):
             )
 
         self.assertEqual(sparse_features["cat_0"].values().device.type, "cpu")
+
+    def test_custom_criteo_dataset_batch_getitems_matches_single_items(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dense = np.arange(8 * 13, dtype=np.float32).reshape(8, 13)
+            sparse = np.arange(8 * 26, dtype=np.int64).reshape(8, 26) - 50
+            labels = np.arange(8, dtype=np.float32).reshape(8, 1)
+            np.save(f"{tmpdir}/day_0_dense.npy", dense)
+            np.save(f"{tmpdir}/day_0_sparse.npy", sparse)
+            np.save(f"{tmpdir}/day_0_labels.npy", labels)
+
+            dataset = CustomCriteoDataset(
+                data_dir=tmpdir,
+                stage="train",
+                train_ratio=1.0,
+                num_embeddings_per_feature=[7] * 26,
+            )
+
+            batch = dataset.__getitems__([1, 3, 5])
+            singles = [dataset[idx] for idx in [1, 3, 5]]
+
+        self.assertEqual(len(batch), 3)
+        for batched, single in zip(batch, singles):
+            for batched_tensor, single_tensor in zip(batched, single):
+                self.assertTrue(torch.equal(batched_tensor, single_tensor))
+                self.assertEqual(batched_tensor.dtype, single_tensor.dtype)
 
 
 if __name__ == "__main__":

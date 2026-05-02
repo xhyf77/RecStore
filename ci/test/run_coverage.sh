@@ -116,12 +116,22 @@ mkdir -p "${CPP_REPORT_DIR}" "${PY_REPORT_DIR}"
 
 if [[ "${SKIP_BUILD}" -eq 0 && "${SKIP_CPP}" -eq 0 ]]; then
   echo "[1/6] Configuring coverage build at ${BUILD_DIR}"
-  cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" \
+  CMAKE_ARGS=(
+    -S "${REPO_ROOT}"
+    -B "${BUILD_DIR}"
     -DENABLE_CUDA=OFF \
     -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.10 \
     -DCMAKE_C_FLAGS="--coverage -O0 -g" \
     -DCMAKE_CXX_FLAGS="--coverage -O0 -g"
+  )
+  if [[ -x "/usr/local/cuda/bin/nvcc" ]]; then
+    CMAKE_ARGS+=(
+      -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc
+      -DCUDAToolkit_ROOT=/usr/local/cuda
+    )
+  fi
+  cmake "${CMAKE_ARGS[@]}"
 
   echo "[2/6] Building coverage targets"
   cmake --build "${BUILD_DIR}" -j"$(nproc)"
@@ -137,12 +147,19 @@ if [[ "${SKIP_CPP}" -eq 0 ]]; then
   fi
 
   echo "[4/6] Generating C++ coverage reports"
+  eval "$(python3 "${REPO_ROOT}/ci/test/coverage_scope.py" \
+    --labeler "${REPO_ROOT}/.github/labeler.yml" \
+    --format gcovr)"
   gcovr \
     --root "${REPO_ROOT}" \
     --object-directory "${BUILD_DIR}" \
+    "${COVERAGE_SCOPE_ARGS[@]}" \
     --exclude ".*third_party/.*" \
+    --exclude "build_coverage/.*" \
     --exclude ".*/build_coverage/.*" \
+    --exclude "build/.*" \
     --exclude ".*/build/.*" \
+    --exclude-directories ".*/CMakeFiles/[0-9.]+/CompilerId.*" \
     --xml-pretty --xml "${CPP_REPORT_DIR}/coverage.xml" \
     --html-details "${CPP_REPORT_DIR}/index.html" \
     --txt "${CPP_REPORT_DIR}/coverage.txt" \
@@ -159,6 +176,7 @@ if [[ "${SKIP_PY}" -eq 0 ]]; then
 
   export LD_LIBRARY_PATH="${BUILD_DIR}/lib:${LD_LIBRARY_PATH:-}"
   export PYTHONPATH="${REPO_ROOT}/src/python/pytorch:${PYTHONPATH:-}"
+  export PS_SERVER_PATH="${BUILD_DIR}/bin/ps_server"
 
   python3 -m coverage erase
   (
@@ -171,10 +189,15 @@ if [[ "${SKIP_PY}" -eq 0 ]]; then
   )
 
   echo "[6/6] Generating Python coverage reports"
-  python3 -m coverage combine
-  python3 -m coverage html -d "${PY_REPORT_DIR}"
-  python3 -m coverage xml -o "${PY_REPORT_DIR}/coverage.xml"
-  python3 -m coverage report -m | tee "${PY_REPORT_DIR}/coverage.txt"
+  python3 -m coverage combine \
+    "${REPO_ROOT}/src/test/framework/pytorch" \
+    "${REPO_ROOT}/src/python/pytorch"
+  eval "$(python3 "${REPO_ROOT}/ci/test/coverage_scope.py" \
+    --labeler "${REPO_ROOT}/.github/labeler.yml" \
+    --format coverage)"
+  python3 -m coverage html "${COVERAGE_SCOPE_ARGS[@]}" -d "${PY_REPORT_DIR}"
+  python3 -m coverage xml "${COVERAGE_SCOPE_ARGS[@]}" -o "${PY_REPORT_DIR}/coverage.xml"
+  python3 -m coverage report "${COVERAGE_SCOPE_ARGS[@]}" -m | tee "${PY_REPORT_DIR}/coverage.txt"
 fi
 
 echo

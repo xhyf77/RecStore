@@ -27,6 +27,8 @@ find_package(Python 3.10 COMPONENTS Interpreter Development REQUIRED)
 add_library(recstore_tf_ops SHARED
     op_tensorflow.cc
     ../op.cc
+    ../op_local_shm.cc
+    ../common/hierkv_local_runtime.cc
     ../common/op_runtime_support.cc
     ../common/local_shm_op_component.cc
     ../common/ps_client_config_adapter.cc

@@ -21,6 +21,12 @@ std::size_t GetPayloadBytes(std::size_t key_count) {
   return sizeof(uint64_t) * key_count;
 }
 
+std::size_t
+GetFlatPayloadBytes(std::size_t key_count, std::size_t embedding_dim) {
+  return sizeof(uint64_t) * key_count +
+         sizeof(float) * key_count * embedding_dim;
+}
+
 std::size_t PutPayloadBytes(std::size_t key_count, std::size_t embedding_dim) {
   return sizeof(uint64_t) * key_count +
          sizeof(float) * key_count * embedding_dim;
@@ -210,14 +216,17 @@ int LocalShmPSClient::SubmitGetParameterFlat(
   auto* header  = region_.slot_header(static_cast<uint32_t>(slot));
   auto* payload = region_.slot_payload(static_cast<uint32_t>(slot));
   const std::size_t input_bytes = GetPayloadBytes(keys.Size());
-  if (input_bytes > region_.slot_buffer_bytes()) {
-    LOG(ERROR) << "LocalShmPSClient::SubmitGetParameterFlat input_too_large"
-               << " pid=" << static_cast<int>(::getpid())
-               << " backend=local_shm" << " region_name=" << region_name_
-               << " ready_queue_id=" << ready_queue_id_ << " key_count="
-               << num_rows << " embedding_dim=" << embedding_dim
-               << " slot_id=" << slot << " input_bytes=" << input_bytes
-               << " slot_buffer_bytes=" << region_.slot_buffer_bytes();
+  const std::size_t payload_bytes =
+      GetFlatPayloadBytes(keys.Size(), static_cast<std::size_t>(embedding_dim));
+  if (payload_bytes > region_.slot_buffer_bytes()) {
+    LOG(ERROR)
+        << "LocalShmPSClient::SubmitGetParameterFlat input_too_large"
+        << " pid=" << static_cast<int>(::getpid()) << " backend=local_shm"
+        << " region_name=" << region_name_
+        << " ready_queue_id=" << ready_queue_id_ << " key_count=" << num_rows
+        << " embedding_dim=" << embedding_dim << " slot_id=" << slot
+        << " input_bytes=" << input_bytes << " payload_bytes=" << payload_bytes
+        << " slot_buffer_bytes=" << region_.slot_buffer_bytes();
     MarkError(header, LocalStatusCode::kBufferTooSmall);
     ReleaseSlot(static_cast<uint32_t>(slot));
     return -1;
@@ -320,8 +329,9 @@ int LocalShmPSClient::WaitGetParameterFlat(LocalShmFlatGetHandle* handle) {
     }
   }
 
+  auto* payload = region_.slot_payload(handle->slot_id);
   handle->values =
-      reinterpret_cast<float*>(region_.slot_payload(handle->slot_id));
+      reinterpret_cast<float*>(payload + GetPayloadBytes(handle->num_rows));
   handle->output_bytes = header->output_bytes;
   return 0;
 }

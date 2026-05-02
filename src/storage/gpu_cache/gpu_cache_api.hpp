@@ -44,6 +44,10 @@ class gpu_cache_api {
                       cudaStream_t stream,
                       const size_t task_per_warp_tile = TASK_PER_WARP_TILE_MACRO) = 0;
 
+  // Remove API, i.e. invalidate existing embeddings from the cache
+  virtual void Remove(const key_type* d_keys, const size_t len, cudaStream_t stream,
+                      const size_t task_per_warp_tile = TASK_PER_WARP_TILE_MACRO) = 0;
+
   // Dump API, i.e. dump some slabsets' keys from the cache
   virtual void Dump(key_type* d_keys, size_t* d_dump_counter, const size_t start_set_index,
                     const size_t end_set_index, cudaStream_t stream) = 0;

@@ -3,6 +3,8 @@ find_package(Torch REQUIRED)
 add_library(recstore_torch_ops SHARED
     op_torch.cc
     ../op.cc
+    ../op_local_shm.cc
+    ../common/hierkv_local_runtime.cc
     ../common/op_runtime_support.cc
     ../common/local_shm_op_component.cc
     ../common/ps_client_config_adapter.cc
@@ -42,6 +44,11 @@ target_link_libraries(recstore_torch_ops PRIVATE
     glog::glog
     ${TORCH_LIBRARIES}
 )
+
+if(TARGET framework_gpu_cache)
+    target_compile_definitions(recstore_torch_ops PRIVATE RECSTORE_ENABLE_GPU_CACHE)
+    target_link_libraries(recstore_torch_ops PRIVATE framework_gpu_cache)
+endif()
 
 target_link_options(recstore_torch_ops PRIVATE -Wl,--no-as-needed)
 

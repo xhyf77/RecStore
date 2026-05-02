@@ -22,8 +22,10 @@ class _FakeOps:
         self.backend = "brpc"
         self.lookup_calls: list[tuple[int | None, list[int], int]] = []
         self.update_calls: list[tuple[int | None, str, list[int], list[list[float]]]] = []
+        self.update_clear_gpu_cache_call_counts: list[int] = []
         self.backend_switch_calls: list[str] = []
         self.lookup_region_warmup_calls = 0
+        self.clear_gpu_cache_calls = 0
 
     def set_ps_config(self, host: str, port: int) -> None:
         self.active_port = int(port)
@@ -44,6 +46,7 @@ class _FakeOps:
         return torch.arange(rows * int(embedding_dim), dtype=torch.float32).view(rows, int(embedding_dim))
 
     def local_update_flat(self, table_name: str, keys: torch.Tensor, grads: torch.Tensor) -> None:
+        self.update_clear_gpu_cache_call_counts.append(self.clear_gpu_cache_calls)
         self.update_calls.append(
             (
                 self.active_port,
@@ -55,6 +58,19 @@ class _FakeOps:
 
     def warmup_local_lookup_flat_cuda_region(self) -> bool:
         self.lookup_region_warmup_calls += 1
+        return True
+
+    def clear_gpu_cache(self) -> None:
+        self.clear_gpu_cache_calls += 1
+
+
+class _FakeOpsWithGpuCache(_FakeOps):
+    def __init__(self) -> None:
+        super().__init__()
+        self.gpu_cache_calls: list[tuple[int, int]] = []
+
+    def enable_gpu_cache(self, capacity: int, embedding_dim: int) -> bool:
+        self.gpu_cache_calls.append((int(capacity), int(embedding_dim)))
         return True
 
 
@@ -120,6 +136,45 @@ class _FakeClientCollidingPrefetchId(_FakeClient):
         # different shards may return the same id.
         self.prefetch_requests[1] = (self.ops.active_port, [int(v) for v in keys.tolist()])
         return 1
+
+
+class _FakeClientWithGpuCache(_FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.gpu_cache_calls: list[tuple[int, int]] = []
+        self.gpu_cache_profile = {
+            "gpu_cache_query_ms": 1.0,
+            "gpu_cache_backend_lookup_ms": 2.0,
+            "gpu_cache_fill_ms": 3.0,
+            "gpu_cache_update_ms": 4.0,
+            "gpu_cache_hit_count": 5.0,
+        }
+
+    def enable_gpu_cache(self, capacity: int, embedding_dim: int) -> bool:
+        self.gpu_cache_calls.append((int(capacity), int(embedding_dim)))
+        return True
+
+    def get_last_gpu_cache_profile(self) -> dict[str, float]:
+        return self.gpu_cache_profile
+
+
+class _FakeClientWithOpsGpuCache(_FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ops = _FakeOpsWithGpuCache()
+
+
+class _FakeClientWithWriteRowLimit(_FakeClient):
+    def __init__(self, max_rows_per_write: int) -> None:
+        super().__init__()
+        self.max_rows_per_write = int(max_rows_per_write)
+        self.write_batch_sizes: list[int] = []
+
+    def emb_write(self, keys: torch.Tensor, values: torch.Tensor) -> None:
+        self.write_batch_sizes.append(int(keys.numel()))
+        if keys.numel() > self.max_rows_per_write:
+            raise RuntimeError("single emb_write request exceeds fake slot limit")
+        super().emb_write(keys, values)
 
 
 class TestShardedRecstoreClient(unittest.TestCase):
@@ -429,6 +484,30 @@ class TestShardedRecstoreClient(unittest.TestCase):
         self.assertEqual(sorted(fake_client.writes[20000].keys()), sorted(shard_to_keys[20000]))
         self.assertEqual(sorted(fake_client.writes[20001].keys()), sorted(shard_to_keys[20001]))
 
+    def test_init_data_splits_large_writes_to_fit_local_shm_slot(self) -> None:
+        runtime_dir = self._make_runtime_dir(
+            cache_ps_type="LOCAL_SHM",
+            cache_servers=[{"host": "127.0.0.1", "port": 20000, "shard": 0}],
+            distributed_servers=[{"host": "127.0.0.1", "port": 20000, "shard": 0}],
+            distributed_num_shards=1,
+        )
+        fake_client = _FakeClientWithWriteRowLimit(max_rows_per_write=16_131)
+        fake_client.ops.active_port = 20000
+        client = ShardedRecstoreClient(fake_client, runtime_dir)
+
+        client.init_data(
+            name="large_fused",
+            shape=(20_000, 128),
+            dtype=torch.float32,
+        )
+
+        self.assertGreater(len(fake_client.write_batch_sizes), 1)
+        self.assertLessEqual(max(fake_client.write_batch_sizes), 16_131)
+        self.assertEqual(sum(fake_client.write_batch_sizes), 20_000)
+        ids = torch.tensor([0, 16_130, 16_131, 19_999], dtype=torch.int64)
+        pulled = client.pull("large_fused", ids)
+        self.assertTrue(torch.allclose(pulled, torch.zeros((4, 128))))
+
     def test_prefetch_wait_and_get_handles_colliding_shard_ids(self) -> None:
         runtime_dir = self._make_runtime_dir(hash_method="simple_mod", distributed_num_shards=2)
         fake_client = _FakeClientCollidingPrefetchId()
@@ -500,6 +579,39 @@ class TestShardedRecstoreClient(unittest.TestCase):
         self.assertEqual(len(fake_client.table_inits), 2)
         self.assertEqual(len(fake_client.updates), 2)
 
+    def test_wait_clears_gpu_cache_after_fallback_update(self) -> None:
+        runtime_dir = self._make_runtime_dir(hash_method="simple_mod", distributed_num_shards=2)
+        fake_client = _FakeClient()
+        client = ShardedRecstoreClient(fake_client, runtime_dir)
+        client.register_tensor_meta("default", shape=(8, 2), dtype=torch.float32)
+
+        handle = client.update_async(
+            "default",
+            torch.arange(0, 4, dtype=torch.int64),
+            torch.ones((4, 2), dtype=torch.float32),
+        )
+        client.wait(handle)
+
+        self.assertEqual(len(fake_client.updates), 2)
+        self.assertEqual(fake_client.ops.clear_gpu_cache_calls, 1)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required")
+    def test_wait_keeps_cuda_updates_for_precise_gpu_cache_invalidation(self) -> None:
+        runtime_dir = self._make_runtime_dir(hash_method="simple_mod", distributed_num_shards=2)
+        fake_client = _FakeClient()
+        client = ShardedRecstoreClient(fake_client, runtime_dir)
+        client.register_tensor_meta("default", shape=(8, 2), dtype=torch.float32)
+
+        handle = client.update_async(
+            "default",
+            torch.arange(0, 4, dtype=torch.int64, device="cuda"),
+            torch.ones((4, 2), dtype=torch.float32, device="cuda"),
+        )
+        client.wait(handle)
+
+        self.assertEqual(len(fake_client.updates), 2)
+        self.assertEqual(fake_client.ops.clear_gpu_cache_calls, 0)
+
     def test_current_and_set_ps_backend_forward_to_underlying_ops(self) -> None:
         runtime_dir = self._make_runtime_dir()
         fake_client = _FakeClient()
@@ -511,6 +623,37 @@ class TestShardedRecstoreClient(unittest.TestCase):
 
         self.assertEqual(client.current_ps_backend(), "brpc")
         self.assertEqual(fake_client.ops.backend_switch_calls, ["brpc"])
+
+    def test_gpu_cache_api_is_exposed_and_forwards_to_underlying_client(self) -> None:
+        runtime_dir = self._make_runtime_dir()
+        fake_client = _FakeClientWithGpuCache()
+        client = ShardedRecstoreClient(fake_client, runtime_dir)
+
+        self.assertTrue(hasattr(ShardedRecstoreClient, "enable_gpu_cache"))
+        self.assertTrue(client.enable_gpu_cache(1024, 4))
+
+        self.assertEqual(fake_client.gpu_cache_calls, [(1024, 4)])
+        self.assertEqual(
+            client.get_last_gpu_cache_profile()["gpu_cache_backend_lookup_ms"],
+            2.0,
+        )
+
+    def test_gpu_cache_enable_falls_back_to_underlying_ops(self) -> None:
+        runtime_dir = self._make_runtime_dir()
+        fake_client = _FakeClientWithOpsGpuCache()
+        client = ShardedRecstoreClient(fake_client, runtime_dir)
+
+        self.assertTrue(client.enable_gpu_cache(2048, 8))
+
+        self.assertEqual(fake_client.ops.gpu_cache_calls, [(2048, 8)])
+
+    def test_gpu_cache_enable_requires_underlying_support(self) -> None:
+        runtime_dir = self._make_runtime_dir()
+        fake_client = _FakeClient()
+        client = ShardedRecstoreClient(fake_client, runtime_dir)
+
+        with self.assertRaisesRegex(RuntimeError, "enable_gpu_cache"):
+            client.enable_gpu_cache(1024, 4)
 
     def test_local_lookup_flat_normalizes_ids_and_forwards_to_active_shard(self) -> None:
         runtime_dir = self._make_runtime_dir()
@@ -527,6 +670,41 @@ class TestShardedRecstoreClient(unittest.TestCase):
         self.assertEqual(fake_client.ops.lookup_calls, [(None, [7, 3], 4)])
         self.assertEqual(client._active_shard, 1)
         self.assertEqual(fake_client.ops.port_history, [])
+
+    def test_local_lookup_flat_clears_gpu_cache_when_switching_tables(self) -> None:
+        runtime_dir = self._make_runtime_dir()
+        fake_client = _FakeClient()
+        fake_client.ops.backend = "local_shm"
+        client = ShardedRecstoreClient(fake_client, runtime_dir)
+        client.register_tensor_meta("table0", shape=(16, 4), dtype=torch.float32)
+        client.register_tensor_meta("table1", shape=(16, 4), dtype=torch.float32)
+        client._activate_shard(1)
+
+        client.local_lookup_flat("table0", torch.tensor([1], dtype=torch.int64))
+        client.local_lookup_flat("table0", torch.tensor([2], dtype=torch.int64))
+        client.local_lookup_flat("table1", torch.tensor([1], dtype=torch.int64))
+
+        self.assertEqual(fake_client.ops.clear_gpu_cache_calls, 1)
+
+    def test_local_update_flat_clears_gpu_cache_when_switching_tables(self) -> None:
+        runtime_dir = self._make_runtime_dir()
+        fake_client = _FakeClient()
+        fake_client.ops.backend = "local_shm"
+        client = ShardedRecstoreClient(fake_client, runtime_dir)
+        client.register_tensor_meta("table0", shape=(16, 4), dtype=torch.float32)
+        client.register_tensor_meta("table1", shape=(16, 4), dtype=torch.float32)
+        client._activate_shard(1)
+
+        client.local_lookup_flat("table0", torch.tensor([1], dtype=torch.int64))
+        client.local_update_flat(
+            "table1",
+            torch.tensor([1], dtype=torch.int64),
+            torch.ones((1, 4), dtype=torch.float32),
+        )
+
+        self.assertEqual(fake_client.ops.update_clear_gpu_cache_call_counts, [1])
+        self.assertEqual(fake_client.ops.clear_gpu_cache_calls, 2)
+        self.assertIsNone(client._gpu_cache_table_name)
 
     def test_activate_shard_skips_transport_reconfig_for_shared_local_shm_single_table(self) -> None:
         runtime_dir = self._make_runtime_dir(
