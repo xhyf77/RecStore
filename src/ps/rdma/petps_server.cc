@@ -98,8 +98,8 @@ std::uint64_t RdmaGetTraceInterval() {
     if (env == nullptr) {
       return std::uint64_t{5000};
     }
-    const auto parsed = static_cast<std::uint64_t>(
-        std::strtoull(env, nullptr, 10));
+    const auto parsed =
+        static_cast<std::uint64_t>(std::strtoull(env, nullptr, 10));
     return parsed == 0 ? std::uint64_t{5000} : parsed;
   }();
   return interval;
@@ -129,7 +129,7 @@ struct RdmaGetServerHandleTraceStats {
     response_ns.fetch_add(response, std::memory_order_relaxed);
     write_ns.fetch_add(write, std::memory_order_relaxed);
     total_ns.fetch_add(total, std::memory_order_relaxed);
-    const auto n = count.fetch_add(1, std::memory_order_relaxed) + 1;
+    const auto n        = count.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto interval = RdmaGetTraceInterval();
     if (n % interval != 0) {
       return;
@@ -164,7 +164,7 @@ struct RdmaGetServerEnvelopeTraceStats {
     decode_ns.fetch_add(decode, std::memory_order_relaxed);
     handle_ns.fetch_add(handle, std::memory_order_relaxed);
     total_ns.fetch_add(total, std::memory_order_relaxed);
-    const auto n = count.fetch_add(1, std::memory_order_relaxed) + 1;
+    const auto n        = count.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto interval = RdmaGetTraceInterval();
     if (n % interval != 0) {
       return;
@@ -172,10 +172,11 @@ struct RdmaGetServerEnvelopeTraceStats {
     const double denom = static_cast<double>(n) * 1000.0;
     std::ostringstream out;
     out << "component=rdma_get_trace side=server stage=envelope mode="
-        << "descriptor_doorbell count=" << n
-        << " poll_us_avg=" << poll_ns.load(std::memory_order_relaxed) / denom
-        << " decode_us_avg=" << decode_ns.load(std::memory_order_relaxed) / denom
-        << " handle_us_avg=" << handle_ns.load(std::memory_order_relaxed) / denom
+        << "descriptor_doorbell count=" << n << " poll_us_avg="
+        << poll_ns.load(std::memory_order_relaxed) / denom << " decode_us_avg="
+        << decode_ns.load(std::memory_order_relaxed) / denom
+        << " handle_us_avg="
+        << handle_ns.load(std::memory_order_relaxed) / denom
         << " total_us_avg=" << total_ns.load(std::memory_order_relaxed) / denom;
     LOG(INFO) << out.str();
     std::cerr << out.str() << std::endl;
@@ -265,7 +266,7 @@ public:
     }
     std::string mode_error;
     CHECK(petps::ParseRdmaTransportMode(
-              FLAGS_rdma_transport_mode, &transport_mode_, &mode_error))
+        FLAGS_rdma_transport_mode, &transport_mode_, &mode_error))
         << mode_error;
     if (transport_mode_ == petps::RdmaTransportMode::kDescriptorDoorbell) {
       CHECK_GT(FLAGS_rdma_put_v2_push_slots_per_client, 0)
@@ -276,25 +277,26 @@ public:
       const std::uint64_t machine_count = static_cast<std::uint64_t>(
           XPostoffice::GetInstance()->NumServers() +
           XPostoffice::GetInstance()->NumClients());
-      for (int thread_id : petps::GetRdmaDescriptorServingThreadIDs(
-               thread_count_)) {
+      for (int thread_id :
+           petps::GetRdmaDescriptorServingThreadIDs(thread_count_)) {
         petps::RawVerbsConfig raw_config;
-        raw_config.global_id = XPostoffice::GetInstance()->GlobalID();
-        raw_config.local_lane = thread_id;
+        raw_config.global_id   = XPostoffice::GetInstance()->GlobalID();
+        raw_config.local_lane  = thread_id;
         raw_config.remote_lane = thread_id;
         raw_config.num_servers = XPostoffice::GetInstance()->NumServers();
         raw_config.num_clients = XPostoffice::GetInstance()->NumClients();
-        raw_config.numa_id = FLAGS_numa_id;
+        raw_config.numa_id     = FLAGS_numa_id;
         raw_config.connect_to_servers = false;
         raw_config.connect_to_clients = true;
-        raw_config.local_base_addr = dsm_->get_conf()->baseAddr;
+        raw_config.local_base_addr    = dsm_->get_conf()->baseAddr;
         raw_config.local_region_bytes = dsm_->get_conf()->dsmSize;
         raw_config.reserved_region_offset =
             FLAGS_rdma_put_v2_push_region_offset;
         raw_config.reserved_region_bytes =
-          machine_count *
-          static_cast<std::uint64_t>(FLAGS_rdma_put_v2_push_slots_per_client) *
-          FLAGS_rdma_put_v2_push_slot_bytes;
+            machine_count *
+            static_cast<std::uint64_t>(
+                FLAGS_rdma_put_v2_push_slots_per_client) *
+            FLAGS_rdma_put_v2_push_slot_bytes;
         raw_transports_[static_cast<std::size_t>(thread_id)] =
             std::make_unique<petps::RawVerbsTransport>(raw_config);
       }
@@ -319,17 +321,18 @@ public:
 private:
   struct DescriptorTask {
     petps::RdmaDescriptorRequest request;
-    const char* inline_payload = nullptr;
+    const char* inline_payload       = nullptr;
     std::size_t inline_payload_bytes = 0;
   };
 
-  void WriteMayflyResponse(const RequestView& request,
-                           const char* buffer,
-                           GlobalAddress gaddr,
-                           std::size_t size,
-                           bool signal,
-                           std::uint64_t wr_id,
-                           int thread_id) {
+  void WriteMayflyResponse(
+      const RequestView& request,
+      const char* buffer,
+      GlobalAddress gaddr,
+      std::size_t size,
+      bool signal,
+      std::uint64_t wr_id,
+      int thread_id) {
     if (!request.descriptor_doorbell) {
       dsm_->write(buffer, gaddr, size, signal, wr_id);
       return;
@@ -468,8 +471,8 @@ private:
                 static_cast<std::uint64_t>(control.payload_bytes);
             const std::uint64_t sender_lane_begin =
                 region_begin +
-                static_cast<std::uint64_t>(request.node_id) *
-                slots_per_client * FLAGS_rdma_put_v2_push_slot_bytes;
+                static_cast<std::uint64_t>(request.node_id) * slots_per_client *
+                    FLAGS_rdma_put_v2_push_slot_bytes;
             const std::uint64_t sender_lane_end =
                 sender_lane_begin +
                 slots_per_client * FLAGS_rdma_put_v2_push_slot_bytes;
@@ -564,13 +567,14 @@ private:
     const std::int32_t code = static_cast<std::int32_t>(status);
     auto* ack_buf           = dsm_->get_rdma_buffer();
     std::memcpy(ack_buf, &code, sizeof(code));
-    WriteMayflyResponse(request,
-                        ack_buf,
-                        request.receive_gaddr,
-                        sizeof(code),
-                        true,
-                        petps::WR_ID_PUT,
-                        thread_id);
+    WriteMayflyResponse(
+        request,
+        ack_buf,
+        request.receive_gaddr,
+        sizeof(code),
+        true,
+        petps::WR_ID_PUT,
+        thread_id);
   }
 
   void RpcPsPut(RawMessage* recv, int thread_id) {
@@ -579,8 +583,9 @@ private:
 
   void HandlePsGet(const RequestView& request, int thread_id) {
     const bool trace_get = ShouldTraceRdmaGet();
-    const auto trace_start = trace_get ? std::chrono::steady_clock::now()
-                                       : std::chrono::steady_clock::time_point{};
+    const auto trace_start =
+        trace_get ? std::chrono::steady_clock::now()
+                  : std::chrono::steady_clock::time_point{};
     const bool perf_condition = (thread_id == 0);
     auto& sourcelist          = sourcelists_[thread_id];
 
@@ -620,11 +625,12 @@ private:
       index_timer_.start();
     bool flat_get_ok = true;
     if (response_bytes <= FLAGS_rdma_per_thread_response_limit_bytes) {
-      flat_get_ok = cache_ps_->GetParameterFlat(keys,
-                                                reinterpret_cast<float*>(buf),
-                                                batch_get_kv_count,
-                                                embedding_dim,
-                                                thread_id);
+      flat_get_ok = cache_ps_->GetParameterFlat(
+          keys,
+          reinterpret_cast<float*>(buf),
+          batch_get_kv_count,
+          embedding_dim,
+          thread_id);
     }
     if (perf_condition)
       index_timer_.end();
@@ -658,13 +664,14 @@ private:
           reinterpret_cast<std::int32_t*>(dsm_->get_rdma_buffer());
       *status_word =
           static_cast<std::int32_t>(petps::RpcStatus::kBatchTooLarge);
-      WriteMayflyResponse(request,
-                          reinterpret_cast<const char*>(status_word),
-                          request.receive_gaddr,
-                          sizeof(std::int32_t),
-                          true,
-                          petps::WR_ID_GET,
-                          thread_id);
+      WriteMayflyResponse(
+          request,
+          reinterpret_cast<const char*>(status_word),
+          request.receive_gaddr,
+          sizeof(std::int32_t),
+          true,
+          petps::WR_ID_GET,
+          thread_id);
       epoch_manager_->UnProtect();
       return;
     }
@@ -687,16 +694,16 @@ private:
         request, buf, gaddr, response_bytes, true, petps::WR_ID_GET, thread_id);
     if (trace_get) {
       const auto trace_done = std::chrono::steady_clock::now();
-      auto& stats = request.descriptor_doorbell
-                        ? DescriptorGetServerHandleTraceStats()
-                        : RawGetServerHandleTraceStats();
-      stats.Add(request.descriptor_doorbell ? "descriptor_doorbell"
-                                            : "raw_message",
-                ToNs(trace_after_parse - trace_start),
-                ToNs(trace_after_index - trace_after_parse),
-                ToNs(trace_before_write - trace_after_index),
-                ToNs(trace_done - trace_before_write),
-                ToNs(trace_done - trace_start));
+      auto& stats           = request.descriptor_doorbell
+                                ? DescriptorGetServerHandleTraceStats()
+                                : RawGetServerHandleTraceStats();
+      stats.Add(
+          request.descriptor_doorbell ? "descriptor_doorbell" : "raw_message",
+          ToNs(trace_after_parse - trace_start),
+          ToNs(trace_after_index - trace_after_parse),
+          ToNs(trace_before_write - trace_after_index),
+          ToNs(trace_done - trace_before_write),
+          ToNs(trace_done - trace_start));
     }
     if (perf_condition)
       value_timer_.end();
@@ -717,26 +724,28 @@ private:
                                int thread_id) {
     if (request.op ==
         static_cast<std::uint16_t>(petps::RdmaDescriptorOp::kGet)) {
-      HandlePsGet(RequestView{
-                      RpcType::GET,
-                      static_cast<NodeIDType>(request.client_node_id),
-                      static_cast<ThreadIDType>(request.client_thread_id),
-                      request.response_gaddr,
-                      inline_payload,
-                      true,
-                  },
-                  thread_id);
+      HandlePsGet(
+          RequestView{
+              RpcType::GET,
+              static_cast<NodeIDType>(request.client_node_id),
+              static_cast<ThreadIDType>(request.client_thread_id),
+              request.response_gaddr,
+              inline_payload,
+              true,
+          },
+          thread_id);
     } else if (request.op ==
                static_cast<std::uint16_t>(petps::RdmaDescriptorOp::kPut)) {
-      HandlePsPut(RequestView{
-                      RpcType::PUT,
-                      static_cast<NodeIDType>(request.client_node_id),
-                      static_cast<ThreadIDType>(request.client_thread_id),
-                      request.status_gaddr,
-                      inline_payload,
-                      true,
-                  },
-                  thread_id);
+      HandlePsPut(
+          RequestView{
+              RpcType::PUT,
+              static_cast<NodeIDType>(request.client_node_id),
+              static_cast<ThreadIDType>(request.client_thread_id),
+              request.status_gaddr,
+              inline_payload,
+              true,
+          },
+          thread_id);
     } else {
       LOG(ERROR) << "unknown descriptor op=" << request.op;
     }
@@ -750,8 +759,8 @@ private:
     }
     const std::uint32_t slot_id = completion.imm_data;
     petps::RdmaDescriptorRequest request{};
-    request.client_node_id = static_cast<std::uint16_t>(completion.wr_id);
-    request.slot_id = slot_id;
+    request.client_node_id   = static_cast<std::uint16_t>(completion.wr_id);
+    request.slot_id          = slot_id;
     request.descriptor_gaddr = GlobalAddress{
         static_cast<std::uint16_t>(dsm_->getMyNodeID()),
         FLAGS_rdma_put_v2_push_region_offset +
@@ -762,7 +771,7 @@ private:
                 FLAGS_rdma_put_v2_push_slot_bytes};
     petps::RdmaDescriptorLaneConfig lane_config{};
     lane_config.region_offset = FLAGS_rdma_put_v2_push_region_offset;
-    lane_config.slot_bytes = FLAGS_rdma_put_v2_push_slot_bytes;
+    lane_config.slot_bytes    = FLAGS_rdma_put_v2_push_slot_bytes;
     lane_config.slots_per_client =
         static_cast<std::uint32_t>(FLAGS_rdma_put_v2_push_slots_per_client);
     lane_config.machine_count =
@@ -785,17 +794,16 @@ private:
       LOG(ERROR) << "decoded descriptor lane mismatch: " << error;
       return false;
     }
-    if (request.payload_bytes >
-        FLAGS_rdma_put_v2_push_slot_bytes -
-            sizeof(petps::RdmaDescriptorRequest)) {
+    if (request.payload_bytes > FLAGS_rdma_put_v2_push_slot_bytes -
+                                    sizeof(petps::RdmaDescriptorRequest)) {
       LOG(ERROR) << "descriptor inline payload too large request_id="
-                 << request.request_id << " payload_bytes="
-                 << request.payload_bytes
+                 << request.request_id
+                 << " payload_bytes=" << request.payload_bytes
                  << " slot_bytes=" << FLAGS_rdma_put_v2_push_slot_bytes;
       return false;
     }
-    task->request = request;
-    task->inline_payload = payload + sizeof(petps::RdmaDescriptorRequest);
+    task->request              = request;
+    task->inline_payload       = payload + sizeof(petps::RdmaDescriptorRequest);
     task->inline_payload_bytes = request.payload_bytes;
     return true;
   }
@@ -807,8 +815,9 @@ private:
         << "missing descriptor raw transport for thread_id=" << thread_id;
     while (1) {
       const bool trace_get = ShouldTraceRdmaGet();
-      const auto trace_start = trace_get ? std::chrono::steady_clock::now()
-                                         : std::chrono::steady_clock::time_point{};
+      const auto trace_start =
+          trace_get ? std::chrono::steady_clock::now()
+                    : std::chrono::steady_clock::time_point{};
       petps::RawVerbsCompletion completion{};
       if (!raw_transport->Poll(&completion, FLAGS_rdma_wait_timeout_ms)) {
         std::this_thread::yield();
@@ -828,9 +837,9 @@ private:
           task.request,
           Slice(task.inline_payload, task.inline_payload_bytes),
           thread_id);
-      if (trace_get && task.request.op ==
-                           static_cast<std::uint16_t>(
-                               petps::RdmaDescriptorOp::kGet)) {
+      if (trace_get &&
+          task.request.op ==
+              static_cast<std::uint16_t>(petps::RdmaDescriptorOp::kGet)) {
         const auto trace_done = std::chrono::steady_clock::now();
         DescriptorGetServerEnvelopeTraceStats().Add(
             ToNs(trace_after_poll - trace_start),

@@ -79,15 +79,15 @@ struct SharedRawVerbsClientTransport {
   std::shared_ptr<std::mutex> mu;
 };
 
-SharedRawVerbsClientTransport GetSharedRawVerbsClientTransport(
-    const petps::RawVerbsConfig& raw_config) {
+SharedRawVerbsClientTransport
+GetSharedRawVerbsClientTransport(const petps::RawVerbsConfig& raw_config) {
   static std::mutex shared_mu;
   static std::map<std::pair<int, int>, SharedRawVerbsClientTransport>
       shared_by_endpoint;
 
   std::lock_guard<std::mutex> guard(shared_mu);
   const auto key = std::make_pair(raw_config.global_id, raw_config.local_lane);
-  auto it = shared_by_endpoint.find(key);
+  auto it        = shared_by_endpoint.find(key);
   if (it != shared_by_endpoint.end()) {
     return it->second;
   }
@@ -95,7 +95,7 @@ SharedRawVerbsClientTransport GetSharedRawVerbsClientTransport(
   SharedRawVerbsClientTransport shared;
   shared.transport = std::make_shared<petps::RawVerbsTransport>(raw_config);
   shared.transport->PublishAndConnect();
-  shared.mu = std::make_shared<std::mutex>();
+  shared.mu          = std::make_shared<std::mutex>();
   auto [inserted, _] = shared_by_endpoint.emplace(key, shared);
   return inserted->second;
 }
@@ -119,8 +119,8 @@ std::uint64_t RdmaGetTraceInterval() {
     if (env == nullptr) {
       return std::uint64_t{5000};
     }
-    const auto parsed = static_cast<std::uint64_t>(
-        std::strtoull(env, nullptr, 10));
+    const auto parsed =
+        static_cast<std::uint64_t>(std::strtoull(env, nullptr, 10));
     return parsed == 0 ? std::uint64_t{5000} : parsed;
   }();
   return interval;
@@ -150,7 +150,7 @@ struct RdmaGetClientTraceStats {
     post_ns.fetch_add(post, std::memory_order_relaxed);
     wait_ns.fetch_add(wait, std::memory_order_relaxed);
     total_ns.fetch_add(total, std::memory_order_relaxed);
-    const auto n = count.fetch_add(1, std::memory_order_relaxed) + 1;
+    const auto n        = count.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto interval = RdmaGetTraceInterval();
     if (n % interval != 0) {
       return;
@@ -232,11 +232,12 @@ std::int32_t WaitPutAck(std::atomic<int32_t>* ack) {
   return ack->load(std::memory_order_acquire);
 }
 
-std::uint64_t DescriptorSlotOffset(std::uint16_t client_node_id,
-                                   std::uint64_t slot_id) {
+std::uint64_t
+DescriptorSlotOffset(std::uint16_t client_node_id, std::uint64_t slot_id) {
   return FLAGS_rdma_put_v2_push_region_offset +
          (static_cast<std::uint64_t>(client_node_id) *
-              static_cast<std::uint64_t>(FLAGS_rdma_put_v2_push_slots_per_client) +
+              static_cast<std::uint64_t>(
+                  FLAGS_rdma_put_v2_push_slots_per_client) +
           slot_id) *
              FLAGS_rdma_put_v2_push_slot_bytes;
 }
@@ -248,25 +249,27 @@ void WaitRawCompletion(petps::RawVerbsTransport* transport) {
   }
 }
 
-void PostDescriptorDoorbell(petps::RawVerbsTransport* transport,
-                            const void* descriptor_buffer,
-                            const petps::RdmaDescriptorRequest& req,
-                            std::size_t slot_bytes,
-                            int shard,
-                            std::uint64_t request_id,
-                            petps::RdmaDescriptorDoorbellPostDecision decision) {
+void PostDescriptorDoorbell(
+    petps::RawVerbsTransport* transport,
+    const void* descriptor_buffer,
+    const petps::RdmaDescriptorRequest& req,
+    std::size_t slot_bytes,
+    int shard,
+    std::uint64_t request_id,
+    petps::RdmaDescriptorDoorbellPostDecision decision) {
   const petps::RdmaDescriptorDoorbellPostPlan post_plan =
       petps::GetRdmaDescriptorDoorbellPostPlan();
   if (decision.poll_before_post) {
     WaitRawCompletion(transport);
   }
   if (post_plan.use_write_with_imm) {
-    transport->WriteWithImm(descriptor_buffer,
-                            req.descriptor_gaddr,
-                            slot_bytes,
-                            static_cast<std::uint32_t>(req.slot_id),
-                            request_id,
-                            decision.signal_write_with_imm);
+    transport->WriteWithImm(
+        descriptor_buffer,
+        req.descriptor_gaddr,
+        slot_bytes,
+        static_cast<std::uint32_t>(req.slot_id),
+        request_id,
+        decision.signal_write_with_imm);
     CHECK(decision.signal_write_with_imm ||
           !post_plan.wait_write_with_imm_completion)
         << "write-with-imm completion wait requires a signaled WR";
@@ -274,11 +277,12 @@ void PostDescriptorDoorbell(petps::RawVerbsTransport* transport,
       WaitRawCompletion(transport);
     }
   } else {
-    transport->Write(descriptor_buffer,
-                     req.descriptor_gaddr,
-                     slot_bytes,
-                     request_id,
-                     post_plan.signal_descriptor_write);
+    transport->Write(
+        descriptor_buffer,
+        req.descriptor_gaddr,
+        slot_bytes,
+        request_id,
+        post_plan.signal_descriptor_write);
     if (post_plan.wait_descriptor_write_completion) {
       WaitRawCompletion(transport);
     }
@@ -333,15 +337,15 @@ void PetPSClient::InitDescriptorTransports() {
   CHECK(!serverThreadIdsRoutedTo_.empty());
   for (int server_thread_id : serverThreadIdsRoutedTo_) {
     RawVerbsConfig raw_config;
-    raw_config.global_id = XPostoffice::GetInstance()->GlobalID();
-    raw_config.local_lane = server_thread_id;
-    raw_config.remote_lane = server_thread_id;
-    raw_config.num_servers = XPostoffice::GetInstance()->NumServers();
-    raw_config.num_clients = XPostoffice::GetInstance()->NumClients();
-    raw_config.numa_id = FLAGS_numa_id;
+    raw_config.global_id          = XPostoffice::GetInstance()->GlobalID();
+    raw_config.local_lane         = server_thread_id;
+    raw_config.remote_lane        = server_thread_id;
+    raw_config.num_servers        = XPostoffice::GetInstance()->NumServers();
+    raw_config.num_clients        = XPostoffice::GetInstance()->NumClients();
+    raw_config.numa_id            = FLAGS_numa_id;
     raw_config.connect_to_servers = true;
     raw_config.connect_to_clients = false;
-    raw_config.local_base_addr = dsm_->get_conf()->baseAddr;
+    raw_config.local_base_addr    = dsm_->get_conf()->baseAddr;
     raw_config.local_region_bytes = dsm_->get_conf()->dsmSize;
     raw_config.allocation_start_offset =
         FLAGS_rdma_client_receive_arena_bytes +
@@ -354,10 +358,10 @@ void PetPSClient::InitDescriptorTransports() {
         static_cast<std::uint64_t>(FLAGS_rdma_put_v2_push_slots_per_client) *
         FLAGS_rdma_put_v2_push_slot_bytes;
     auto shared = GetSharedRawVerbsClientTransport(raw_config);
-    descriptor_transports_by_thread_[server_thread_id] = shared.transport;
+    descriptor_transports_by_thread_[server_thread_id]    = shared.transport;
     descriptor_transport_mus_by_thread_[server_thread_id] = shared.mu;
     if (raw_transport_ == nullptr) {
-      raw_transport_ = shared.transport;
+      raw_transport_    = shared.transport;
       raw_transport_mu_ = shared.mu;
     }
   }
@@ -413,15 +417,16 @@ int PetPSClient::GetParameter(base::ConstArray<uint64_t> keys,
   }
 
   const int embedding_dim = FLAGS_value_size / sizeof(float);
-  auto* flat = static_cast<float*>(
-      GetReceiveBuffer(ResponseBufferBytes(static_cast<std::size_t>(keys.Size()))));
-  std::memset(flat, 0, ResponseBufferBytes(static_cast<std::size_t>(keys.Size())));
+  auto* flat              = static_cast<float*>(GetReceiveBuffer(
+      ResponseBufferBytes(static_cast<std::size_t>(keys.Size()))));
+  std::memset(
+      flat, 0, ResponseBufferBytes(static_cast<std::size_t>(keys.Size())));
   int rpc_id = GetParameter(keys, flat, false, 0);
   WaitRPCFinish(rpc_id);
 
   // Check status word at the end of the buffer
-  const std::int32_t status = *reinterpret_cast<std::int32_t*>(
-      flat + keys.Size() * embedding_dim);
+  const std::int32_t status =
+      *reinterpret_cast<std::int32_t*>(flat + keys.Size() * embedding_dim);
   if (status != static_cast<std::int32_t>(RpcStatus::kOk)) {
     LOG(ERROR) << "GetParameter failed with status: "
                << RpcStatusToString(static_cast<RpcStatus>(status));
@@ -589,7 +594,7 @@ int PetPSClient::GetParameter(base::ConstArray<uint64_t> keys,
                               float* values,
                               bool isAsync,
                               int async_req_id) {
-  const bool trace_get = ShouldTraceRdmaGet();
+  const bool trace_get   = ShouldTraceRdmaGet();
   const auto trace_start = trace_get ? std::chrono::steady_clock::now()
                                      : std::chrono::steady_clock::time_point{};
   if (transport_mode_ == RdmaTransportMode::kDescriptorDoorbell) {
@@ -618,8 +623,9 @@ int PetPSClient::GetParameter(base::ConstArray<uint64_t> keys,
           << each << " not belong to this PS";
     }
   }
-  const auto trace_registered = trace_get ? std::chrono::steady_clock::now()
-                                          : std::chrono::steady_clock::time_point{};
+  const auto trace_registered =
+      trace_get ? std::chrono::steady_clock::now()
+                : std::chrono::steady_clock::time_point{};
 
   dsm_->rpc_call(m,
                  shard_,
@@ -735,10 +741,9 @@ void PetPSClient::RevokeRPCResource(int rpc_id) {
   descriptor_pending_rpcs_.erase(rpc_key);
 };
 
-int PetPSClient::GetParameterDescriptor(base::ConstArray<uint64_t> keys,
-                                        float* values,
-                                        bool isAsync) {
-  const bool trace_get = ShouldTraceRdmaGet();
+int PetPSClient::GetParameterDescriptor(
+    base::ConstArray<uint64_t> keys, float* values, bool isAsync) {
+  const bool trace_get   = ShouldTraceRdmaGet();
   const auto trace_start = trace_get ? std::chrono::steady_clock::now()
                                      : std::chrono::steady_clock::time_point{};
   const RdmaDescriptorClientCompletionMode completion_mode =
@@ -752,10 +757,10 @@ int PetPSClient::GetParameterDescriptor(base::ConstArray<uint64_t> keys,
 
   const std::uint64_t request_id =
       descriptor_request_id_.fetch_add(1, std::memory_order_relaxed);
-  if (request_id > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
-    throw std::runtime_error(
-        "descriptor request_id overflow int range: " +
-        std::to_string(request_id));
+  if (request_id >
+      static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+    throw std::runtime_error("descriptor request_id overflow int range: " +
+                             std::to_string(request_id));
   }
   const std::uint64_t slot_id =
       descriptor_slot_cursor_.fetch_add(1, std::memory_order_relaxed) %
@@ -772,22 +777,22 @@ int PetPSClient::GetParameterDescriptor(base::ConstArray<uint64_t> keys,
       DescriptorTransportMutexForThread(target_thread_id);
 
   RdmaDescriptorRequest req{};
-  req.magic = kRdmaDescriptorMagic;
-  req.version = kRdmaDescriptorVersionV1;
-  req.op = static_cast<std::uint16_t>(RdmaDescriptorOp::kGet);
-  req.request_id = request_id;
-  req.client_node_id = client_node_id;
+  req.magic            = kRdmaDescriptorMagic;
+  req.version          = kRdmaDescriptorVersionV1;
+  req.op               = static_cast<std::uint16_t>(RdmaDescriptorOp::kGet);
+  req.request_id       = request_id;
+  req.client_node_id   = client_node_id;
   req.client_thread_id = static_cast<std::uint16_t>(dsm_->getMyThreadID());
-  req.lane_id = static_cast<std::uint32_t>(target_thread_id);
-  req.slot_id = static_cast<std::uint32_t>(slot_id);
-  req.key_count = static_cast<std::uint32_t>(keys.Size());
+  req.lane_id          = static_cast<std::uint32_t>(target_thread_id);
+  req.slot_id          = static_cast<std::uint32_t>(slot_id);
+  req.key_count        = static_cast<std::uint32_t>(keys.Size());
   req.embedding_dim =
       static_cast<std::uint32_t>(FLAGS_value_size / sizeof(float));
   req.descriptor_gaddr =
       GlobalAddress{static_cast<std::uint16_t>(shard_), descriptor_offset};
   req.response_gaddr = descriptor_transport->LocalAddress(values);
-  req.status_gaddr = descriptor_transport->LocalAddress(status);
-  req.payload_bytes = static_cast<std::uint32_t>(keys.binary_size());
+  req.status_gaddr   = descriptor_transport->LocalAddress(status);
+  req.payload_bytes  = static_cast<std::uint32_t>(keys.binary_size());
   req.response_bytes = static_cast<std::uint32_t>(response_bytes);
 
   std::string error;
@@ -802,23 +807,23 @@ int PetPSClient::GetParameterDescriptor(base::ConstArray<uint64_t> keys,
   CHECK(WriteRdmaDescriptorRequest(
       req, descriptor_buffer, FLAGS_rdma_put_v2_push_slot_bytes, &error))
       << error;
-  std::memcpy(
-      descriptor_buffer + sizeof(RdmaDescriptorRequest),
-      keys.binary_data(),
-      keys.binary_size());
-  const auto trace_prepared = trace_get ? std::chrono::steady_clock::now()
-                                        : std::chrono::steady_clock::time_point{};
+  std::memcpy(descriptor_buffer + sizeof(RdmaDescriptorRequest),
+              keys.binary_data(),
+              keys.binary_size());
+  const auto trace_prepared =
+      trace_get ? std::chrono::steady_clock::now()
+                : std::chrono::steady_clock::time_point{};
 
-  if (completion_mode ==
-      RdmaDescriptorClientCompletionMode::kReturnAfterPost) {
+  if (completion_mode == RdmaDescriptorClientCompletionMode::kReturnAfterPost) {
     std::lock_guard<std::mutex> guard(rpc_mu_);
     rpcId2PollMap_[request_id] = status;
     DescriptorPendingRpc pending;
     pending.descriptor_slot_guard = std::move(descriptor_slot_guard);
     descriptor_pending_rpcs_.emplace(request_id, std::move(pending));
   }
-  const auto trace_registered = trace_get ? std::chrono::steady_clock::now()
-                                          : std::chrono::steady_clock::time_point{};
+  const auto trace_registered =
+      trace_get ? std::chrono::steady_clock::now()
+                : std::chrono::steady_clock::time_point{};
 
   try {
     std::lock_guard<std::mutex> transport_guard(*descriptor_transport_mu);
@@ -857,7 +862,8 @@ int PetPSClient::GetParameterDescriptor(base::ConstArray<uint64_t> keys,
         ToNs(trace_prepared - trace_start),
         ToNs(trace_registered - trace_prepared),
         ToNs(trace_posted - trace_registered),
-        completion_mode == RdmaDescriptorClientCompletionMode::kWaitForCompletion
+        completion_mode ==
+                RdmaDescriptorClientCompletionMode::kWaitForCompletion
             ? ToNs(trace_done - trace_posted)
             : 0,
         ToNs(trace_done - trace_start));
@@ -891,7 +897,7 @@ int PetPSClient::PutParameterDescriptor(
 
   std::string control_payload;
   std::unique_lock<std::mutex> payload_slot_guard;
-  bool post_push_payload = false;
+  bool post_push_payload    = false;
   char* push_payload_buffer = nullptr;
   GlobalAddress push_payload_gaddr;
   std::size_t push_payload_bytes = 0;
@@ -943,7 +949,7 @@ int PetPSClient::PutParameterDescriptor(
         return -1;
       }
       const std::uint64_t payload_slot_id = (slot_id + 1) % slot_count;
-      payload_slot_guard = std::unique_lock<std::mutex>(
+      payload_slot_guard                  = std::unique_lock<std::mutex>(
           *descriptor_slot_locks_[static_cast<std::size_t>(payload_slot_id)]);
       if (payload_bytes > FLAGS_rdma_put_v2_push_slot_bytes) {
         LOG(ERROR) << "PUT-v2(push) payload larger than slot: payload_bytes="
@@ -951,15 +957,15 @@ int PetPSClient::PutParameterDescriptor(
                    << " slot_bytes=" << FLAGS_rdma_put_v2_push_slot_bytes;
         return -1;
       }
-      payload_buf = descriptor_send_slots_[static_cast<std::size_t>(
-          payload_slot_id)];
-      payload_gaddr = GlobalAddress{
-          static_cast<std::uint16_t>(shard_),
-          DescriptorSlotOffset(client_node_id, payload_slot_id)};
-      post_push_payload = true;
+      payload_buf =
+          descriptor_send_slots_[static_cast<std::size_t>(payload_slot_id)];
+      payload_gaddr =
+          GlobalAddress{static_cast<std::uint16_t>(shard_),
+                        DescriptorSlotOffset(client_node_id, payload_slot_id)};
+      post_push_payload   = true;
       push_payload_buffer = payload_buf;
-      push_payload_gaddr = payload_gaddr;
-      push_payload_bytes = payload_bytes;
+      push_payload_gaddr  = payload_gaddr;
+      push_payload_bytes  = payload_bytes;
     }
 
     std::memcpy(payload_buf, keys.data(), keys.size() * sizeof(std::uint64_t));
@@ -994,20 +1000,20 @@ int PetPSClient::PutParameterDescriptor(
   }
 
   RdmaDescriptorRequest req{};
-  req.magic = kRdmaDescriptorMagic;
-  req.version = kRdmaDescriptorVersionV1;
-  req.op = static_cast<std::uint16_t>(RdmaDescriptorOp::kPut);
-  req.request_id = request_id;
-  req.client_node_id = client_node_id;
+  req.magic            = kRdmaDescriptorMagic;
+  req.version          = kRdmaDescriptorVersionV1;
+  req.op               = static_cast<std::uint16_t>(RdmaDescriptorOp::kPut);
+  req.request_id       = request_id;
+  req.client_node_id   = client_node_id;
   req.client_thread_id = static_cast<std::uint16_t>(dsm_->getMyThreadID());
-  req.lane_id = static_cast<std::uint32_t>(target_thread_id);
-  req.slot_id = static_cast<std::uint32_t>(slot_id);
-  req.key_count = static_cast<std::uint32_t>(keys.size());
+  req.lane_id          = static_cast<std::uint32_t>(target_thread_id);
+  req.slot_id          = static_cast<std::uint32_t>(slot_id);
+  req.key_count        = static_cast<std::uint32_t>(keys.size());
   req.embedding_dim =
       static_cast<std::uint32_t>(FLAGS_value_size / sizeof(float));
   req.descriptor_gaddr =
       GlobalAddress{static_cast<std::uint16_t>(shard_), descriptor_offset};
-  req.status_gaddr = descriptor_transport->LocalAddress(ack);
+  req.status_gaddr  = descriptor_transport->LocalAddress(ack);
   req.payload_bytes = static_cast<std::uint32_t>(control_payload.size());
 
   std::string error;
@@ -1033,11 +1039,12 @@ int PetPSClient::PutParameterDescriptor(
           GetRdmaDescriptorPushPayloadPostPlan();
       CHECK(payload_plan.use_raw_write)
           << "descriptor PUT-v2(push) requires raw write payload push";
-      descriptor_transport->Write(push_payload_buffer,
-                                  push_payload_gaddr,
-                                  push_payload_bytes,
-                                  request_id,
-                                  payload_plan.signal_payload_write);
+      descriptor_transport->Write(
+          push_payload_buffer,
+          push_payload_gaddr,
+          push_payload_bytes,
+          request_id,
+          payload_plan.signal_payload_write);
       CHECK(!payload_plan.wait_payload_write_completion)
           << "descriptor PUT-v2(push) payload wait is intentionally disabled";
     }

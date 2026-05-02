@@ -2,7 +2,8 @@
 
 #include "ps/rdma/raw_verbs_transport.h"
 
-TEST(RawVerbsRegionAllocatorTest, SkipsReservedRegionWhenAllocationWouldOverlap) {
+TEST(RawVerbsRegionAllocatorTest,
+     SkipsReservedRegionWhenAllocationWouldOverlap) {
   petps::RawVerbsRegionAllocator allocator(1024);
   allocator.SetReservedRegion({256, 128});
 
@@ -46,8 +47,8 @@ TEST(RawVerbsEndpointTest, MetaKeyIncludesLocalAndRemoteLanes) {
 
 TEST(RawVerbsEndpointTest, PeerFilterCanConnectOnlyServersOrClients) {
   petps::RawVerbsConfig server_endpoint;
-  server_endpoint.num_servers = 2;
-  server_endpoint.num_clients = 3;
+  server_endpoint.num_servers        = 2;
+  server_endpoint.num_clients        = 3;
   server_endpoint.connect_to_servers = false;
   server_endpoint.connect_to_clients = true;
 
@@ -57,9 +58,9 @@ TEST(RawVerbsEndpointTest, PeerFilterCanConnectOnlyServersOrClients) {
   EXPECT_TRUE(petps::ShouldRawVerbsConnectToNode(server_endpoint, 4));
 
   petps::RawVerbsConfig client_endpoint = server_endpoint;
-  client_endpoint.global_id = 2;
-  client_endpoint.connect_to_servers = true;
-  client_endpoint.connect_to_clients = false;
+  client_endpoint.global_id             = 2;
+  client_endpoint.connect_to_servers    = true;
+  client_endpoint.connect_to_clients    = false;
 
   EXPECT_TRUE(petps::ShouldRawVerbsConnectToNode(client_endpoint, 0));
   EXPECT_TRUE(petps::ShouldRawVerbsConnectToNode(client_endpoint, 1));

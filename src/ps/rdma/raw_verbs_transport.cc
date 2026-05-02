@@ -13,24 +13,22 @@
 namespace petps {
 namespace {
 
-constexpr int kRawVerbsPort = 1;
-constexpr int kRawVerbsGidIndex = 1;
+constexpr int kRawVerbsPort          = 1;
+constexpr int kRawVerbsGidIndex      = 1;
 constexpr std::uint32_t kRawVerbsPsn = 3185;
-constexpr int kRawVerbsCqDepth = 4096;
-constexpr int kRawVerbsRecvDepth = 1024;
+constexpr int kRawVerbsCqDepth       = 4096;
+constexpr int kRawVerbsRecvDepth     = 1024;
 
-std::string IbvError(const char* op) {
-  return std::string(op) + " failed";
-}
+std::string IbvError(const char* op) { return std::string(op) + " failed"; }
 
 ibv_context* OpenDeviceForNuma(int numa_id) {
-  int device_count = 0;
+  int device_count     = 0;
   ibv_device** devices = ibv_get_device_list(&device_count);
   if (devices == nullptr || device_count == 0) {
     throw std::runtime_error("no RDMA devices found");
   }
   const int device_index = SelectRawVerbsDeviceIndex(numa_id, device_count);
-  ibv_context* context = ibv_open_device(devices[device_index]);
+  ibv_context* context   = ibv_open_device(devices[device_index]);
   ibv_free_device_list(devices);
   if (context == nullptr) {
     throw std::runtime_error("ibv_open_device failed");
@@ -40,13 +38,13 @@ ibv_context* OpenDeviceForNuma(int numa_id) {
 
 void ModifyQpToInit(ibv_qp* qp) {
   ibv_qp_attr attr{};
-  attr.qp_state = IBV_QPS_INIT;
-  attr.port_num = kRawVerbsPort;
-  attr.pkey_index = 0;
+  attr.qp_state        = IBV_QPS_INIT;
+  attr.port_num        = kRawVerbsPort;
+  attr.pkey_index      = 0;
   attr.qp_access_flags = IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE |
                          IBV_ACCESS_REMOTE_ATOMIC;
-  const int flags = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT |
-                    IBV_QP_ACCESS_FLAGS;
+  const int flags =
+      IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS;
   if (ibv_modify_qp(qp, &attr, flags) != 0) {
     throw std::runtime_error(IbvError("ibv_modify_qp INIT"));
   }
@@ -56,30 +54,30 @@ void FillAhAttr(ibv_ah_attr* ah_attr,
                 std::uint16_t remote_lid,
                 const std::uint8_t* remote_gid) {
   std::memset(ah_attr, 0, sizeof(*ah_attr));
-  ah_attr->dlid = remote_lid;
-  ah_attr->sl = 0;
+  ah_attr->dlid          = remote_lid;
+  ah_attr->sl            = 0;
   ah_attr->src_path_bits = 0;
-  ah_attr->port_num = kRawVerbsPort;
+  ah_attr->port_num      = kRawVerbsPort;
   if (remote_gid != nullptr) {
     ah_attr->is_global = 1;
     std::memcpy(&ah_attr->grh.dgid, remote_gid, 16);
     ah_attr->grh.sgid_index = kRawVerbsGidIndex;
-    ah_attr->grh.hop_limit = 1;
+    ah_attr->grh.hop_limit  = 1;
   }
 }
 
 void ModifyQpToRtr(ibv_qp* qp, const RawVerbsNodeMeta& remote) {
   ibv_qp_attr attr{};
-  attr.qp_state = IBV_QPS_RTR;
-  attr.path_mtu = IBV_MTU_4096;
-  attr.dest_qp_num = remote.qpn;
-  attr.rq_psn = remote.psn;
+  attr.qp_state           = IBV_QPS_RTR;
+  attr.path_mtu           = IBV_MTU_4096;
+  attr.dest_qp_num        = remote.qpn;
+  attr.rq_psn             = remote.psn;
   attr.max_dest_rd_atomic = 16;
-  attr.min_rnr_timer = 12;
+  attr.min_rnr_timer      = 12;
   FillAhAttr(&attr.ah_attr, remote.lid, remote.gid);
-  const int flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
-                    IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
-                    IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER;
+  const int flags =
+      IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
+      IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER;
   if (ibv_modify_qp(qp, &attr, flags) != 0) {
     throw std::runtime_error(IbvError("ibv_modify_qp RTR"));
   }
@@ -87,15 +85,15 @@ void ModifyQpToRtr(ibv_qp* qp, const RawVerbsNodeMeta& remote) {
 
 void ModifyQpToRts(ibv_qp* qp) {
   ibv_qp_attr attr{};
-  attr.qp_state = IBV_QPS_RTS;
-  attr.sq_psn = kRawVerbsPsn;
-  attr.timeout = 14;
-  attr.retry_cnt = 7;
-  attr.rnr_retry = 7;
+  attr.qp_state      = IBV_QPS_RTS;
+  attr.sq_psn        = kRawVerbsPsn;
+  attr.timeout       = 14;
+  attr.retry_cnt     = 7;
+  attr.rnr_retry     = 7;
   attr.max_rd_atomic = 16;
-  const int flags = IBV_QP_STATE | IBV_QP_SQ_PSN | IBV_QP_TIMEOUT |
-                    IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
-                    IBV_QP_MAX_QP_RD_ATOMIC;
+  const int flags =
+      IBV_QP_STATE | IBV_QP_SQ_PSN | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT |
+      IBV_QP_RNR_RETRY | IBV_QP_MAX_QP_RD_ATOMIC;
   if (ibv_modify_qp(qp, &attr, flags) != 0) {
     throw std::runtime_error(IbvError("ibv_modify_qp RTS"));
   }
@@ -105,16 +103,15 @@ void ModifyQpToRts(ibv_qp* qp) {
 
 struct RawVerbsTransport::Impl {
   explicit Impl(const RawVerbsConfig& c)
-      : config(c),
-        allocator(c.local_region_bytes, c.allocation_start_offset) {}
+      : config(c), allocator(c.local_region_bytes, c.allocation_start_offset) {}
 
   RawVerbsConfig config;
-  ibv_context* context = nullptr;
-  ibv_pd* pd = nullptr;
-  ibv_cq* cq = nullptr;
-  ibv_mr* local_mr = nullptr;
-  void* local_base = nullptr;
-  bool owns_local_base = false;
+  ibv_context* context    = nullptr;
+  ibv_pd* pd              = nullptr;
+  ibv_cq* cq              = nullptr;
+  ibv_mr* local_mr        = nullptr;
+  void* local_base        = nullptr;
+  bool owns_local_base    = false;
   std::size_t local_bytes = 0;
   RawVerbsRegionAllocator allocator;
   std::vector<RawVerbsNodeMeta> metas;
@@ -127,17 +124,18 @@ struct RawVerbsTransport::Impl {
 RawVerbsTransport::RawVerbsTransport(const RawVerbsConfig& config)
     : impl_(std::make_unique<Impl>(config)) {
   impl_->context = OpenDeviceForNuma(config.numa_id);
-  impl_->pd = ibv_alloc_pd(impl_->context);
+  impl_->pd      = ibv_alloc_pd(impl_->context);
   if (impl_->pd == nullptr) {
     throw std::runtime_error("ibv_alloc_pd failed");
   }
-  impl_->cq = ibv_create_cq(impl_->context, kRawVerbsCqDepth, nullptr, nullptr, 0);
+  impl_->cq =
+      ibv_create_cq(impl_->context, kRawVerbsCqDepth, nullptr, nullptr, 0);
   if (impl_->cq == nullptr) {
     throw std::runtime_error("ibv_create_cq failed");
   }
 
   impl_->local_bytes = config.local_region_bytes;
-  impl_->local_base = reinterpret_cast<void*>(config.local_base_addr);
+  impl_->local_base  = reinterpret_cast<void*>(config.local_base_addr);
   if (impl_->local_base == nullptr) {
     const int rc = posix_memalign(&impl_->local_base, 4096, impl_->local_bytes);
     if (rc != 0) {
@@ -166,15 +164,15 @@ RawVerbsTransport::RawVerbsTransport(const RawVerbsConfig& config)
       continue;
     }
     ibv_qp_init_attr init_attr{};
-    init_attr.send_cq = impl_->cq;
-    init_attr.recv_cq = impl_->cq;
-    init_attr.qp_type = IBV_QPT_RC;
-    init_attr.cap.max_send_wr = 1024;
-    init_attr.cap.max_recv_wr = kRawVerbsRecvDepth;
-    init_attr.cap.max_send_sge = 1;
-    init_attr.cap.max_recv_sge = 1;
+    init_attr.send_cq             = impl_->cq;
+    init_attr.recv_cq             = impl_->cq;
+    init_attr.qp_type             = IBV_QPT_RC;
+    init_attr.cap.max_send_wr     = 1024;
+    init_attr.cap.max_recv_wr     = kRawVerbsRecvDepth;
+    init_attr.cap.max_send_sge    = 1;
+    init_attr.cap.max_recv_sge    = 1;
     init_attr.cap.max_inline_data = 64;
-    ibv_qp* qp = ibv_create_qp(impl_->pd, &init_attr);
+    ibv_qp* qp                    = ibv_create_qp(impl_->pd, &init_attr);
     if (qp == nullptr) {
       throw std::runtime_error("ibv_create_qp failed");
     }
@@ -237,7 +235,8 @@ GlobalAddress RawVerbsTransport::LocalAddress(void* ptr) const {
 
 void* RawVerbsTransport::LocalPointer(GlobalAddress address) const {
   if (address.nodeID != impl_->config.global_id) {
-    throw std::runtime_error("raw verbs local pointer requested for remote node");
+    throw std::runtime_error(
+        "raw verbs local pointer requested for remote node");
   }
   if (address.offset >= impl_->local_bytes) {
     throw std::runtime_error("raw verbs local offset outside region");
@@ -251,14 +250,15 @@ RawVerbsNodeMeta RawVerbsTransport::LocalMeta() const {
     throw std::runtime_error("ibv_query_port failed");
   }
   ibv_gid gid{};
-  if (ibv_query_gid(impl_->context, kRawVerbsPort, kRawVerbsGidIndex, &gid) != 0) {
+  if (ibv_query_gid(impl_->context, kRawVerbsPort, kRawVerbsGidIndex, &gid) !=
+      0) {
     throw std::runtime_error("ibv_query_gid failed");
   }
   RawVerbsNodeMeta meta{};
-  meta.node_id = static_cast<std::uint16_t>(impl_->config.global_id);
-  meta.lid = port_attr.lid;
-  meta.psn = kRawVerbsPsn;
-  meta.rkey = impl_->local_mr->rkey;
+  meta.node_id   = static_cast<std::uint16_t>(impl_->config.global_id);
+  meta.lid       = port_attr.lid;
+  meta.psn       = kRawVerbsPsn;
+  meta.rkey      = impl_->local_mr->rkey;
   meta.base_addr = reinterpret_cast<std::uint64_t>(impl_->local_base);
   std::memcpy(meta.gid, &gid, sizeof(meta.gid));
   return meta;
@@ -288,7 +288,7 @@ void RawVerbsTransport::PublishAndConnect() {
 
   for (int node = 0; node < node_count; ++node) {
     if (node == impl_->config.global_id) {
-      impl_->metas[static_cast<std::size_t>(node)] = local;
+      impl_->metas[static_cast<std::size_t>(node)]   = local;
       impl_->remotes[static_cast<std::size_t>(node)] = RawVerbsRemoteMemory{
           local.node_id,
           local.base_addr,
@@ -309,12 +309,12 @@ void RawVerbsTransport::PublishAndConnect() {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     if (value.size() != sizeof(RawVerbsNodeMeta)) {
-      throw std::runtime_error("raw verbs metadata size mismatch for node " +
-                               std::to_string(node));
+      throw std::runtime_error(
+          "raw verbs metadata size mismatch for node " + std::to_string(node));
     }
     RawVerbsNodeMeta meta{};
     std::memcpy(&meta, value.data(), sizeof(meta));
-    impl_->metas[static_cast<std::size_t>(node)] = meta;
+    impl_->metas[static_cast<std::size_t>(node)]   = meta;
     impl_->remotes[static_cast<std::size_t>(node)] = RawVerbsRemoteMemory{
         meta.node_id,
         meta.base_addr,
@@ -333,9 +333,9 @@ void RawVerbsTransport::PublishAndConnect() {
     for (int i = 0; i < kRawVerbsRecvDepth; ++i) {
       ibv_recv_wr wr{};
       ibv_recv_wr* bad_wr = nullptr;
-      wr.wr_id = static_cast<std::uint64_t>(node);
-      wr.sg_list = nullptr;
-      wr.num_sge = 0;
+      wr.wr_id            = static_cast<std::uint64_t>(node);
+      wr.sg_list          = nullptr;
+      wr.num_sge          = 0;
       if (ibv_post_recv(qp, &wr, &bad_wr) != 0) {
         throw std::runtime_error("ibv_post_recv failed");
       }
@@ -343,103 +343,105 @@ void RawVerbsTransport::PublishAndConnect() {
   }
 }
 
-void RawVerbsTransport::Write(const void* local,
-                              GlobalAddress remote,
-                              std::size_t bytes,
-                              std::uint64_t wr_id,
-                              bool signaled) {
+void RawVerbsTransport::Write(
+    const void* local,
+    GlobalAddress remote,
+    std::size_t bytes,
+    std::uint64_t wr_id,
+    bool signaled) {
   if (remote.nodeID >= impl_->remotes.size()) {
     throw std::runtime_error("raw verbs write remote node out of range");
   }
   ibv_sge sge{};
-  sge.addr = reinterpret_cast<std::uint64_t>(local);
+  sge.addr   = reinterpret_cast<std::uint64_t>(local);
   sge.length = static_cast<std::uint32_t>(bytes);
-  sge.lkey = impl_->local_mr->lkey;
+  sge.lkey   = impl_->local_mr->lkey;
   ibv_send_wr wr{};
-  wr.wr_id = wr_id;
-  wr.opcode = IBV_WR_RDMA_WRITE;
+  wr.wr_id      = wr_id;
+  wr.opcode     = IBV_WR_RDMA_WRITE;
   wr.send_flags = signaled ? IBV_SEND_SIGNALED : 0;
-  wr.sg_list = &sge;
-  wr.num_sge = 1;
+  wr.sg_list    = &sge;
+  wr.num_sge    = 1;
   wr.wr.rdma.remote_addr =
       impl_->remotes[remote.nodeID].base_addr + remote.offset;
-  wr.wr.rdma.rkey = impl_->remotes[remote.nodeID].rkey;
+  wr.wr.rdma.rkey     = impl_->remotes[remote.nodeID].rkey;
   ibv_send_wr* bad_wr = nullptr;
   if (ibv_post_send(impl_->qps[remote.nodeID], &wr, &bad_wr) != 0) {
     throw std::runtime_error("ibv_post_send write failed");
   }
 }
 
-void RawVerbsTransport::WriteWithImm(const void* local,
-                                     GlobalAddress remote,
-                                     std::size_t bytes,
-                                     std::uint32_t imm_data,
-                                     std::uint64_t wr_id,
-                                     bool signaled) {
+void RawVerbsTransport::WriteWithImm(
+    const void* local,
+    GlobalAddress remote,
+    std::size_t bytes,
+    std::uint32_t imm_data,
+    std::uint64_t wr_id,
+    bool signaled) {
   if (remote.nodeID >= impl_->remotes.size()) {
     throw std::runtime_error(
         "raw verbs write-with-imm remote node out of range");
   }
   ibv_sge sge{};
-  sge.addr = reinterpret_cast<std::uint64_t>(local);
+  sge.addr   = reinterpret_cast<std::uint64_t>(local);
   sge.length = static_cast<std::uint32_t>(bytes);
-  sge.lkey = impl_->local_mr->lkey;
+  sge.lkey   = impl_->local_mr->lkey;
   ibv_send_wr wr{};
-  wr.wr_id = wr_id;
-  wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
-  wr.imm_data = htonl(imm_data);
+  wr.wr_id      = wr_id;
+  wr.opcode     = IBV_WR_RDMA_WRITE_WITH_IMM;
+  wr.imm_data   = htonl(imm_data);
   wr.send_flags = signaled ? IBV_SEND_SIGNALED : 0;
-  wr.sg_list = &sge;
-  wr.num_sge = 1;
+  wr.sg_list    = &sge;
+  wr.num_sge    = 1;
   wr.wr.rdma.remote_addr =
       impl_->remotes[remote.nodeID].base_addr + remote.offset;
-  wr.wr.rdma.rkey = impl_->remotes[remote.nodeID].rkey;
+  wr.wr.rdma.rkey     = impl_->remotes[remote.nodeID].rkey;
   ibv_send_wr* bad_wr = nullptr;
   if (ibv_post_send(impl_->qps[remote.nodeID], &wr, &bad_wr) != 0) {
     throw std::runtime_error("ibv_post_send write-with-imm failed");
   }
 }
 
-void RawVerbsTransport::Read(void* local,
-                             GlobalAddress remote,
-                             std::size_t bytes,
-                             std::uint64_t wr_id,
-                             bool signaled) {
+void RawVerbsTransport::Read(
+    void* local,
+    GlobalAddress remote,
+    std::size_t bytes,
+    std::uint64_t wr_id,
+    bool signaled) {
   if (remote.nodeID >= impl_->remotes.size()) {
     throw std::runtime_error("raw verbs read remote node out of range");
   }
   ibv_sge sge{};
-  sge.addr = reinterpret_cast<std::uint64_t>(local);
+  sge.addr   = reinterpret_cast<std::uint64_t>(local);
   sge.length = static_cast<std::uint32_t>(bytes);
-  sge.lkey = impl_->local_mr->lkey;
+  sge.lkey   = impl_->local_mr->lkey;
   ibv_send_wr wr{};
-  wr.wr_id = wr_id;
-  wr.opcode = IBV_WR_RDMA_READ;
+  wr.wr_id      = wr_id;
+  wr.opcode     = IBV_WR_RDMA_READ;
   wr.send_flags = signaled ? IBV_SEND_SIGNALED : 0;
-  wr.sg_list = &sge;
-  wr.num_sge = 1;
+  wr.sg_list    = &sge;
+  wr.num_sge    = 1;
   wr.wr.rdma.remote_addr =
       impl_->remotes[remote.nodeID].base_addr + remote.offset;
-  wr.wr.rdma.rkey = impl_->remotes[remote.nodeID].rkey;
+  wr.wr.rdma.rkey     = impl_->remotes[remote.nodeID].rkey;
   ibv_send_wr* bad_wr = nullptr;
   if (ibv_post_send(impl_->qps[remote.nodeID], &wr, &bad_wr) != 0) {
     throw std::runtime_error("ibv_post_send read failed");
   }
 }
 
-void RawVerbsTransport::SendDoorbell(std::uint16_t node_id,
-                                     std::uint32_t imm_data,
-                                     std::uint64_t wr_id) {
+void RawVerbsTransport::SendDoorbell(
+    std::uint16_t node_id, std::uint32_t imm_data, std::uint64_t wr_id) {
   if (node_id >= impl_->qps.size()) {
     throw std::runtime_error("raw verbs doorbell remote node out of range");
   }
   ibv_send_wr wr{};
-  wr.opcode = IBV_WR_SEND_WITH_IMM;
-  wr.imm_data = htonl(imm_data);
-  wr.send_flags = IBV_SEND_SIGNALED;
-  wr.wr_id = wr_id;
-  wr.sg_list = nullptr;
-  wr.num_sge = 0;
+  wr.opcode           = IBV_WR_SEND_WITH_IMM;
+  wr.imm_data         = htonl(imm_data);
+  wr.send_flags       = IBV_SEND_SIGNALED;
+  wr.wr_id            = wr_id;
+  wr.sg_list          = nullptr;
+  wr.num_sge          = 0;
   ibv_send_wr* bad_wr = nullptr;
   if (ibv_post_send(impl_->qps[node_id], &wr, &bad_wr) != 0) {
     throw std::runtime_error("ibv_post_send doorbell failed");
@@ -470,22 +472,22 @@ bool RawVerbsTransport::Poll(RawVerbsCompletion* completion, int timeout_ms) {
     }
     ibv_wc& wc = *impl_->batch_cursor.TakeCachedCompletion();
     if (wc.status != IBV_WC_SUCCESS) {
-      throw std::runtime_error(std::string("raw verbs CQ error: ") +
-                               ibv_wc_status_str(wc.status));
+      throw std::runtime_error(
+          std::string("raw verbs CQ error: ") + ibv_wc_status_str(wc.status));
     }
     if (completion != nullptr) {
-      completion->wr_id = wc.wr_id;
-      completion->opcode = wc.opcode;
-      completion->has_imm = (wc.wc_flags & IBV_WC_WITH_IMM) != 0;
+      completion->wr_id    = wc.wr_id;
+      completion->opcode   = wc.opcode;
+      completion->has_imm  = (wc.wc_flags & IBV_WC_WITH_IMM) != 0;
       completion->imm_data = completion->has_imm ? ntohl(wc.imm_data) : 0;
     }
     if (wc.opcode == IBV_WC_RECV || wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
       const std::uint16_t node_id = static_cast<std::uint16_t>(wc.wr_id);
       ibv_recv_wr wr{};
       ibv_recv_wr* bad_wr = nullptr;
-      wr.wr_id = node_id;
-      wr.sg_list = nullptr;
-      wr.num_sge = 0;
+      wr.wr_id            = node_id;
+      wr.sg_list          = nullptr;
+      wr.num_sge          = 0;
       if (node_id < impl_->qps.size() &&
           ibv_post_recv(impl_->qps[node_id], &wr, &bad_wr) != 0) {
         throw std::runtime_error("ibv_post_recv repost failed");
