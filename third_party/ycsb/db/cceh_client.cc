@@ -87,8 +87,10 @@ public:
     cfg.json_config_["path"]       = path;
     cfg.json_config_["capacity"]   = capacity;
     cfg.json_config_["value_size"] = value_size_;
-    cfg.json_config_["queue_size"] =
-        std::stoi(p.GetProperty("cceh.queue_size", "1024"));
+    cfg.json_config_["queue_cnt"] =
+        std::stoi(p.GetProperty("cceh.queue_cnt", "512"));
+    cfg.json_config_["io_backend_type"] =
+        p.GetProperty("cceh.io_backend_type", "IOURING");
 
     engine_ = new KVEngineCCEH(cfg);
   }

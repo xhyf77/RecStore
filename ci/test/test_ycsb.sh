@@ -105,7 +105,7 @@ run_test "kvdb" "workloadf" "kvdb_bench_workloadf" \
 # CCEH requires SPDK/Hugepages, which might not be available in CI.
 # Enable only if explicitly requested.
 if [ "${ENABLE_CCEH_TEST:-0}" -eq 1 ]; then
-    CCEH_MIN_ARGS="-p cceh.capacity=20000 -p recordcount=1000 -p operationcount=100000"
+    CCEH_MIN_ARGS="-p cceh.capacity=20000 -p cceh.io_backend_type=IOURING -p cceh.queue_cnt=512 -p recordcount=1000 -p operationcount=100000"
 
     # [CCEH-A] Workload A
     run_test "cceh" "workloada" "cceh_bench_workloada" \
