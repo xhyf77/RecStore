@@ -5,9 +5,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <folly/Format.h>
-#include <folly/GLog.h>
-#include <folly/Likely.h>
 #include <glog/logging.h>
 #include <sys/user.h>
 #include <vector>

@@ -1,5 +1,3 @@
-#include <folly/GLog.h>
-#include <folly/init/Init.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -9,6 +7,10 @@
 
 #include "base/bind_core.h"
 #include "base/factory.h"
+#include "base/init.h"
+#include "base/log.h"
+#include "base/random.h"
+#include "base/string.h"
 #include "base/timer.h"
 #include "base/zipf.h"
 #include "benchmark/sample_reader.h"
@@ -62,7 +64,7 @@ void thread_run(int tid, SampleReader* sample) {
   while (!stop_flag) {
     read_timer.start();
     auto keys = sample->fillArray(&keys_buffer[0]);
-    if (folly::Random::rand32(100) < FLAGS_read_ratio) {
+    if (base::Random::rand32(100) < FLAGS_read_ratio) {
       std::vector<base::ConstArray<float>> values;
       base_kv->BatchGet(keys.ToConstArray(), &values, tid);
       read_timer.end();
@@ -76,15 +78,15 @@ void thread_run(int tid, SampleReader* sample) {
 }
 
 int main(int argc, char* argv[]) {
-  folly::init(&argc, &argv);
+  base::Init(&argc, &argv);
   xmh::Reporter::StartReportThread();
 
   std::string path;
 
   if (FLAGS_use_dram)
-    path = folly::sformat("/dev/shm/");
+    path = base::SFormat("/dev/shm/");
   else
-    path = folly::sformat("/media/aep{}/", FLAGS_numa_id);
+    path = base::SFormat("/media/aep{}/", FLAGS_numa_id);
 
   bool shuffle_load                                = false;
   base::PMMmapRegisterCenter::GetConfig().use_dram = FLAGS_use_dram;

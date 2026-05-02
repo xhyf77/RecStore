@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <atomic>
 #include <fcntl.h>
+#include <fmt/core.h>
 #include "spdk/env.h"
 #include "spdk/nvme.h"
 #include "spdk/env.h"

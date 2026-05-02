@@ -76,7 +76,7 @@ public:
     while (!success) {
       success =
           readed_index->insert_or_assign(newNode->GetID(), newNode).second;
-      FB_LOG_EVERY_MS(ERROR, 1000)
+      RECSTORE_LOG_EVERY_MS(ERROR, 1000)
           << "insert failed, size(hashtable)=" << index_->size();
     }
     epoch_manager_->UnProtect();
@@ -101,7 +101,7 @@ public:
 
     while (!epoch_manager_->IsSafeToReclaim(epoch)) {
       epoch_manager_->BumpCurrentEpoch();
-      //   FB_LOG_EVERY_MS(ERROR, 1000)
+      //   RECSTORE_LOG_EVERY_MS(ERROR, 1000)
       //       << "stall in IsSafeToReclaim. "
       //       << "epoch=" << epoch_manager_->GetCurrentEpoch()
       //       << ". safe_epoch=" << epoch_manager_->GetSafeEpoch4Debug();

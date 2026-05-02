@@ -17,7 +17,9 @@
 
 #include "base/base.h"
 #include "base/factory.h"
+#include "base/init.h"
 #include "base/log.h"
+#include "base/string.h"
 #include "base/timer.h"
 #include "ps/base/Postoffice.h"
 #include "ps/base/base_ps_server.h"
@@ -647,7 +649,7 @@ private:
             slot,
             embedding_dim,
             keys[i],
-            folly::sformat("server embedding check error, key is {}", keys[i]));
+            base::SFormat("server embedding check error, key is {}", keys[i]));
       }
     }
 #endif
@@ -907,7 +909,7 @@ private:
       do {
         recv = dsm_->rpc_fast_wait(&wr_id);
         if (recv == nullptr && wr_id == petps::WR_ID_SG_GET) {
-          // FB_LOG_EVERY_MS(ERROR, 1000)
+          // RECSTORE_LOG_EVERY_MS(ERROR, 1000)
           //     << "MaxPendingEpochNumPerThread = "
           //     << epoch_manager_->MaxPendingEpochNumPerThread();
           epoch_manager_->UnProtect();

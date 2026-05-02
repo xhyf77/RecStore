@@ -2,8 +2,8 @@
 
 #include <cuda.h>
 #include <cuda_runtime_api.h>
-#include "folly/GLog.h"
 #include "gdrapi.h"
+#include "base/log.h"
 #include <mutex>
 #include <assert.h>
 

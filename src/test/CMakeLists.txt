@@ -32,22 +32,19 @@ add_executable(test_hash_map
     test_hash_map.cpp 
 )
 
-target_link_libraries(test_hash_map PUBLIC
-    ${FOLLY_LIBRARIES}
-)
-
 target_compile_options(test_hash_map PUBLIC -fopenmp)
 
-target_link_libraries(test_hash_map PUBLIC -fopenmp)
+target_link_libraries(test_hash_map PUBLIC -fopenmp Folly::folly)
 
 
-add_executable(corotine 
-    corotine.cpp
+add_executable(coroutine 
+    coroutine.cpp
 )
 
-target_link_libraries(corotine PUBLIC
+target_link_libraries(coroutine PUBLIC
     ${BOOST_LIBRARIES}
-    ${FOLLY_LIBRARIES}
+    boost_context
+    boost_coroutine
 )
 
 add_executable(test_extendible_hash test_extendible_hash.cpp)
@@ -117,8 +114,8 @@ target_link_libraries(test_io_uring_test_utils PUBLIC
 )
 add_test(NAME test_io_uring_test_utils COMMAND test_io_uring_test_utils)
 
-add_executable(test_factory test_factory.cpp)
-target_link_libraries(test_factory PUBLIC
+add_executable(test_kvengine test_kvengine.cpp)
+target_link_libraries(test_kvengine PUBLIC
     extendible_hash
     base
     base_memory
@@ -129,7 +126,7 @@ target_link_libraries(test_factory PUBLIC
     pthread
     TBB::tbb
 )
-add_test(NAME test_factory COMMAND test_factory)
+add_test(NAME test_kvengine COMMAND test_kvengine)
 
 add_executable(test_index test_index.cpp)
 target_link_libraries(test_index PUBLIC
@@ -153,6 +150,7 @@ target_link_libraries(test_ps_client_factory PUBLIC
     grpc_ps_client
     brpc_ps_client
     local_shm_ps_client
+    Folly::folly
     gflags
     glog
     gtest
@@ -228,6 +226,7 @@ target_link_libraries(test_op_runtime_support PUBLIC
     grpc_ps_client
     brpc_ps_client
     local_shm_ps_client
+    Folly::folly
     gflags
     glog
     gtest
@@ -253,6 +252,7 @@ target_link_libraries(test_op PUBLIC
     grpc_ps_client
     brpc_ps_client
     local_shm_ps_client
+    Folly::folly
     gflags
     glog
     gtest
@@ -382,6 +382,7 @@ if(ENABLE_CUDA AND CMAKE_CUDA_COMPILER AND
         grpc_ps_client
         brpc_ps_client
         local_shm_ps_client
+        Folly::folly
         protobuf::libprotobuf
         gRPC::grpc++
         glog::glog

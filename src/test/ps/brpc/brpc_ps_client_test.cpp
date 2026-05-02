@@ -1,10 +1,9 @@
-#include <folly/executors/CPUThreadPoolExecutor.h>
-#include <folly/init/Init.h>
-
 #include <random>
 
 #include "base/array.h"
 #include "base/factory.h"
+#include "base/init.h"
+#include "base/thread.h"
 #include "base/timer.h"
 #include "ps/base/base_client.h"
 #include "ps/brpc/brpc_ps_client.h"
@@ -132,7 +131,6 @@ void TestPrefetch() {
       {1.0f, 2.0f}, {3.0f, 4.0f}, {5.0f, 6.0f}, {7.0f, 8.0f}, {9.0f, 10.0f}};
 
   client.PutParameter(keys, values);
-
   base::ConstArray<uint64_t> keys_array(keys);
   uint64_t prefetch_id = client.PrefetchParameter(keys_array);
 
@@ -230,7 +228,7 @@ void TestAsyncReadWriteConcurrency() {
 }
 
 int main(int argc, char** argv) {
-  folly::Init(&argc, &argv);
+  base::Init(&argc, &argv);
   xmh::Reporter::StartReportThread(2000);
 
   auto launch_options =
@@ -239,9 +237,19 @@ int main(int argc, char** argv) {
   launch_options.override_ports   = {kBrpcTestPort0, kBrpcTestPort1};
   recstore::test::ScopedPSServer server(launch_options, true);
 
-  TestFactoryClient();
-  TestDirectClient();
-  TestPrefetch();
-  TestAsyncReadWriteConcurrency();
+  std::cout << "=== bRPC parameter server client tests ===" << std::endl;
+  std::cout << std::endl;
+
+  try {
+    TestFactoryClient();
+    TestDirectClient();
+    TestPrefetch();
+    TestAsyncReadWriteConcurrency();
+
+    std::cout << "\nAll bRPC tests passed." << std::endl;
+  } catch (const std::exception& e) {
+    std::cerr << "Test failed with exception: " << e.what() << std::endl;
+    return 1;
+  }
   return 0;
 }

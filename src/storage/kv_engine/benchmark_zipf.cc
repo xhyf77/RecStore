@@ -1,5 +1,4 @@
 #include <folly/GLog.h>
-#include <folly/init/Init.h>
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
@@ -9,6 +8,7 @@
 #include <thread>
 
 #include "base/factory.h"
+#include "base/init.h"
 #include "base/zipf.h"
 #include "storage/kv_engine/base_kv.h"
 
@@ -83,7 +83,7 @@ void thread_run(int id) {
 }
 
 int main(int argc, char* argv[]) {
-  folly::init(&argc, &argv);
+  base::Init(&argc, &argv);
   BaseKVConfig config;
   config.json_config_["capacity"]   = kKeySpace;
   config.json_config_["value_size"] = FLAGS_value_size;

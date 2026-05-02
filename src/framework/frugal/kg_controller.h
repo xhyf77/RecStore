@@ -1,8 +1,5 @@
 #pragma once
 #include <ATen/cuda/CUDAContext.h>
-#include <folly/Format.h>
-#include <folly/ProducerConsumerQueue.h>
-#include <folly/system/MemoryMapping.h>
 // #include <oneapi/tbb/concurrent_priority_queue.h>
 #include <gperftools/profiler.h>
 #include <torch/custom_class.h>

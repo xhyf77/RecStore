@@ -15,7 +15,6 @@
 #include "base/log.h"
 #include "base/timer.h"
 #include "ps/base/parameters.h"
-#include "folly/executors/CPUThreadPoolExecutor.h"
 #include "ps.grpc.pb.h"
 #include "ps.pb.h"
 
@@ -78,9 +77,9 @@ int BuildUpdateBlocksFromFlat(
 DEFINE_int32(get_parameter_threads, 4, "get clients per shard");
 DEFINE_bool(parameter_client_random_init, false, "");
 
-// 新的构造函数，接收 json 配置参数
+// New constructor that takes JSON config.
 /*
-可用下面的代码来读取配置文件
+Example: load config from file
 std::ifstream config_file(FLAGS_config_path);
   nlohmann::json ex;
   config_file >> ex;
@@ -89,7 +88,7 @@ std::ifstream config_file(FLAGS_config_path);
 */
 GRPCParameterClient::GRPCParameterClient(json config)
     : recstore::BasePSClient(config) {
-  // 从json配置中提取参数
+  // Extract fields from JSON config
   host_       = config.value("host", "localhost");
   port_       = config.value("port", 15000);
   shard_      = config.value("shard", 0);
@@ -112,7 +111,7 @@ GRPCParameterClient::GRPCParameterClient(json config)
   }
 }
 
-// 保留原有的构造函数以保持向后兼容
+// Legacy constructor for backward compatibility
 GRPCParameterClient::GRPCParameterClient(
     const std::string& host, int port, int shard)
     : recstore::BasePSClient(
@@ -235,7 +234,7 @@ int GRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
         std::copy_n(
             item->embedding, item->dim, values + item->dim * get_embedding_acc);
       } else {
-        FB_LOG_EVERY_MS(ERROR, 2000)
+        RECSTORE_LOG_EVERY_MS(ERROR, 2000)
             << "error; not find key " << keys[get_embedding_acc] << " in ps";
       }
       get_embedding_acc++;
@@ -950,7 +949,7 @@ int GRPCParameterClient::InitEmbeddingTable(
   return response.success() ? 0 : -1;
 }
 
-// 实现 BasePSClient 的纯虚函数
+// BasePSClient pure virtual implementations
 // int GRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
 // float* values) {
 //   return GetParameter(ConstArray<uint64_t>(keys.Data(), keys.Size()), values)
@@ -1015,7 +1014,7 @@ uint64_t GRPCParameterClient::EmbWriteAsync(
     auto& request  = pb.requests_[index];
     auto& response = pb.responses_[index];
 
-    // 将键值对打包
+    // Pack key/embedding pairs
     ParameterCompressor compressor;
     std::vector<std::string> blocks;
     for (int i = start; i < start + key_size; i++) {
@@ -1032,16 +1031,16 @@ uint64_t GRPCParameterClient::EmbWriteAsync(
 
     request.mutable_parameter_value()->swap(blocks[0]);
 
-    // 发送异步请求
+    // Issue async RPC
     pb.response_readers_.emplace_back(stubs_[0]->AsyncPutParameter(
         pb.contexts_[index].get(), request, pb.cqs_.get()));
 
-    // 异步调用，设置回调
+    // Async call; completion via CQ tag
     auto& rpc = pb.response_readers_.back();
     rpc->Finish(&response, &status, reinterpret_cast<void*>(index));
   }
 
-  // 将批次信息存储到 prewrite_batches_ 中
+  // Store batch state in prewrite_batches_
   prewrite_batches_.emplace(prewrite_id, std::move(pb));
   return prewrite_id;
 }
@@ -1078,6 +1077,6 @@ void GRPCParameterClient::WaitForWrite(uint64_t write_id) {
   }
 }
 
-// 注册 GRPCParameterClient 到工厂
+// Register GRPCParameterClient with the factory
 using BasePSClient = recstore::BasePSClient;
 FACTORY_REGISTER(BasePSClient, grpc, GRPCParameterClient, json);

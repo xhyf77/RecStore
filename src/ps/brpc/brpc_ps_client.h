@@ -23,7 +23,7 @@ using json = nlohmann::json;
 
 static const int MAX_PARAMETER_BATCH_BRPC = 2000;
 
-// bRPC 版本的 Prefetch 批次结构
+// Prefetch batch structure for bRPC
 struct BrpcPrefetchBatch {
   BrpcPrefetchBatch(int request_num) {
     batch_size_ = request_num;
@@ -85,15 +85,15 @@ struct BrpcPrewriteBatch {
 
 class BRPCParameterClient : public recstore::BasePSClient {
 public:
-  // 新的构造函数，接收 json 配置参数
+  // New constructor with JSON config
   explicit BRPCParameterClient(json config);
 
-  // 保留原有的构造函数以保持向后兼容
+  // Legacy constructor for backward compatibility
   explicit BRPCParameterClient(const std::string& host, int port, int shard);
 
   ~BRPCParameterClient() {}
 
-  // 实现 BasePSClient 的纯虚函数
+  // BasePSClient pure virtual implementations
   virtual int
   GetParameter(const base::ConstArray<uint64_t>& keys, float* values) override;
 
@@ -105,7 +105,7 @@ public:
 
   void Command(recstore::PSCommand command) override;
 
-  // 原有的接口方法
+  // Legacy API methods
   int GetParameter(const base::ConstArray<uint64_t>& keys,
                    std::vector<std::vector<float>>* values);
 
@@ -135,7 +135,7 @@ public:
   int InitEmbeddingTable(const std::string& table_name,
                          const recstore::EmbeddingTableConfig& config);
 
-  // Prefetch 接口
+  // Prefetch API
   uint64_t PrefetchParameter(const base::ConstArray<uint64_t>& keys);
   bool IsPrefetchDone(uint64_t prefetch_id);
   void WaitForPrefetch(uint64_t prefetch_id);

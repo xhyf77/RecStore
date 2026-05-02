@@ -32,28 +32,28 @@ public:
             backmode_ == "CppAsync" || backmode_ == "CppAsyncV2") {
     for (int i = 0; i < L_; i++) {
       sliced_id_tensor_.push_back(IPCTensorFactory::NewSlicedIPCTensor(
-          folly::sformat("cached_sampler_r{}_{}", rank, i),
+          base::SFormat("cached_sampler_r{}_{}", rank, i),
           {int(1e6)},
           torch::kInt64));
     }
 
     circle_buffer_end_ =
         IPCTensorFactory::NewIPCTensor(
-            folly::sformat("circle_buffer_end_r{}", rank),
+            base::SFormat("circle_buffer_end_r{}", rank),
             {int(1)},
             torch::kInt64)
             .value();
 
     circle_buffer_old_end_ =
         IPCTensorFactory::NewIPCTensor(
-            folly::sformat("circle_buffer_end_cppseen_r{}", rank),
+            base::SFormat("circle_buffer_end_cppseen_r{}", rank),
             {int(1)},
             torch::kInt64)
             .value();
 
     step_tensor_ =
         IPCTensorFactory::NewIPCTensor(
-            folly::sformat("step_r{}", rank), {int(L_)}, torch::kInt64)
+            base::SFormat("step_r{}", rank), {int(L_)}, torch::kInt64)
             .value();
 
     circle_buffer_end_.fill_(0);
@@ -72,7 +72,7 @@ public:
     if (is_async_process_ && sync) {
       while (circle_buffer_end_[0].item<int64_t>() !=
              circle_buffer_old_end_[0].item<int64_t>()) {
-        FB_LOG_EVERY_MS(INFO, 5000) << folly::sformat(
+        RECSTORE_LOG_EVERY_MS(INFO, 5000) << base::SFormat(
             "Waiting for CppAsync to finish processing the item {}",
             circle_buffer_old_end_[0].item<int64_t>());
       }
@@ -235,57 +235,55 @@ public:
 
     for (int rank = 0; rank < num_gpus_; rank++) {
       embedding_cache_.push_back(IPCTensorFactory::NewIPCGPUTensor(
-          folly::sformat("embedding_cache_{}", rank),
+          base::SFormat("embedding_cache_{}", rank),
           {cached_capacity_, emb_dim_},
           torch::kFloat32,
           rank));
 
       input_keys_.push_back(IPCTensorFactory::NewSlicedIPCTensor(
-          folly::sformat("input_keys_{}", rank), {int(1e6)}, torch::kInt64));
+          base::SFormat("input_keys_{}", rank), {int(1e6)}, torch::kInt64));
       input_keys_neg_.push_back(IPCTensorFactory::NewSlicedIPCTensor(
-          folly::sformat("input_keys_neg_{}", rank),
-          {int(1e6)},
-          torch::kInt64));
+          base::SFormat("input_keys_neg_{}", rank), {int(1e6)}, torch::kInt64));
 
       if (backgrad_init_ == "cpu") {
         backward_grads_.push_back(IPCTensorFactory::NewSlicedIPCTensor(
-            folly::sformat("backward_grads_{}", rank),
+            base::SFormat("backward_grads_{}", rank),
             {int(1e6), emb_dim_},
             torch::kFloat32));
         backward_grads_neg_.push_back(IPCTensorFactory::NewSlicedIPCTensor(
-            folly::sformat("backward_grads_neg_{}", rank),
+            base::SFormat("backward_grads_neg_{}", rank),
             {int(1e6), emb_dim_},
             torch::kFloat32));
       } else if (backgrad_init_ == "gpu") {
         backward_grads_.push_back(IPCTensorFactory::NewSlicedIPCGPUTensor(
-            folly::sformat("backward_grads_{}", rank),
+            base::SFormat("backward_grads_{}", rank),
             {int(1e6), emb_dim_},
             torch::kFloat32,
             rank));
         backward_grads_neg_.push_back(IPCTensorFactory::NewSlicedIPCGPUTensor(
-            folly::sformat("backward_grads_neg_{}", rank),
+            base::SFormat("backward_grads_neg_{}", rank),
             {int(1e6), emb_dim_},
             torch::kFloat32,
             rank));
       } else if (backgrad_init_ == "both") {
         backward_grads_gpu_.push_back(IPCTensorFactory::NewSlicedIPCGPUTensor(
-            folly::sformat("backward_grads_{}_gpu", rank),
+            base::SFormat("backward_grads_{}_gpu", rank),
             {int(1e6), emb_dim_},
             torch::kFloat32,
             rank));
         backward_grads_neg_gpu_.push_back(
             IPCTensorFactory::NewSlicedIPCGPUTensor(
-                folly::sformat("backward_grads_neg_{}_gpu", rank),
+                base::SFormat("backward_grads_neg_{}_gpu", rank),
                 {int(1e6), emb_dim_},
                 torch::kFloat32,
                 rank));
 
         backward_grads_cpu_.push_back(IPCTensorFactory::NewSlicedIPCTensor(
-            folly::sformat("backward_grads_{}", rank),
+            base::SFormat("backward_grads_{}", rank),
             {int(1e6), emb_dim_},
             torch::kFloat32));
         backward_grads_neg_cpu_.push_back(IPCTensorFactory::NewSlicedIPCTensor(
-            folly::sformat("backward_grads_neg_{}", rank),
+            base::SFormat("backward_grads_neg_{}", rank),
             {int(1e6), emb_dim_},
             torch::kFloat32));
 
@@ -329,7 +327,7 @@ private:
       auto [sample_step, next_ids] = test_perf_sampler_[rank].__next__();
       CHECK_EQ(sample_step, step_no);
 
-      // LOG(INFO) << folly::sformat("rank{}: {}", rank, toString(next_ids));
+      // LOG(INFO) << base::SFormat("rank{}: {}", rank, toString(next_ids));
 
       input_keys_[rank]->Copy_(next_ids, false);
 
@@ -375,7 +373,8 @@ private:
 
 int main(int argc, char** argv) {
   folly::init(&argc, &argv);
-  std::string json_str = R"({{
+  std::string json_str = base::SFormat(
+      R"({{
             "num_gpus": 4,
             "L": 10,
             "kForwardItersPerStep": 1,
@@ -386,9 +385,8 @@ int main(int argc, char** argv) {
             "emb_dim" : 400,
             "num_ids_per_step": 25000,
             "backgrad_init": "both"
-        }})";
-
-  json_str = folly::sformat(json_str, FLAGS_backMode);
+        }})",
+      FLAGS_backMode);
 
   auto json_config = json::parse(json_str);
 

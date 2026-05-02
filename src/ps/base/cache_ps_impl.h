@@ -1,5 +1,4 @@
 #pragma once
-#include <folly/ProducerConsumerQueue.h>
 
 #include <algorithm>
 #include <atomic>
@@ -163,7 +162,7 @@ public:
       pack.key      = key;
       pack.dim      = 0;
       pack.emb_data = nullptr;
-      FB_LOG_EVERY_MS(ERROR, 1000) << "key " << key << " not existing";
+      RECSTORE_LOG_EVERY_MS(ERROR, 1000) << "key " << key << " not existing";
       return false;
     }
     pack.key      = key;

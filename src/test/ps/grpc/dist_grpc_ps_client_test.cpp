@@ -7,13 +7,17 @@
 
 #include "base/array.h"
 #include "base/factory.h"
+#include "base/init.h"
 #include "base/timer.h"
 #include "ps/base/base_client.h"
 #include "test/server_mgr/ps_server_launcher.h"
 
 namespace {
-constexpr int kGrpcPort0 = 15123;
-constexpr int kGrpcPort1 = 15124;
+std::vector<int> AcquireDistGrpcTestPorts() {
+  auto ports = recstore::test::PSServerLauncher::FindAvailablePorts(2);
+  CHECK_EQ(ports.size(), 2);
+  return ports;
+}
 } // namespace
 
 using namespace xmh;
@@ -46,14 +50,14 @@ static bool check_eq_2d(std::vector<std::vector<float>>& a,
   return true;
 }
 
-void TestBasicConfig() {
+void TestBasicConfig(const std::vector<int>& ports) {
   std::cout << "=== Testing Basic Configuration ===" << std::endl;
 
   json recstore_config = {
       {"distributed_client",
        {{"servers",
-         {{{"host", "127.0.0.1"}, {"port", kGrpcPort0}, {"shard", 0}},
-          {{"host", "127.0.0.1"}, {"port", kGrpcPort1}, {"shard", 1}}}},
+         {{{"host", "127.0.0.1"}, {"port", ports[0]}, {"shard", 0}},
+          {{"host", "127.0.0.1"}, {"port", ports[1]}, {"shard", 1}}}},
         {"num_shards", 2},
         {"hash_method", "city_hash"}}}};
 
@@ -66,14 +70,14 @@ void TestBasicConfig() {
   }
 }
 
-void TestFactoryClient() {
+void TestFactoryClient(const std::vector<int>& ports) {
   std::cout << "=== Testing Factory Pattern ===" << std::endl;
 
   json config = {
       {"distributed_client",
        {{"servers",
-         {{{"host", "127.0.0.1"}, {"port", kGrpcPort0}, {"shard", 0}},
-          {{"host", "127.0.0.1"}, {"port", kGrpcPort1}, {"shard", 1}}}},
+         {{{"host", "127.0.0.1"}, {"port", ports[0]}, {"shard", 0}},
+          {{"host", "127.0.0.1"}, {"port", ports[1]}, {"shard", 1}}}},
         {"num_shards", 2},
         {"hash_method", "city_hash"}}}};
 
@@ -132,14 +136,14 @@ void TestFactoryClient() {
   }
 }
 
-void TestDirectClient() {
+void TestDirectClient(const std::vector<int>& ports) {
   std::cout << "=== Testing Direct Client Creation ===" << std::endl;
 
   json config = {
       {"distributed_client",
        {{"servers",
-         {{{"host", "127.0.0.1"}, {"port", kGrpcPort0}, {"shard", 0}},
-          {{"host", "127.0.0.1"}, {"port", kGrpcPort1}, {"shard", 1}}}},
+         {{{"host", "127.0.0.1"}, {"port", ports[0]}, {"shard", 0}},
+          {{"host", "127.0.0.1"}, {"port", ports[1]}, {"shard", 1}}}},
         {"num_shards", 2},
         {"hash_method", "city_hash"}}}};
 
@@ -174,14 +178,14 @@ void TestDirectClient() {
   }
 }
 
-void TestLargeBatch() {
+void TestLargeBatch(const std::vector<int>& ports) {
   std::cout << "=== Testing Large Batch Operations ===" << std::endl;
 
   json config = {
       {"distributed_client",
        {{"servers",
-         {{{"host", "127.0.0.1"}, {"port", kGrpcPort0}, {"shard", 0}},
-          {{"host", "127.0.0.1"}, {"port", kGrpcPort1}, {"shard", 1}}}},
+         {{{"host", "127.0.0.1"}, {"port", ports[0]}, {"shard", 0}},
+          {{"host", "127.0.0.1"}, {"port", ports[1]}, {"shard", 1}}}},
         {"num_shards", 2},
         {"hash_method", "city_hash"},
         {"max_keys_per_request", 50}}}};
@@ -202,7 +206,6 @@ void TestLargeBatch() {
 
     int put_result = client.PutParameter(keys_array, large_values);
     CHECK(put_result == 0);
-
     std::vector<std::vector<float>> retrieved_values;
     bool get_success = client.GetParameter(keys_array, &retrieved_values);
     CHECK(get_success);
@@ -215,19 +218,156 @@ void TestLargeBatch() {
   }
 }
 
+void TestPrefetch(const std::vector<int>& ports) {
+  std::cout << "=== Testing Distributed gRPC Prefetch ===" << std::endl;
+
+  json config = {
+      {"distributed_client",
+       {{"servers",
+         {{{"host", "127.0.0.1"}, {"port", ports[0]}, {"shard", 0}},
+          {{"host", "127.0.0.1"}, {"port", ports[1]}, {"shard", 1}}}},
+        {"num_shards", 2},
+        {"hash_method", "city_hash"},
+        {"max_keys_per_request", 8}}}};
+
+  DistributedGRPCParameterClient client(config);
+  client.ClearPS();
+
+  std::vector<uint64_t> keys = {100, 101, 102, 103, 104, 105, 106, 107};
+  std::vector<std::vector<float>> values = {
+      {1.0f, 1.1f, 1.2f},
+      {2.0f, 2.1f, 2.2f},
+      {3.0f, 3.1f, 3.2f},
+      {4.0f, 4.1f, 4.2f},
+      {5.0f, 5.1f, 5.2f},
+      {6.0f, 6.1f, 6.2f},
+      {7.0f, 7.1f, 7.2f},
+      {8.0f, 8.1f, 8.2f}};
+  base::ConstArray<uint64_t> keys_array(keys);
+
+  CHECK(client.PutParameter(keys_array, values) == 0);
+
+  uint64_t prefetch_id = client.PrefetchParameter(keys_array);
+  CHECK(prefetch_id != 0);
+  CHECK(!client.IsPrefetchDone(999999));
+  client.WaitForPrefetch(prefetch_id);
+  CHECK(client.IsPrefetchDone(prefetch_id));
+
+  std::vector<std::vector<float>> fetched_values;
+  CHECK(client.GetPrefetchResult(prefetch_id, &fetched_values));
+  CHECK(check_eq_2d(fetched_values, values));
+  CHECK(!client.GetPrefetchResult(prefetch_id, &fetched_values));
+
+  uint64_t flat_prefetch_id = client.PrefetchParameter(keys_array);
+  CHECK(flat_prefetch_id != 0);
+  std::vector<float> flat_values;
+  int64_t num_rows = 0;
+  CHECK(client.GetPrefetchResultFlat(
+      flat_prefetch_id, &flat_values, &num_rows, 3));
+  CHECK(num_rows == static_cast<int64_t>(keys.size()));
+  CHECK(flat_values.size() == keys.size() * 3);
+  for (size_t i = 0; i < keys.size(); ++i) {
+    for (int d = 0; d < 3; ++d) {
+      CHECK(std::abs(flat_values[i * 3 + d] - values[i][d]) < 1e-6);
+    }
+  }
+  CHECK(!client.GetPrefetchResultFlat(
+      flat_prefetch_id, &flat_values, &num_rows, 3));
+  std::cout << "TestPrefetch done" << std::endl;
+}
+
+void TestPrefetchConcurrency(const std::vector<int>& ports) {
+  std::cout << "=== Testing Distributed gRPC Prefetch Concurrency ==="
+            << std::endl;
+
+  json config = {
+      {"distributed_client",
+       {{"servers",
+         {{{"host", "127.0.0.1"}, {"port", ports[0]}, {"shard", 0}},
+          {{"host", "127.0.0.1"}, {"port", ports[1]}, {"shard", 1}}}},
+        {"num_shards", 2},
+        {"hash_method", "city_hash"},
+        {"max_keys_per_request", 6}}}};
+
+  DistributedGRPCParameterClient client(config);
+  client.ClearPS();
+
+  struct CaseData {
+    std::vector<uint64_t> keys;
+    std::vector<std::vector<float>> values;
+  };
+
+  std::vector<CaseData> cases(4);
+  for (size_t c = 0; c < cases.size(); ++c) {
+    auto& cs = cases[c];
+    for (int i = 0; i < 12; ++i) {
+      uint64_t k = 3000 + static_cast<uint64_t>(c) * 100 + i;
+      cs.keys.push_back(k);
+      cs.values.push_back({static_cast<float>(k),
+                           static_cast<float>(k + 1),
+                           static_cast<float>(k + 2)});
+    }
+    base::ConstArray<uint64_t> keys_array(cs.keys);
+    CHECK(client.PutParameter(keys_array, cs.values) == 0);
+  }
+
+  std::vector<std::future<bool>> futures;
+  futures.reserve(cases.size());
+  for (const auto& cs : cases) {
+    futures.emplace_back(std::async(std::launch::async, [&client, cs]() {
+      base::ConstArray<uint64_t> keys_array(cs.keys);
+      uint64_t prefetch_id = client.PrefetchParameter(keys_array);
+      if (prefetch_id == 0) {
+        return false;
+      }
+      client.WaitForPrefetch(prefetch_id);
+      std::vector<std::vector<float>> fetched_values;
+      if (!client.GetPrefetchResult(prefetch_id, &fetched_values)) {
+        return false;
+      }
+      return check_eq_2d(fetched_values, cs.values);
+    }));
+  }
+
+  for (auto& future : futures) {
+    CHECK(future.get());
+  }
+  std::cout << "TestPrefetchConcurrency done" << std::endl;
+}
+
 int main(int argc, char** argv) {
-  folly::Init(&argc, &argv);
-  xmh::Reporter::StartReportThread(2000);
+  base::Init(&argc, &argv);
+  Reporter::StartReportThread(2000);
+
+  const auto ports = AcquireDistGrpcTestPorts();
 
   auto launch_options =
       recstore::test::PSServerLauncher::LoadOptionsFromEnvironment();
   launch_options.override_ps_type = "GRPC";
-  launch_options.override_ports   = {kGrpcPort0, kGrpcPort1};
+  launch_options.override_ports   = ports;
   recstore::test::ScopedPSServer server(launch_options, true);
 
-  TestBasicConfig();
-  TestFactoryClient();
-  TestDirectClient();
-  TestLargeBatch();
+  std::cout << "=== Distributed gRPC PS client tests ===" << std::endl;
+  std::cout << std::endl;
+
+  TestBasicConfig(ports);
+  std::cout << std::endl;
+
+  TestFactoryClient(ports);
+  std::cout << std::endl;
+
+  TestDirectClient(ports);
+  std::cout << std::endl;
+
+  TestLargeBatch(ports);
+  std::cout << std::endl;
+
+  TestPrefetch(ports);
+  std::cout << std::endl;
+
+  TestPrefetchConcurrency(ports);
+  std::cout << std::endl;
+
+  std::cout << "All tests completed!" << std::endl;
   return 0;
 }

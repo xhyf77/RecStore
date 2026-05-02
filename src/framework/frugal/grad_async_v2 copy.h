@@ -44,7 +44,7 @@ public:
 
     for (int rank = 0; rank < num_gpus_; rank++) {
       auto ret_tensor = IPCTensorFactory::FindIPCTensorFromName(
-          folly::sformat("circle_buffer_end_cppseen_r{}", rank));
+          base::SFormat("circle_buffer_end_cppseen_r{}", rank));
       circle_buffer_end_cppseen_.push_back(ret_tensor);
     }
     for (int rank = 0; rank < num_gpus_; rank++) {
@@ -137,7 +137,7 @@ public:
       int64_t old_end = *p_old_end;
 
       if (new_end != old_end) {
-        FB_LOG_EVERY_MS(WARNING, 1000) << folly::sformat(
+        RECSTORE_LOG_EVERY_MS(WARNING, 1000) << base::SFormat(
             "Detect new sample comes, old_end{}, new_end{}", old_end, new_end);
 
         // add [circle_buffer_old_end, new_end)
@@ -266,14 +266,14 @@ public:
       int priority = pq_.MinPriority();
       if (priority > step_no) {
 #ifdef XMH_DEBUG_KG
-        LOG(INFO) << folly::sformat("top(pq)'s priority={} > step_no{}.",
-                                    priority,
-                                    step_no)
+        LOG(INFO) << base::SFormat("top(pq)'s priority={} > step_no{}.",
+                                   priority,
+                                   step_no)
                   << pq_.ToString();
 #endif
         break;
       }
-      FB_LOG_EVERY_MS(WARNING, 1000)
+      RECSTORE_LOG_EVERY_MS(WARNING, 1000)
           << "Sleep in <BlockToStepN>, step_no=" << step_no
           << ", pq.top=" << priority;
     }
@@ -310,7 +310,7 @@ public:
         p->MarkWriteInStepN(step_no, grad_tensor);
         p->RecaculatePriority();
 #ifdef XMH_DEBUG_KG
-        LOG(INFO) << folly::sformat(
+        LOG(INFO) << base::SFormat(
             "Push pq_ | id={}, step_no={}, grad={}",
             id,
             step_no,
@@ -349,7 +349,7 @@ public:
           p->MarkWriteInStepN(step_no, grad_tensor);
           p->RecaculatePriority();
 #ifdef XMH_DEBUG_KG
-          LOG(INFO) << folly::sformat(
+          LOG(INFO) << base::SFormat(
               "Push pq_ | id={}, step_no={}, grad={}",
               id,
               step_no,
@@ -393,7 +393,7 @@ public:
       //           p->MarkWriteInStepN(step_no, grad_tensor);
       //           p->RecaculatePriority();
       // #ifdef XMH_DEBUG_KG
-      //           LOG(INFO) << folly::sformat("Push pq_ | id={}, step_no={},
+      //           LOG(INFO) << base::SFormat("Push pq_ | id={}, step_no={},
       //           grad={}",
       //                                       id, step_no,
       //                                       toString(grad_tensor, false));
@@ -416,13 +416,13 @@ public:
 
     for (int rank = 0; rank < num_gpus_; rank++) {
       while (sample_step_cpp_seen_[rank].load() < step_no)
-        FB_LOG_EVERY_MS(ERROR, 5000)
+        RECSTORE_LOG_EVERY_MS(ERROR, 5000)
             << "Stalled in ProcessBackward: "
-            << folly::sformat("rank={}, step_no={}, "
-                              "sample_step_cpp_seen_[rank]={}",
-                              rank,
-                              step_no,
-                              sample_step_cpp_seen_[rank].load());
+            << base::SFormat("rank={}, step_no={}, "
+                             "sample_step_cpp_seen_[rank]={}",
+                             rank,
+                             step_no,
+                             sample_step_cpp_seen_[rank].load());
     }
 
     UpsertPq(input_keys, input_grads, step_no);

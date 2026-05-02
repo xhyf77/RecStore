@@ -10,5 +10,5 @@ sudo docker run --cap-add=SYS_ADMIN --privileged --security-opt seccomp=unconfin
 -v /dev/shm:/dev/shm \
 -v /dev/hugepages:/dev/hugepages \
 -v /dev:/dev -v /nas:/nas \
--w ${Docker_RECSTORE_PATH} --rm -it --gpus all -d recstore
+-w ${Docker_RECSTORE_PATH} --rm -it --gpus all -d recstore:env
 

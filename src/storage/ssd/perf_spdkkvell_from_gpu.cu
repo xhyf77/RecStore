@@ -1,9 +1,8 @@
-#include <folly/init/Init.h>
-
 #include <vector>
 
 #include "base/array.h"
-#include "folly/Random.h"
+#include "base/init.h"
+#include "base/random.h"
 #include "naiveKVell.h"
 
 using ssdps::NaiveArraySSD;
@@ -33,7 +32,7 @@ DEFINE_int32(query_count, 100, "# of query embs in one round");
 DEFINE_int32(run_time, 60, "benchmark time in seconds");
 
 int main(int argc, char **argv) {
-  folly::init(&argc, &argv);
+  base::Init(&argc, &argv);
   xmh::Reporter::StartReportThread(2000);
 
   const int emb_dim = FLAGS_embedding_dimension;
@@ -82,7 +81,7 @@ int main(int argc, char **argv) {
 
     CHECK_EQ(test_get_keys_array.Size(), query_count);
     for (int i = 0; i < query_count; i++) {
-      test_get_keys_array[i] = folly::Random::rand64() % test_key_capability;
+      test_get_keys_array[i] = base::Random::rand64(test_key_capability);
     }
     XMH_CUDA_CHECK(cudaMemcpy(device_keys, test_get_keys_array.binary_data(),
                               query_count * sizeof(uint64_t),

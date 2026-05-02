@@ -5,6 +5,7 @@
 #include <iostream>
 
 #include "base/base.h"
+#include "base/init.h"
 #include "base/timer.h"
 
 DEFINE_int32(nr_gpus, 4, "Number of GPUs to use.");
@@ -87,7 +88,7 @@ void train(int32_t epoch,
 }
 
 int main(int argc, char** argv) {
-  folly::init(&argc, &argv, true);
+  base::Init(&argc, &argv, true);
   xmh::Reporter::StartReportThread();
 
   int batch_size = FLAGS_batch_size;

@@ -13,7 +13,7 @@ if(USE_PERF_REPORT)
 endif()
 
 add_library(base base.cc pprint.cc shm_helper.cc bind_core.cc counter.cc)
-target_link_libraries(base PUBLIC Folly::folly ${CITYHASH_LIBRARIES} gflags glog fmt)
+target_link_libraries(base PUBLIC ${CITYHASH_LIBRARIES} gflags glog fmt)
 target_include_directories(base PUBLIC ${CITYHASH_INCLUDE_DIRS})
 target_link_libraries(base PUBLIC protobuf::libprotobuf protobuf::libprotobuf-lite nlohmann_json::nlohmann_json)
 target_link_libraries(base PUBLIC cpptrace::cpptrace)

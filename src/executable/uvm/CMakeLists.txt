@@ -1,8 +1,15 @@
 project(UVM_LIBTORCH LANGUAGES CXX CUDA C)
 set(TORCH_CUDA_ARCH_LIST "8.6" CACHE STRING "CUDA architecture version")
 
-find_package(Torch REQUIRED)
+
 find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+execute_process(
+    COMMAND ${Python3_EXECUTABLE} -c "import torch; print(torch.utils.cmake_prefix_path)"
+    OUTPUT_VARIABLE TORCH_CMAKE_PREFIX_PATH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+list(PREPEND CMAKE_PREFIX_PATH "${TORCH_CMAKE_PREFIX_PATH}")
+find_package(Torch REQUIRED)
 
 
 add_executable(uvm_libtorch uvm_libtorch.cc)

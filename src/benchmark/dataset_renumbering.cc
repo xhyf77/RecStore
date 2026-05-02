@@ -7,6 +7,7 @@
 #include "base/glob.h"
 #include "parse_dataset.h"
 
+#include "base/string.h"
 #include "folly/GLog.h"
 #include "folly/system/MemoryMapping.h"
 #include "folly/concurrency/ConcurrentHashMap.h"
@@ -132,7 +133,7 @@ int main(int argc, char** argv) {
             // key: data[i];
             // count: data[i + 1];
             if (tid == 0) {
-              FB_LOG_EVERY_MS(INFO, 30000)
+              RECSTORE_LOG_EVERY_MS(INFO, 30000)
                   << 100 * (i - thread_start) / id_count_map_per_thread_count
                   << " %";
             }
@@ -172,7 +173,7 @@ int main(int argc, char** argv) {
 
   CHECK_EQ(ids.size(), renumber_map->size());
   CHECK_EQ(ids.size(), key_num);
-  LOG(INFO) << folly::sformat("dataset has {} keys", key_num);
+  LOG(INFO) << base::SFormat("dataset has {} keys", key_num);
 
   std::vector<std::thread> th(FLAGS_thread_count);
 
@@ -195,7 +196,7 @@ int main(int argc, char** argv) {
                j < std::min((i + 1) * file_num_per_thread, nr_dataset_files);
                j++) {
             if (i == 0)
-              FB_LOG_EVERY_MS(INFO, 10000)
+              RECSTORE_LOG_EVERY_MS(INFO, 10000)
                   << (j - i * file_num_per_thread) * 100 / file_num_per_thread
                   << " %";
             auto file_meta = RenumberID(dataset_files[j], renumber_map);
@@ -218,7 +219,7 @@ int main(int argc, char** argv) {
                j < std::min((i + 1) * file_num_per_thread, nr_dataset_files);
                j++) {
             if (i == 0)
-              FB_LOG_EVERY_MS(INFO, 10000)
+              RECSTORE_LOG_EVERY_MS(INFO, 10000)
                   << (j - i * file_num_per_thread) * 100 / file_num_per_thread
                   << " %";
             Check(dataset_files[j], key_num);

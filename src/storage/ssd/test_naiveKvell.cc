@@ -2,7 +2,7 @@
 
 #include <vector>
 
-#include "folly/Random.h"
+#include "base/random.h"
 #include "naiveKVell.h"
 using ssdps::NaiveArraySSD;
 
@@ -40,7 +40,8 @@ TEST(NaiveArraySSD, test) {
 
   for (int _ = 0; _ < 1000; _++) {
     for (int i = 0; i < batch_get_num; i++) {
-      test_get_keys[i] = folly::Random::rand32(test_key_capability);
+      test_get_keys[i] =
+          base::Random::rand32(static_cast<uint32_t>(test_key_capability));
     }
     xmh::Timer timer("get");
     ssd.BatchGet(

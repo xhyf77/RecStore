@@ -2,8 +2,6 @@
 
 #include <map>
 
-#include <folly/String.h>
-
 namespace base {
 
 static std::map<std::string, Counter*> counters;
@@ -19,7 +17,7 @@ void Counter::Inc(int64 count) {
 }
 
 std::string Counter::Display() const {
-  return folly::stringPrintf(
+  return base::StringPrintf(
       "[%s] qps: %ld, minute: %ld, hour: %ld, day: %ld, total: %ld",
       name_.c_str(),
       second_count_.GetCount(1000000L),

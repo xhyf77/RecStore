@@ -1,8 +1,4 @@
 #pragma once
-#include <folly/GLog.h>
-#include <folly/Portability.h>
-#include <folly/system/MemoryMapping.h>
-
 #include <boost/algorithm/string/join.hpp>
 #include <boost/coroutine2/all.hpp>
 #include <experimental/filesystem>
@@ -11,6 +7,8 @@
 #include <unordered_map>
 
 #include "base/array.h"
+#include "base/base.h"
+#include "base/log.h"
 #include "base/timer.h"
 #include "spdk_wrapper.h"
 namespace ssdps {
@@ -75,7 +73,7 @@ public:
   }
 
   // the address the index th value stored
-  FOLLY_ALWAYS_INLINE
+  ALWAYS_INLINE
   int64_t MappingLogicalAddress(int64_t index) const {
     int64_t lba_no;
     int in_lba_offset;
@@ -125,7 +123,7 @@ public:
   }
 
   static void BulkLoadCB(void* ctx, const struct spdk_nvme_cpl* cpl) {
-    if (FOLLY_UNLIKELY(spdk_nvme_cpl_is_error(cpl))) {
+    if (UNLIKELY(spdk_nvme_cpl_is_error(cpl))) {
       LOG(FATAL) << "I/O error status: "
                  << spdk_nvme_cpl_get_status_string(&cpl->status);
     }
@@ -318,7 +316,7 @@ private:
   // copy VALUE_SIZE bytes from <src> to <dst>
   static void ReadCompleteCB(void* ctx, const struct spdk_nvme_cpl* cpl) {
     ReadCompleteCBContext* readCompleteCBContext = (ReadCompleteCBContext*)ctx;
-    if (FOLLY_UNLIKELY(spdk_nvme_cpl_is_error(cpl))) {
+    if (UNLIKELY(spdk_nvme_cpl_is_error(cpl))) {
       LOG(FATAL) << "I/O error status: "
                  << spdk_nvme_cpl_get_status_string(&cpl->status);
     }

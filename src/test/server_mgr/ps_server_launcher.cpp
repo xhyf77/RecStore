@@ -269,6 +269,43 @@ PSServerLauncher::CheckOpenPorts(const std::vector<int>& ports) {
   return open_ports;
 }
 
+std::vector<int> PSServerLauncher::FindAvailablePorts(size_t count) {
+  std::vector<int> ports;
+  ports.reserve(count);
+
+  while (ports.size() < count) {
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+      break;
+    }
+
+    int reuse = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+    sockaddr_in addr;
+    std::memset(&addr, 0, sizeof(addr));
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port        = 0;
+
+    if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+      close(sock);
+      break;
+    }
+
+    socklen_t len = sizeof(addr);
+    if (getsockname(sock, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+      close(sock);
+      break;
+    }
+
+    ports.push_back(static_cast<int>(ntohs(addr.sin_port)));
+    close(sock);
+  }
+
+  return ports;
+}
+
 LaunchDecision
 PSServerLauncher::EvaluateLaunchDecision(const LauncherOptions& options) {
   LaunchDecision decision;
@@ -712,6 +749,12 @@ bool PSServerLauncher::WaitUntilReady() {
         std::chrono::milliseconds(options_.startup_delay_ms));
   }
 
+  std::vector<int> expected_ports =
+      ExtractPortsFromConfig(options_.config_path);
+  if (!options_.override_ports.empty()) {
+    expected_ports = options_.override_ports;
+  }
+
   auto deadline = std::chrono::steady_clock::now() +
                   std::chrono::seconds(options_.startup_timeout_sec);
 
@@ -720,6 +763,19 @@ bool PSServerLauncher::WaitUntilReady() {
     if (!IsProcessAlive()) {
       last_error_ = "ps_server exited before reaching ready state";
       return false;
+    }
+
+    if (!expected_ports.empty()) {
+      const auto open_ports = CheckOpenPorts(expected_ports);
+      if (open_ports.size() == expected_ports.size()) {
+        if (ready_shards_.empty()) {
+          for (int shard = 0; shard < options_.num_shards; ++shard) {
+            ready_shards_.insert(shard);
+          }
+        }
+        result_.ready_shards.assign(ready_shards_.begin(), ready_shards_.end());
+        return true;
+      }
     }
 
     if (cv_.wait_until(lock, deadline) == std::cv_status::timeout) {

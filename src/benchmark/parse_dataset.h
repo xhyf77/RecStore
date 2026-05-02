@@ -95,7 +95,7 @@ public:
         auto filename = thread_files[fid];
         std::vector<char> file_contents;
         folly::readFile(filename.c_str(), file_contents);
-        FB_LOG_EVERY_MS(INFO, 1000)
+        RECSTORE_LOG_EVERY_MS(INFO, 1000)
             << "Thread " << tid << " loading datasets "
             << fid * 100 / thread_files.size() << " %";
 

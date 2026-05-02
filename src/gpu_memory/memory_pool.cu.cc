@@ -1,8 +1,6 @@
 #include <memory>
 #include <string>
 #include <assert.h>
-#include <folly/GLog.h>
-#include <folly/ProducerConsumerQueue.h>
 #include "rmm/mr/device/cuda_memory_resource.hpp"
 #include "rmm/mr/device/device_memory_resource.hpp"
 #include "rmm/mr/device/managed_memory_resource.hpp"
@@ -10,6 +8,7 @@
 #include "rmm/mr/device/binning_memory_resource.hpp"
 #include "inference/timer.h"
 
+#include "base/log.h"
 #include "memory_pool.h"
 
 namespace xmh {
@@ -102,10 +101,10 @@ FixedLengthMemoryResource::FixedLengthMemoryResource(
     void* p = SourceMr_->allocate(initial_pool_count * each);
     allocate_start_addrs_.emplace_back(p, initial_pool_count * each);
     if (initial_pool_count == 0) {
-      memory_pool_[each] = new folly::ProducerConsumerQueue<void*>(2);
+      memory_pool_[each] = new base::ProducerConsumerQueue<void*>(2);
     } else {
       memory_pool_[each] =
-          new folly::ProducerConsumerQueue<void*>(100 * initial_pool_count);
+          new base::ProducerConsumerQueue<void*>(100 * initial_pool_count);
     }
     for (int i = 0; i < initial_pool_count; i++) {
       CHECK(memory_pool_[each]->write((char*)p + i * each));

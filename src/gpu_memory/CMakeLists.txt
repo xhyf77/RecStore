@@ -6,7 +6,6 @@ target_link_libraries(
   gpu_memory 
   PUBLIC
   rmm::rmm
-  Folly::folly
   /data/project/HugeCTR/HugeCTR/src/inference/gpu_memory/gdrcopy/src/libgdrapi.so
 )
 
