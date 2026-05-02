@@ -286,13 +286,14 @@ public:
     return ok.load(std::memory_order_relaxed);
   }
 
-  bool ApplySgdUpdateFlat(base::ConstArray<uint64_t> keys,
-                          const float* grads,
-                          int64_t num_rows,
-                          int64_t embedding_dim,
-                          float learning_rate,
-                          uint8_t tag,
-                          unsigned tid) override {
+  bool ApplySgdUpdateFlat(
+      base::ConstArray<uint64_t> keys,
+      const float* grads,
+      int64_t num_rows,
+      int64_t embedding_dim,
+      float learning_rate,
+      uint8_t tag,
+      unsigned tid) override {
     if (grads == nullptr || num_rows < 0 || embedding_dim <= 0) {
       return false;
     }
@@ -316,9 +317,8 @@ public:
 
 #pragma omp parallel for num_threads(8) if (keys.Size() > 1024)
     for (int64_t row = 0; row < num_rows; ++row) {
-      const uint64_t key =
-          (static_cast<uint64_t>(tag) << shift) |
-          (key_snapshot[static_cast<size_t>(row)] & key_mask);
+      const uint64_t key = (static_cast<uint64_t>(tag) << shift) |
+                           (key_snapshot[static_cast<size_t>(row)] & key_mask);
       const float* row_grad = grads + row * embedding_dim;
 
       std::unique_lock<std::shared_mutex> lk(KeyMutex(key));
