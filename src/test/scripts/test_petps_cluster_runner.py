@@ -390,6 +390,29 @@ class TestPetPSClusterRunner(unittest.TestCase):
         self.assertIn("timed out after 1 seconds", completed.stdout)
         self.assertEqual(completed.stderr, "partial-err")
 
+    @mock.patch("petps_cluster_runner.subprocess.Popen")
+    def test_run_client_stream_output_timeout_does_not_block_on_readline(
+        self, mock_popen
+    ):
+        runner = PetPSClusterRunner()
+        fake_process = mock.Mock()
+        fake_process.stdout.readline.side_effect = ["partial\n", ""]
+        fake_process.poll.return_value = None
+        fake_process.wait.return_value = 0
+        fake_process.pid = 1234
+        mock_popen.return_value = fake_process
+
+        completed = runner.run_client(
+            ["/bin/echo", "x"],
+            stream_output=True,
+            timeout=1,
+        )
+
+        self.assertEqual(completed.returncode, 124)
+        self.assertIn("partial", completed.stdout)
+        self.assertIn("timed out after 1 seconds", completed.stdout)
+        fake_process.terminate.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "base/array.h"
@@ -32,8 +33,12 @@ public:
   void InitThread() override {
     LOG(INFO) << "dsm_->registerThread()";
     dsm_->registerThread();
-    WaitForServerReady();
-    if (transport_mode_ == RdmaTransportMode::kRawMessage) {
+    if (transport_mode_ == RdmaTransportMode::kDescriptorDoorbell) {
+      serverThreadIdsRoutedTo_ = GetServerThreadIDs();
+      InitDescriptorTransports();
+      WaitForServerReady();
+    } else {
+      WaitForServerReady();
       serverThreadIdsRoutedTo_ = GetServerThreadIDs();
     }
   }
@@ -71,12 +76,19 @@ private:
   int SelectServerThreadID() const;
   std::atomic<int32_t>* GetPollSlot(uint64_t rpc_id) const;
   void Init();
+  void InitDescriptorTransports();
+  void InitDescriptorSlots();
+  RawVerbsTransport* DescriptorTransportForThread(int thread_id) const;
+  std::mutex* DescriptorTransportMutexForThread(int thread_id) const;
   int GetParameterDescriptor(base::ConstArray<uint64_t> keys,
                              float* values,
                              bool isAsync);
   int PutParameterDescriptor(
       const std::vector<uint64_t>& keys,
       const std::vector<std::vector<float>>& values);
+  struct DescriptorPendingRpc {
+    std::unique_lock<std::mutex> descriptor_slot_guard;
+  };
   DSM* dsm_;
 
   mutable std::mutex rpc_mu_;
@@ -89,8 +101,17 @@ private:
   RdmaTransportMode transport_mode_ = RdmaTransportMode::kRawMessage;
   std::shared_ptr<RawVerbsTransport> raw_transport_;
   std::shared_ptr<std::mutex> raw_transport_mu_;
+  std::unordered_map<int, std::shared_ptr<RawVerbsTransport>>
+      descriptor_transports_by_thread_;
+  std::unordered_map<int, std::shared_ptr<std::mutex>>
+      descriptor_transport_mus_by_thread_;
   std::atomic<std::uint64_t> descriptor_request_id_{1};
   std::atomic<std::uint64_t> descriptor_slot_cursor_{0};
+  RdmaDescriptorDoorbellPostState descriptor_doorbell_post_state_;
+  std::vector<char*> descriptor_send_slots_;
+  std::vector<std::atomic<std::int32_t>*> descriptor_ack_slots_;
+  std::vector<std::unique_ptr<std::mutex>> descriptor_slot_locks_;
+  std::unordered_map<uint64_t, DescriptorPendingRpc> descriptor_pending_rpcs_;
 };
 
 FACTORY_REGISTER(BaseParameterClient,

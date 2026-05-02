@@ -80,11 +80,13 @@ struct SharedRawVerbsClientTransport {
 SharedRawVerbsClientTransport GetSharedRawVerbsClientTransport(
     const petps::RawVerbsConfig& raw_config) {
   static std::mutex shared_mu;
-  static std::map<int, SharedRawVerbsClientTransport> shared_by_global_id;
+  static std::map<std::pair<int, int>, SharedRawVerbsClientTransport>
+      shared_by_endpoint;
 
   std::lock_guard<std::mutex> guard(shared_mu);
-  auto it = shared_by_global_id.find(raw_config.global_id);
-  if (it != shared_by_global_id.end()) {
+  const auto key = std::make_pair(raw_config.global_id, raw_config.local_lane);
+  auto it = shared_by_endpoint.find(key);
+  if (it != shared_by_endpoint.end()) {
     return it->second;
   }
 
@@ -92,8 +94,7 @@ SharedRawVerbsClientTransport GetSharedRawVerbsClientTransport(
   shared.transport = std::make_shared<petps::RawVerbsTransport>(raw_config);
   shared.transport->PublishAndConnect();
   shared.mu = std::make_shared<std::mutex>();
-  auto [inserted, _] =
-      shared_by_global_id.emplace(raw_config.global_id, shared);
+  auto [inserted, _] = shared_by_endpoint.emplace(key, shared);
   return inserted->second;
 }
 
@@ -169,6 +170,51 @@ void WaitRawCompletion(petps::RawVerbsTransport* transport) {
     std::this_thread::yield();
   }
 }
+
+void PostDescriptorDoorbell(petps::RawVerbsTransport* transport,
+                            const void* descriptor_buffer,
+                            const petps::RdmaDescriptorRequest& req,
+                            std::size_t slot_bytes,
+                            int shard,
+                            std::uint64_t request_id,
+                            petps::RdmaDescriptorDoorbellPostDecision decision) {
+  const petps::RdmaDescriptorDoorbellPostPlan post_plan =
+      petps::GetRdmaDescriptorDoorbellPostPlan();
+  if (decision.poll_before_post) {
+    WaitRawCompletion(transport);
+  }
+  if (post_plan.use_write_with_imm) {
+    transport->WriteWithImm(descriptor_buffer,
+                            req.descriptor_gaddr,
+                            slot_bytes,
+                            static_cast<std::uint32_t>(req.slot_id),
+                            request_id,
+                            decision.signal_write_with_imm);
+    CHECK(decision.signal_write_with_imm ||
+          !post_plan.wait_write_with_imm_completion)
+        << "write-with-imm completion wait requires a signaled WR";
+    if (post_plan.wait_write_with_imm_completion) {
+      WaitRawCompletion(transport);
+    }
+  } else {
+    transport->Write(descriptor_buffer,
+                     req.descriptor_gaddr,
+                     slot_bytes,
+                     request_id,
+                     post_plan.signal_descriptor_write);
+    if (post_plan.wait_descriptor_write_completion) {
+      WaitRawCompletion(transport);
+    }
+    CHECK(post_plan.signal_doorbell)
+        << "descriptor doorbell completion wait requires a signaled doorbell";
+    transport->SendDoorbell(static_cast<std::uint16_t>(shard),
+                            static_cast<std::uint32_t>(req.slot_id),
+                            request_id);
+    if (post_plan.wait_doorbell_completion) {
+      WaitRawCompletion(transport);
+    }
+  }
+}
 } // namespace
 
 namespace petps {
@@ -202,11 +248,22 @@ void PetPSClient::Init() {
         << "descriptor_doorbell requires positive slot count";
     CHECK_GT(FLAGS_rdma_put_v2_push_slot_bytes, 0)
         << "descriptor_doorbell requires positive slot bytes";
+  }
+}
+
+void PetPSClient::InitDescriptorTransports() {
+  CHECK(transport_mode_ == RdmaTransportMode::kDescriptorDoorbell);
+  CHECK(!serverThreadIdsRoutedTo_.empty());
+  for (int server_thread_id : serverThreadIdsRoutedTo_) {
     RawVerbsConfig raw_config;
     raw_config.global_id = XPostoffice::GetInstance()->GlobalID();
+    raw_config.local_lane = server_thread_id;
+    raw_config.remote_lane = server_thread_id;
     raw_config.num_servers = XPostoffice::GetInstance()->NumServers();
     raw_config.num_clients = XPostoffice::GetInstance()->NumClients();
     raw_config.numa_id = FLAGS_numa_id;
+    raw_config.connect_to_servers = true;
+    raw_config.connect_to_clients = false;
     raw_config.local_base_addr = dsm_->get_conf()->baseAddr;
     raw_config.local_region_bytes = dsm_->get_conf()->dsmSize;
     raw_config.allocation_start_offset =
@@ -220,9 +277,55 @@ void PetPSClient::Init() {
         static_cast<std::uint64_t>(FLAGS_rdma_put_v2_push_slots_per_client) *
         FLAGS_rdma_put_v2_push_slot_bytes;
     auto shared = GetSharedRawVerbsClientTransport(raw_config);
-    raw_transport_ = std::move(shared.transport);
-    raw_transport_mu_ = std::move(shared.mu);
+    descriptor_transports_by_thread_[server_thread_id] = shared.transport;
+    descriptor_transport_mus_by_thread_[server_thread_id] = shared.mu;
+    if (raw_transport_ == nullptr) {
+      raw_transport_ = shared.transport;
+      raw_transport_mu_ = shared.mu;
+    }
   }
+  InitDescriptorSlots();
+}
+
+void PetPSClient::InitDescriptorSlots() {
+  if (!descriptor_send_slots_.empty()) {
+    return;
+  }
+  const int slot_count = FLAGS_rdma_put_v2_push_slots_per_client;
+  CHECK_GT(slot_count, 0) << "descriptor_doorbell requires positive slot count";
+  descriptor_send_slots_.resize(static_cast<std::size_t>(slot_count), nullptr);
+  descriptor_ack_slots_.resize(static_cast<std::size_t>(slot_count), nullptr);
+  descriptor_slot_locks_.reserve(static_cast<std::size_t>(slot_count));
+  for (int i = 0; i < slot_count; ++i) {
+    descriptor_slot_locks_.push_back(std::make_unique<std::mutex>());
+  }
+
+  std::lock_guard<std::mutex> transport_guard(*raw_transport_mu_);
+  for (int i = 0; i < slot_count; ++i) {
+    descriptor_send_slots_[static_cast<std::size_t>(i)] = static_cast<char*>(
+        raw_transport_->AllocateRegistered(FLAGS_rdma_put_v2_push_slot_bytes));
+    descriptor_ack_slots_[static_cast<std::size_t>(i)] =
+        static_cast<std::atomic<std::int32_t>*>(
+            raw_transport_->AllocateRegistered(
+                sizeof(std::atomic<std::int32_t>)));
+  }
+}
+
+RawVerbsTransport*
+PetPSClient::DescriptorTransportForThread(int thread_id) const {
+  auto it = descriptor_transports_by_thread_.find(thread_id);
+  CHECK(it != descriptor_transports_by_thread_.end())
+      << "missing descriptor raw transport for server thread_id=" << thread_id;
+  return it->second.get();
+}
+
+std::mutex*
+PetPSClient::DescriptorTransportMutexForThread(int thread_id) const {
+  auto it = descriptor_transport_mus_by_thread_.find(thread_id);
+  CHECK(it != descriptor_transport_mus_by_thread_.end())
+      << "missing descriptor raw transport mutex for server thread_id="
+      << thread_id;
+  return it->second.get();
 }
 
 int PetPSClient::GetParameter(base::ConstArray<uint64_t> keys,
@@ -278,6 +381,43 @@ void PetPSClient::WaitForServerReady() {
 }
 
 std::vector<int> PetPSClient::GetServerThreadIDs() {
+  if (transport_mode_ == RdmaTransportMode::kDescriptorDoorbell) {
+    const std::string key = RdmaDescriptorWorkerThreadsKey(shard_);
+    const auto deadline =
+        std::chrono::steady_clock::now() +
+        std::chrono::seconds(FLAGS_rdma_server_ready_timeout_sec);
+    std::string value;
+    std::string error;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (XPostoffice::GetInstance()->MemCachedTryGet(key, &value)) {
+        std::vector<int> thread_ids;
+        CHECK(DecodeRdmaDescriptorWorkerThreads(
+            std::string_view(value.data(), value.size()), &thread_ids, &error))
+            << error;
+        CHECK(!thread_ids.empty())
+            << "descriptor worker thread list is empty for key=" << key;
+        const std::uint64_t rotate_seed =
+            (static_cast<std::uint64_t>(dsm_->getMyNodeID()) << 16) ^
+            static_cast<std::uint64_t>(dsm_->getMyThreadID());
+        thread_ids =
+            RotateRdmaDescriptorServingThreadIDs(thread_ids, rotate_seed);
+        LOG(INFO) << folly::sformat(
+            "client{} {}th thread are routed to descriptor PS{} ({})th thread",
+            dsm_->getMyNodeID(),
+            static_cast<int>(dsm_->getMyThreadID()),
+            shard_,
+            base::ConstArray<int>(
+                thread_ids.data(), static_cast<int>(thread_ids.size()))
+                .Debug());
+        return thread_ids;
+      }
+      std::this_thread::sleep_for(
+          std::chrono::milliseconds(FLAGS_rdma_server_ready_poll_ms));
+    }
+    throw std::runtime_error(
+        "Timed out waiting for RDMA descriptor worker key: " + key);
+  }
+
   auto m     = RawMessage::get_new_msg();
   m->node_id = dsm_->getMyNodeID();
   m->t_id    = dsm_->getMyThreadID();
@@ -472,18 +612,16 @@ void PetPSClient::WaitRPCFinish(int rpc_id) {
 
 void PetPSClient::RevokeRPCResource(int rpc_id) {
   std::lock_guard<std::mutex> guard(rpc_mu_);
-  rpcId2PollMap_.erase(static_cast<uint64_t>(rpc_id));
+  const auto rpc_key = static_cast<uint64_t>(rpc_id);
+  rpcId2PollMap_.erase(rpc_key);
+  descriptor_pending_rpcs_.erase(rpc_key);
 };
 
 int PetPSClient::GetParameterDescriptor(base::ConstArray<uint64_t> keys,
                                         float* values,
                                         bool isAsync) {
-  if (isAsync) {
-    throw std::runtime_error(
-        "descriptor_doorbell async GET is not enabled in the first phase");
-  }
-  std::lock_guard<std::mutex> transport_guard(*raw_transport_mu_);
-  RawVerbsTransportAllocationScope allocation_scope(raw_transport_.get());
+  const RdmaDescriptorClientCompletionMode completion_mode =
+      GetRdmaDescriptorGetCompletionMode(isAsync);
   const std::size_t response_bytes =
       FixedSlotResponseBytes(keys.Size(), FLAGS_value_size);
   auto* status = reinterpret_cast<std::atomic<std::int32_t>*>(
@@ -493,13 +631,24 @@ int PetPSClient::GetParameterDescriptor(base::ConstArray<uint64_t> keys,
 
   const std::uint64_t request_id =
       descriptor_request_id_.fetch_add(1, std::memory_order_relaxed);
+  if (request_id > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+    throw std::runtime_error(
+        "descriptor request_id overflow int range: " +
+        std::to_string(request_id));
+  }
   const std::uint64_t slot_id =
       descriptor_slot_cursor_.fetch_add(1, std::memory_order_relaxed) %
       static_cast<std::uint64_t>(FLAGS_rdma_put_v2_push_slots_per_client);
+  std::unique_lock<std::mutex> descriptor_slot_guard(
+      *descriptor_slot_locks_[static_cast<std::size_t>(slot_id)]);
   const std::uint16_t client_node_id =
       static_cast<std::uint16_t>(dsm_->getMyNodeID());
   const std::uint64_t descriptor_offset =
       DescriptorSlotOffset(client_node_id, slot_id);
+  const int target_thread_id = SelectServerThreadID();
+  auto* descriptor_transport = DescriptorTransportForThread(target_thread_id);
+  auto* descriptor_transport_mu =
+      DescriptorTransportMutexForThread(target_thread_id);
 
   RdmaDescriptorRequest req{};
   req.magic = kRdmaDescriptorMagic;
@@ -508,54 +657,73 @@ int PetPSClient::GetParameterDescriptor(base::ConstArray<uint64_t> keys,
   req.request_id = request_id;
   req.client_node_id = client_node_id;
   req.client_thread_id = static_cast<std::uint16_t>(dsm_->getMyThreadID());
+  req.lane_id = static_cast<std::uint32_t>(target_thread_id);
   req.slot_id = static_cast<std::uint32_t>(slot_id);
   req.key_count = static_cast<std::uint32_t>(keys.Size());
   req.embedding_dim =
       static_cast<std::uint32_t>(FLAGS_value_size / sizeof(float));
   req.descriptor_gaddr =
       GlobalAddress{static_cast<std::uint16_t>(shard_), descriptor_offset};
-  req.response_gaddr = raw_transport_->LocalAddress(values);
-  req.status_gaddr = raw_transport_->LocalAddress(status);
+  req.response_gaddr = descriptor_transport->LocalAddress(values);
+  req.status_gaddr = descriptor_transport->LocalAddress(status);
   req.payload_bytes = static_cast<std::uint32_t>(keys.binary_size());
   req.response_bytes = static_cast<std::uint32_t>(response_bytes);
 
-  std::string payload;
   std::string error;
-  CHECK(EncodeRdmaDescriptorRequest(req, &payload, &error)) << error;
-  const std::size_t slot_bytes = payload.size() + keys.binary_size();
+  const std::size_t slot_bytes =
+      sizeof(RdmaDescriptorRequest) + keys.binary_size();
   CHECK_LE(slot_bytes, FLAGS_rdma_put_v2_push_slot_bytes)
       << "descriptor GET request does not fit slot payload_bytes="
       << keys.binary_size()
       << " slot_bytes=" << FLAGS_rdma_put_v2_push_slot_bytes;
   char* descriptor_buffer =
-      static_cast<char*>(raw_transport_->AllocateRegistered(slot_bytes));
-  std::memcpy(descriptor_buffer, payload.data(), payload.size());
+      descriptor_send_slots_[static_cast<std::size_t>(slot_id)];
+  CHECK(WriteRdmaDescriptorRequest(
+      req, descriptor_buffer, FLAGS_rdma_put_v2_push_slot_bytes, &error))
+      << error;
   std::memcpy(
-      descriptor_buffer + payload.size(), keys.binary_data(), keys.binary_size());
+      descriptor_buffer + sizeof(RdmaDescriptorRequest),
+      keys.binary_data(),
+      keys.binary_size());
 
-  raw_transport_->Write(descriptor_buffer,
-                        req.descriptor_gaddr,
-                        slot_bytes,
-                        request_id,
-                        true);
-  WaitRawCompletion(raw_transport_.get());
-  raw_transport_->SendDoorbell(static_cast<std::uint16_t>(shard_),
-                               static_cast<std::uint32_t>(slot_id),
-                               request_id);
-  WaitRawCompletion(raw_transport_.get());
-  WaitPutAck(status);
   {
     std::lock_guard<std::mutex> guard(rpc_mu_);
     rpcId2PollMap_[request_id] = status;
+    if (completion_mode ==
+        RdmaDescriptorClientCompletionMode::kReturnAfterPost) {
+      DescriptorPendingRpc pending;
+      pending.descriptor_slot_guard = std::move(descriptor_slot_guard);
+      descriptor_pending_rpcs_.emplace(request_id, std::move(pending));
+    }
   }
-  if (request_id > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+
+  try {
+    std::lock_guard<std::mutex> transport_guard(*descriptor_transport_mu);
+    PostDescriptorDoorbell(
+        descriptor_transport,
+        descriptor_buffer,
+        req,
+        slot_bytes,
+        shard_,
+        request_id,
+        descriptor_doorbell_post_state_.Next(target_thread_id));
+  } catch (...) {
     {
       std::lock_guard<std::mutex> guard(rpc_mu_);
       rpcId2PollMap_.erase(request_id);
+      descriptor_pending_rpcs_.erase(request_id);
     }
-    throw std::runtime_error(
-        "descriptor request_id overflow int range: " +
-        std::to_string(request_id));
+    throw;
+  }
+  if (completion_mode ==
+      RdmaDescriptorClientCompletionMode::kWaitForCompletion) {
+    try {
+      WaitPutAck(status);
+    } catch (...) {
+      std::lock_guard<std::mutex> guard(rpc_mu_);
+      rpcId2PollMap_.erase(request_id);
+      throw;
+    }
   }
   return static_cast<int>(request_id);
 }
@@ -563,24 +731,33 @@ int PetPSClient::GetParameterDescriptor(base::ConstArray<uint64_t> keys,
 int PetPSClient::PutParameterDescriptor(
     const std::vector<uint64_t>& keys,
     const std::vector<std::vector<float>>& values) {
-  std::lock_guard<std::mutex> transport_guard(*raw_transport_mu_);
-  RawVerbsTransportAllocationScope allocation_scope(raw_transport_.get());
-  auto* ack = static_cast<std::atomic<std::int32_t>*>(
-      raw_transport_->AllocateRegistered(sizeof(std::atomic<std::int32_t>)));
-  ack->store(static_cast<std::int32_t>(RpcStatus::kPending),
-             std::memory_order_release);
-
   const std::uint64_t request_id =
       descriptor_request_id_.fetch_add(1, std::memory_order_relaxed);
+  const std::uint64_t slot_count =
+      static_cast<std::uint64_t>(FLAGS_rdma_put_v2_push_slots_per_client);
   const std::uint64_t slot_id =
       descriptor_slot_cursor_.fetch_add(1, std::memory_order_relaxed) %
-      static_cast<std::uint64_t>(FLAGS_rdma_put_v2_push_slots_per_client);
+      slot_count;
+  std::unique_lock<std::mutex> descriptor_slot_guard(
+      *descriptor_slot_locks_[static_cast<std::size_t>(slot_id)]);
+  auto* ack = descriptor_ack_slots_[static_cast<std::size_t>(slot_id)];
+  ack->store(static_cast<std::int32_t>(RpcStatus::kPending),
+             std::memory_order_release);
   const std::uint16_t client_node_id =
       static_cast<std::uint16_t>(dsm_->getMyNodeID());
   const std::uint64_t descriptor_offset =
       DescriptorSlotOffset(client_node_id, slot_id);
+  const int target_thread_id = SelectServerThreadID();
+  auto* descriptor_transport = DescriptorTransportForThread(target_thread_id);
+  auto* descriptor_transport_mu =
+      DescriptorTransportMutexForThread(target_thread_id);
 
   std::string control_payload;
+  std::unique_lock<std::mutex> payload_slot_guard;
+  bool post_push_payload = false;
+  char* push_payload_buffer = nullptr;
+  GlobalAddress push_payload_gaddr;
+  std::size_t push_payload_bytes = 0;
   if (FLAGS_rdma_put_protocol_version == 2) {
     const std::uint32_t transfer_mode = [&]() -> std::uint32_t {
       if (FLAGS_rdma_put_v2_transfer_mode == "read") {
@@ -628,24 +805,24 @@ int PetPSClient::PutParameterDescriptor(
                       "client to keep descriptor and payload separate";
         return -1;
       }
-      payload_buf = dsm_->get_rdma_buffer();
-      const std::uint64_t payload_slot_id =
-          descriptor_slot_cursor_.fetch_add(1, std::memory_order_relaxed) %
-          static_cast<std::uint64_t>(FLAGS_rdma_put_v2_push_slots_per_client);
-      if (payload_slot_id == slot_id) {
-        LOG(ERROR) << "descriptor PUT-v2(push) payload slot collided with "
-                      "descriptor slot";
-        return -1;
-      }
+      const std::uint64_t payload_slot_id = (slot_id + 1) % slot_count;
+      payload_slot_guard = std::unique_lock<std::mutex>(
+          *descriptor_slot_locks_[static_cast<std::size_t>(payload_slot_id)]);
       if (payload_bytes > FLAGS_rdma_put_v2_push_slot_bytes) {
         LOG(ERROR) << "PUT-v2(push) payload larger than slot: payload_bytes="
                    << payload_bytes
                    << " slot_bytes=" << FLAGS_rdma_put_v2_push_slot_bytes;
         return -1;
       }
+      payload_buf = descriptor_send_slots_[static_cast<std::size_t>(
+          payload_slot_id)];
       payload_gaddr = GlobalAddress{
           static_cast<std::uint16_t>(shard_),
           DescriptorSlotOffset(client_node_id, payload_slot_id)};
+      post_push_payload = true;
+      push_payload_buffer = payload_buf;
+      push_payload_gaddr = payload_gaddr;
+      push_payload_bytes = payload_bytes;
     }
 
     std::memcpy(payload_buf, keys.data(), keys.size() * sizeof(std::uint64_t));
@@ -655,10 +832,6 @@ int PetPSClient::PutParameterDescriptor(
                   values[i].data(),
                   FLAGS_value_size);
     }
-    if (transfer_mode == kPutV2TransferModePush) {
-      dsm_->write_sync(payload_buf, payload_gaddr, payload_bytes);
-    }
-
     PutRemotePayloadV2 control{
         kPutRemotePayloadMagic,
         kPutProtocolVersionV2,
@@ -690,40 +863,56 @@ int PetPSClient::PutParameterDescriptor(
   req.request_id = request_id;
   req.client_node_id = client_node_id;
   req.client_thread_id = static_cast<std::uint16_t>(dsm_->getMyThreadID());
+  req.lane_id = static_cast<std::uint32_t>(target_thread_id);
   req.slot_id = static_cast<std::uint32_t>(slot_id);
   req.key_count = static_cast<std::uint32_t>(keys.size());
   req.embedding_dim =
       static_cast<std::uint32_t>(FLAGS_value_size / sizeof(float));
   req.descriptor_gaddr =
       GlobalAddress{static_cast<std::uint16_t>(shard_), descriptor_offset};
-  req.status_gaddr = raw_transport_->LocalAddress(ack);
+  req.status_gaddr = descriptor_transport->LocalAddress(ack);
   req.payload_bytes = static_cast<std::uint32_t>(control_payload.size());
 
-  std::string payload;
   std::string error;
-  CHECK(EncodeRdmaDescriptorRequest(req, &payload, &error)) << error;
-  const std::size_t slot_bytes = payload.size() + control_payload.size();
+  const std::size_t slot_bytes =
+      sizeof(RdmaDescriptorRequest) + control_payload.size();
   CHECK_LE(slot_bytes, FLAGS_rdma_put_v2_push_slot_bytes)
       << "descriptor PUT control does not fit slot payload_bytes="
       << control_payload.size()
       << " slot_bytes=" << FLAGS_rdma_put_v2_push_slot_bytes;
   char* descriptor_buffer =
-      static_cast<char*>(raw_transport_->AllocateRegistered(slot_bytes));
-  std::memcpy(descriptor_buffer, payload.data(), payload.size());
-  std::memcpy(descriptor_buffer + payload.size(),
+      descriptor_send_slots_[static_cast<std::size_t>(slot_id)];
+  CHECK(WriteRdmaDescriptorRequest(
+      req, descriptor_buffer, FLAGS_rdma_put_v2_push_slot_bytes, &error))
+      << error;
+  std::memcpy(descriptor_buffer + sizeof(RdmaDescriptorRequest),
               control_payload.data(),
               control_payload.size());
 
-  raw_transport_->Write(descriptor_buffer,
-                        req.descriptor_gaddr,
-                        slot_bytes,
-                        request_id,
-                        true);
-  WaitRawCompletion(raw_transport_.get());
-  raw_transport_->SendDoorbell(static_cast<std::uint16_t>(shard_),
-                               static_cast<std::uint32_t>(slot_id),
-                               request_id);
-  WaitRawCompletion(raw_transport_.get());
+  {
+    std::lock_guard<std::mutex> transport_guard(*descriptor_transport_mu);
+    if (post_push_payload) {
+      const RdmaDescriptorPushPayloadPostPlan payload_plan =
+          GetRdmaDescriptorPushPayloadPostPlan();
+      CHECK(payload_plan.use_raw_write)
+          << "descriptor PUT-v2(push) requires raw write payload push";
+      descriptor_transport->Write(push_payload_buffer,
+                                  push_payload_gaddr,
+                                  push_payload_bytes,
+                                  request_id,
+                                  payload_plan.signal_payload_write);
+      CHECK(!payload_plan.wait_payload_write_completion)
+          << "descriptor PUT-v2(push) payload wait is intentionally disabled";
+    }
+    PostDescriptorDoorbell(
+        descriptor_transport,
+        descriptor_buffer,
+        req,
+        slot_bytes,
+        shard_,
+        request_id,
+        descriptor_doorbell_post_state_.Next(target_thread_id));
+  }
   const std::int32_t status = WaitPutAck(ack);
   return status == static_cast<std::int32_t>(RpcStatus::kOk) ? 0 : -1;
 }

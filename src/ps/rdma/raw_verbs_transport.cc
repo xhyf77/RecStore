@@ -23,13 +23,14 @@ std::string IbvError(const char* op) {
   return std::string(op) + " failed";
 }
 
-ibv_context* OpenFirstDevice() {
+ibv_context* OpenDeviceForNuma(int numa_id) {
   int device_count = 0;
   ibv_device** devices = ibv_get_device_list(&device_count);
   if (devices == nullptr || device_count == 0) {
     throw std::runtime_error("no RDMA devices found");
   }
-  ibv_context* context = ibv_open_device(devices[0]);
+  const int device_index = SelectRawVerbsDeviceIndex(numa_id, device_count);
+  ibv_context* context = ibv_open_device(devices[device_index]);
   ibv_free_device_list(devices);
   if (context == nullptr) {
     throw std::runtime_error("ibv_open_device failed");
@@ -100,11 +101,6 @@ void ModifyQpToRts(ibv_qp* qp) {
   }
 }
 
-std::string MetaKey(int publisher_node_id, int receiver_node_id) {
-  return "raw-verbs-meta-" + std::to_string(publisher_node_id) + "-to-" +
-         std::to_string(receiver_node_id);
-}
-
 } // namespace
 
 struct RawVerbsTransport::Impl {
@@ -124,11 +120,13 @@ struct RawVerbsTransport::Impl {
   std::vector<RawVerbsNodeMeta> metas;
   std::vector<RawVerbsRemoteMemory> remotes;
   std::vector<ibv_qp*> qps;
+  ibv_wc wc_batch[kRawVerbsPollBatchSize] = {};
+  RawVerbsCompletionBatchCursor batch_cursor;
 };
 
 RawVerbsTransport::RawVerbsTransport(const RawVerbsConfig& config)
     : impl_(std::make_unique<Impl>(config)) {
-  impl_->context = OpenFirstDevice();
+  impl_->context = OpenDeviceForNuma(config.numa_id);
   impl_->pd = ibv_alloc_pd(impl_->context);
   if (impl_->pd == nullptr) {
     throw std::runtime_error("ibv_alloc_pd failed");
@@ -164,7 +162,7 @@ RawVerbsTransport::RawVerbsTransport(const RawVerbsConfig& config)
   const int node_count = config.num_servers + config.num_clients;
   impl_->qps.resize(static_cast<std::size_t>(node_count), nullptr);
   for (int node = 0; node < node_count; ++node) {
-    if (node == config.global_id) {
+    if (!ShouldRawVerbsConnectToNode(config, node)) {
       continue;
     }
     ibv_qp_init_attr init_attr{};
@@ -270,13 +268,16 @@ void RawVerbsTransport::PublishAndConnect() {
   const int node_count = impl_->config.num_servers + impl_->config.num_clients;
   const RawVerbsNodeMeta local = LocalMeta();
   for (int node = 0; node < node_count; ++node) {
-    if (node == impl_->config.global_id) {
+    if (!ShouldRawVerbsConnectToNode(impl_->config, node)) {
       continue;
     }
     RawVerbsNodeMeta peer_local = local;
     peer_local.qpn = impl_->qps[static_cast<std::size_t>(node)]->qp_num;
     XPostoffice::GetInstance()->MemCachedSet(
-        MetaKey(impl_->config.global_id, node),
+        RawVerbsMetaKey(impl_->config.global_id,
+                        impl_->config.local_lane,
+                        node,
+                        impl_->config.remote_lane),
         std::string(reinterpret_cast<const char*>(&peer_local),
                     sizeof(peer_local)));
   }
@@ -295,9 +296,16 @@ void RawVerbsTransport::PublishAndConnect() {
       };
       continue;
     }
+    if (!ShouldRawVerbsConnectToNode(impl_->config, node)) {
+      continue;
+    }
     std::string value;
     while (!XPostoffice::GetInstance()->MemCachedTryGet(
-        MetaKey(node, impl_->config.global_id), &value)) {
+        RawVerbsMetaKey(node,
+                        impl_->config.remote_lane,
+                        impl_->config.global_id,
+                        impl_->config.local_lane),
+        &value)) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     if (value.size() != sizeof(RawVerbsNodeMeta)) {
@@ -315,7 +323,7 @@ void RawVerbsTransport::PublishAndConnect() {
   }
 
   for (int node = 0; node < node_count; ++node) {
-    if (node == impl_->config.global_id) {
+    if (!ShouldRawVerbsConnectToNode(impl_->config, node)) {
       continue;
     }
     ibv_qp* qp = impl_->qps[static_cast<std::size_t>(node)];
@@ -359,6 +367,36 @@ void RawVerbsTransport::Write(const void* local,
   ibv_send_wr* bad_wr = nullptr;
   if (ibv_post_send(impl_->qps[remote.nodeID], &wr, &bad_wr) != 0) {
     throw std::runtime_error("ibv_post_send write failed");
+  }
+}
+
+void RawVerbsTransport::WriteWithImm(const void* local,
+                                     GlobalAddress remote,
+                                     std::size_t bytes,
+                                     std::uint32_t imm_data,
+                                     std::uint64_t wr_id,
+                                     bool signaled) {
+  if (remote.nodeID >= impl_->remotes.size()) {
+    throw std::runtime_error(
+        "raw verbs write-with-imm remote node out of range");
+  }
+  ibv_sge sge{};
+  sge.addr = reinterpret_cast<std::uint64_t>(local);
+  sge.length = static_cast<std::uint32_t>(bytes);
+  sge.lkey = impl_->local_mr->lkey;
+  ibv_send_wr wr{};
+  wr.wr_id = wr_id;
+  wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+  wr.imm_data = htonl(imm_data);
+  wr.send_flags = signaled ? IBV_SEND_SIGNALED : 0;
+  wr.sg_list = &sge;
+  wr.num_sge = 1;
+  wr.wr.rdma.remote_addr =
+      impl_->remotes[remote.nodeID].base_addr + remote.offset;
+  wr.wr.rdma.rkey = impl_->remotes[remote.nodeID].rkey;
+  ibv_send_wr* bad_wr = nullptr;
+  if (ibv_post_send(impl_->qps[remote.nodeID], &wr, &bad_wr) != 0) {
+    throw std::runtime_error("ibv_post_send write-with-imm failed");
   }
 }
 
@@ -415,18 +453,22 @@ bool RawVerbsTransport::Poll(RawVerbsCompletion* completion, int timeout_ms) {
                 std::chrono::milliseconds(timeout_ms)
           : std::chrono::steady_clock::time_point::max();
   while (true) {
-    ibv_wc wc{};
-    const int n = ibv_poll_cq(impl_->cq, 1, &wc);
-    if (n < 0) {
-      throw std::runtime_error("ibv_poll_cq failed");
-    }
-    if (n == 0) {
-      if (std::chrono::steady_clock::now() >= deadline) {
-        return false;
+    if (!impl_->batch_cursor.HasCachedCompletion()) {
+      const int n =
+          ibv_poll_cq(impl_->cq, kRawVerbsPollBatchSize, impl_->wc_batch);
+      if (n < 0) {
+        throw std::runtime_error("ibv_poll_cq failed");
       }
-      std::this_thread::yield();
-      continue;
+      if (n == 0) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+          return false;
+        }
+        std::this_thread::yield();
+        continue;
+      }
+      impl_->batch_cursor.Reset(impl_->wc_batch, n);
     }
+    ibv_wc& wc = *impl_->batch_cursor.TakeCachedCompletion();
     if (wc.status != IBV_WC_SUCCESS) {
       throw std::runtime_error(std::string("raw verbs CQ error: ") +
                                ibv_wc_status_str(wc.status));

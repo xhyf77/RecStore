@@ -13,17 +13,53 @@
 
 namespace petps {
 
+inline int SelectRawVerbsDeviceIndex(int numa_id, int device_count) {
+  if (device_count <= 0 || numa_id <= 0) {
+    return 0;
+  }
+  if (numa_id >= device_count) {
+    return device_count - 1;
+  }
+  return numa_id;
+}
+
 struct RawVerbsConfig {
   int global_id = 0;
+  int local_lane = 0;
+  int remote_lane = 0;
   int num_servers = 1;
   int num_clients = 1;
   int numa_id = 0;
+  bool connect_to_servers = true;
+  bool connect_to_clients = true;
   std::size_t local_region_bytes = 128 * 1024 * 1024;
   std::uint64_t local_base_addr = 0;
   std::uint64_t allocation_start_offset = 0;
   std::uint64_t reserved_region_offset = 0;
   std::uint64_t reserved_region_bytes = 0;
 };
+
+inline std::string RawVerbsMetaKey(int publisher_node_id,
+                                   int publisher_lane,
+                                   int receiver_node_id,
+                                   int receiver_lane) {
+  return "raw-verbs-meta-" + std::to_string(publisher_node_id) + "-lane-" +
+         std::to_string(publisher_lane) + "-to-" +
+         std::to_string(receiver_node_id) + "-lane-" +
+         std::to_string(receiver_lane);
+}
+
+inline bool ShouldRawVerbsConnectToNode(const RawVerbsConfig& config,
+                                        int node_id) {
+  if (node_id == config.global_id) {
+    return false;
+  }
+  if (node_id < 0 || node_id >= config.num_servers + config.num_clients) {
+    return false;
+  }
+  const bool is_server = node_id < config.num_servers;
+  return is_server ? config.connect_to_servers : config.connect_to_clients;
+}
 
 struct RawVerbsReservedRegion {
   std::uint64_t offset = 0;
@@ -134,6 +170,31 @@ struct RawVerbsCompletion {
   ibv_wc_opcode opcode = IBV_WC_SEND;
 };
 
+inline constexpr int kRawVerbsPollBatchSize = 16;
+
+class RawVerbsCompletionBatchCursor {
+public:
+  bool HasCachedCompletion() const { return current_ < size_; }
+
+  void Reset(ibv_wc* entries, int size) {
+    entries_ = entries;
+    size_ = size;
+    current_ = 0;
+  }
+
+  ibv_wc* TakeCachedCompletion() {
+    if (!HasCachedCompletion()) {
+      return nullptr;
+    }
+    return entries_ + current_++;
+  }
+
+private:
+  ibv_wc* entries_ = nullptr;
+  int size_ = 0;
+  int current_ = 0;
+};
+
 struct RawVerbsNodeMeta {
   std::uint16_t node_id = 0;
   std::uint16_t lid = 0;
@@ -164,6 +225,8 @@ public:
 
   void Write(const void* local, GlobalAddress remote, std::size_t bytes,
              std::uint64_t wr_id, bool signaled);
+  void WriteWithImm(const void* local, GlobalAddress remote, std::size_t bytes,
+                    std::uint32_t imm_data, std::uint64_t wr_id, bool signaled);
   void Read(void* local, GlobalAddress remote, std::size_t bytes,
             std::uint64_t wr_id, bool signaled);
   void SendDoorbell(std::uint16_t node_id, std::uint32_t imm_data,

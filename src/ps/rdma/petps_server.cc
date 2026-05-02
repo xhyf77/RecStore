@@ -1,10 +1,14 @@
 #include <folly/init/Init.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
+#include <deque>
 #include <fstream>
 #include <future>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -152,21 +156,32 @@ public:
           << "descriptor_doorbell requires positive slot count";
       CHECK_GT(FLAGS_rdma_put_v2_push_slot_bytes, 0)
           << "descriptor_doorbell requires positive slot bytes";
-      petps::RawVerbsConfig raw_config;
-      raw_config.global_id = XPostoffice::GetInstance()->GlobalID();
-      raw_config.num_servers = XPostoffice::GetInstance()->NumServers();
-      raw_config.num_clients = XPostoffice::GetInstance()->NumClients();
-      raw_config.numa_id = FLAGS_numa_id;
-      raw_config.local_base_addr = dsm_->get_conf()->baseAddr;
-      raw_config.local_region_bytes = dsm_->get_conf()->dsmSize;
+      raw_transports_.resize(static_cast<std::size_t>(thread_count_));
       const std::uint64_t machine_count = static_cast<std::uint64_t>(
-          raw_config.num_servers + raw_config.num_clients);
-      raw_config.reserved_region_offset = FLAGS_rdma_put_v2_push_region_offset;
-      raw_config.reserved_region_bytes =
+          XPostoffice::GetInstance()->NumServers() +
+          XPostoffice::GetInstance()->NumClients());
+      for (int thread_id : petps::GetRdmaDescriptorServingThreadIDs(
+               thread_count_)) {
+        petps::RawVerbsConfig raw_config;
+        raw_config.global_id = XPostoffice::GetInstance()->GlobalID();
+        raw_config.local_lane = thread_id;
+        raw_config.remote_lane = thread_id;
+        raw_config.num_servers = XPostoffice::GetInstance()->NumServers();
+        raw_config.num_clients = XPostoffice::GetInstance()->NumClients();
+        raw_config.numa_id = FLAGS_numa_id;
+        raw_config.connect_to_servers = false;
+        raw_config.connect_to_clients = true;
+        raw_config.local_base_addr = dsm_->get_conf()->baseAddr;
+        raw_config.local_region_bytes = dsm_->get_conf()->dsmSize;
+        raw_config.reserved_region_offset =
+            FLAGS_rdma_put_v2_push_region_offset;
+        raw_config.reserved_region_bytes =
           machine_count *
           static_cast<std::uint64_t>(FLAGS_rdma_put_v2_push_slots_per_client) *
           FLAGS_rdma_put_v2_push_slot_bytes;
-      raw_transport_ = std::make_unique<petps::RawVerbsTransport>(raw_config);
+        raw_transports_[static_cast<std::size_t>(thread_id)] =
+            std::make_unique<petps::RawVerbsTransport>(raw_config);
+      }
     }
   }
 
@@ -186,6 +201,12 @@ public:
   }
 
 private:
+  struct DescriptorTask {
+    petps::RdmaDescriptorRequest request;
+    const char* inline_payload = nullptr;
+    std::size_t inline_payload_bytes = 0;
+  };
+
   void WriteMayflyResponse(const RequestView& request,
                            const char* buffer,
                            GlobalAddress gaddr,
@@ -199,15 +220,13 @@ private:
     }
 
     auto& counter = descriptor_dsm_write_counters_[thread_id];
-    const bool should_poll =
-        (counter & kDescriptorDsmWriteSignalBatchMask) ==
-        kDescriptorDsmWriteSignalBatchMask;
+    const petps::RdmaDescriptorDsmWriteDecision decision =
+        petps::GetRdmaDescriptorDsmWriteDecision(counter);
     ++counter;
-    if (should_poll) {
-      dsm_->write_sync(buffer, gaddr, size);
-    } else {
-      dsm_->write(buffer, gaddr, size, false, wr_id);
+    if (decision.poll_before_write) {
+      dsm_->poll_rdma_cq(1);
     }
+    dsm_->write(buffer, gaddr, size, decision.signal_write, wr_id);
   }
 
   void RpcGetServerServingThreadIDs(RawMessage* recv) {
@@ -232,6 +251,33 @@ private:
     VLOG(1) << "component=rdma_server event=get_server_threadids_reply node_id="
             << static_cast<int>(recv->node_id) << " tid="
             << static_cast<int>(recv->t_id) << " threads=" << thread_ids.size();
+  }
+
+  void PublishDescriptorWorkerThreads() {
+    if (transport_mode_ == petps::RdmaTransportMode::kDescriptorDoorbell) {
+      const std::vector<int> thread_ids =
+          petps::GetRdmaDescriptorServingThreadIDs(thread_count_);
+      const std::string worker_key = petps::RdmaDescriptorWorkerThreadsKey(
+          XPostoffice::GetInstance()->ServerID());
+      XPostoffice::GetInstance()->MemCachedSet(
+          worker_key, petps::EncodeRdmaDescriptorWorkerThreads(thread_ids));
+      VLOG(1) << "component=rdma_server "
+              << "event=publish_descriptor_worker_threads key=" << worker_key
+              << " threads=" << thread_ids.size();
+    }
+  }
+
+  void PublishReadyKeys() {
+    if (ready_published_.exchange(true, std::memory_order_acq_rel)) {
+      return;
+    }
+    PublishDescriptorWorkerThreads();
+    const std::string ready_key =
+        "petps-server-ready-" +
+        std::to_string(XPostoffice::GetInstance()->ServerID());
+    XPostoffice::GetInstance()->MemCachedSet(ready_key, "1");
+    VLOG(1) << "component=rdma_server event=publish_ready_key key="
+            << ready_key;
   }
 
   void HandlePsPut(const RequestView& request, int thread_id) {
@@ -555,92 +601,133 @@ private:
     }
   }
 
+  bool DecodeDescriptorCompletion(petps::RawVerbsTransport* raw_transport,
+                                  const petps::RawVerbsCompletion& completion,
+                                  DescriptorTask* task) {
+    if (raw_transport == nullptr || task == nullptr || !completion.has_imm) {
+      return false;
+    }
+    const std::uint32_t slot_id = completion.imm_data;
+    petps::RdmaDescriptorRequest request{};
+    request.client_node_id = static_cast<std::uint16_t>(completion.wr_id);
+    request.slot_id = slot_id;
+    request.descriptor_gaddr = GlobalAddress{
+        static_cast<std::uint16_t>(dsm_->getMyNodeID()),
+        FLAGS_rdma_put_v2_push_region_offset +
+            (static_cast<std::uint64_t>(request.client_node_id) *
+                 static_cast<std::uint64_t>(
+                     FLAGS_rdma_put_v2_push_slots_per_client) +
+             slot_id) *
+                FLAGS_rdma_put_v2_push_slot_bytes};
+    petps::RdmaDescriptorLaneConfig lane_config{};
+    lane_config.region_offset = FLAGS_rdma_put_v2_push_region_offset;
+    lane_config.slot_bytes = FLAGS_rdma_put_v2_push_slot_bytes;
+    lane_config.slots_per_client =
+        static_cast<std::uint32_t>(FLAGS_rdma_put_v2_push_slots_per_client);
+    lane_config.machine_count =
+        static_cast<std::uint32_t>(dsm_->get_conf()->machineNR);
+    std::string error;
+    if (!petps::ValidateDescriptorLane(request, lane_config, &error)) {
+      LOG(ERROR) << "invalid descriptor lane: " << error;
+      return false;
+    }
+    const char* payload = static_cast<const char*>(
+        raw_transport->LocalPointer(request.descriptor_gaddr));
+    if (!petps::DecodeRdmaDescriptorRequest(
+            std::string_view(payload, sizeof(petps::RdmaDescriptorRequest)),
+            &request,
+            &error)) {
+      LOG(ERROR) << "descriptor decode error: " << error;
+      return false;
+    }
+    if (!petps::ValidateDescriptorLane(request, lane_config, &error)) {
+      LOG(ERROR) << "decoded descriptor lane mismatch: " << error;
+      return false;
+    }
+    if (request.payload_bytes >
+        FLAGS_rdma_put_v2_push_slot_bytes -
+            sizeof(petps::RdmaDescriptorRequest)) {
+      LOG(ERROR) << "descriptor inline payload too large request_id="
+                 << request.request_id << " payload_bytes="
+                 << request.payload_bytes
+                 << " slot_bytes=" << FLAGS_rdma_put_v2_push_slot_bytes;
+      return false;
+    }
+    task->request = request;
+    task->inline_payload = payload + sizeof(petps::RdmaDescriptorRequest);
+    task->inline_payload_bytes = request.payload_bytes;
+    return true;
+  }
+
+  void DescriptorPollLoop(int thread_id) {
+    auto* raw_transport =
+        raw_transports_[static_cast<std::size_t>(thread_id)].get();
+    CHECK(raw_transport != nullptr)
+        << "missing descriptor raw transport for thread_id=" << thread_id;
+    while (1) {
+      petps::RawVerbsCompletion completion{};
+      if (!raw_transport->Poll(&completion, FLAGS_rdma_wait_timeout_ms)) {
+        std::this_thread::yield();
+        continue;
+      }
+      DescriptorTask task;
+      if (!DecodeDescriptorCompletion(raw_transport, completion, &task)) {
+        continue;
+      }
+      RpcPsDescriptorDoorbell(
+          task.request,
+          Slice(task.inline_payload, task.inline_payload_bytes),
+          thread_id);
+    }
+  }
+
   void PollingThread(int thread_id) {
     auto_bind_core(0);
     dsm_->registerThread();
     VLOG(1) << "component=rdma_server event=polling_thread_ready thread_id="
             << thread_id;
     const int ready_threads = registered_polling_threads_.fetch_add(1) + 1;
-    if (ready_threads == thread_count_) {
-      const std::string key =
-          "petps-server-ready-" +
-          std::to_string(XPostoffice::GetInstance()->ServerID());
-      XPostoffice::GetInstance()->MemCachedSet(key, "1");
-      VLOG(1) << "component=rdma_server event=publish_ready_key key=" << key;
+    if (transport_mode_ != petps::RdmaTransportMode::kDescriptorDoorbell &&
+        ready_threads == thread_count_) {
+      PublishReadyKeys();
     }
     if (transport_mode_ == petps::RdmaTransportMode::kDescriptorDoorbell) {
-      if (thread_id == 0) {
-        raw_transport_->PublishAndConnect();
-        raw_connected_.store(true, std::memory_order_release);
-      } else {
-        while (!raw_connected_.load(std::memory_order_acquire)) {
+      if (ready_threads == thread_count_) {
+        PublishDescriptorWorkerThreads();
+      }
+      auto* raw_transport =
+          raw_transports_[static_cast<std::size_t>(thread_id)].get();
+      if (raw_transport == nullptr) {
+        const int serving_thread_count = static_cast<int>(
+            petps::GetRdmaDescriptorServingThreadIDs(thread_count_).size());
+        while (!petps::CanPublishRdmaDescriptorReady(
+            registered_polling_threads_.load(std::memory_order_acquire),
+            thread_count_,
+            raw_connected_endpoints_.load(std::memory_order_acquire) ==
+                serving_thread_count)) {
           std::this_thread::yield();
         }
+        PublishReadyKeys();
         while (1) {
           std::this_thread::sleep_for(std::chrono::seconds(1));
         }
       }
-      while (1) {
-        petps::RawVerbsCompletion completion{};
-        if (!raw_transport_->Poll(&completion, FLAGS_rdma_wait_timeout_ms)) {
-          std::this_thread::yield();
-          continue;
-        }
-        if (!completion.has_imm) {
-          continue;
-        }
-        const std::uint32_t slot_id = completion.imm_data;
-        petps::RdmaDescriptorRequest request{};
-        request.client_node_id = static_cast<std::uint16_t>(completion.wr_id);
-        request.slot_id = slot_id;
-        request.descriptor_gaddr = GlobalAddress{
-            static_cast<std::uint16_t>(dsm_->getMyNodeID()),
-            FLAGS_rdma_put_v2_push_region_offset +
-                (static_cast<std::uint64_t>(request.client_node_id) *
-                     static_cast<std::uint64_t>(
-                         FLAGS_rdma_put_v2_push_slots_per_client) +
-                 slot_id) *
-                    FLAGS_rdma_put_v2_push_slot_bytes};
-        petps::RdmaDescriptorLaneConfig lane_config{};
-        lane_config.region_offset = FLAGS_rdma_put_v2_push_region_offset;
-        lane_config.slot_bytes = FLAGS_rdma_put_v2_push_slot_bytes;
-        lane_config.slots_per_client =
-            static_cast<std::uint32_t>(FLAGS_rdma_put_v2_push_slots_per_client);
-        lane_config.machine_count =
-            static_cast<std::uint32_t>(dsm_->get_conf()->machineNR);
-        std::string error;
-        if (!petps::ValidateDescriptorLane(request, lane_config, &error)) {
-          LOG(ERROR) << "invalid descriptor lane: " << error;
-          continue;
-        }
-        const char* payload = static_cast<const char*>(
-            raw_transport_->LocalPointer(request.descriptor_gaddr));
-        if (!petps::DecodeRdmaDescriptorRequest(
-                std::string_view(payload, sizeof(petps::RdmaDescriptorRequest)),
-                &request,
-                &error)) {
-          LOG(ERROR) << "descriptor decode error: " << error;
-          continue;
-        }
-        if (!petps::ValidateDescriptorLane(request, lane_config, &error)) {
-          LOG(ERROR) << "decoded descriptor lane mismatch: " << error;
-          continue;
-        }
-        if (request.payload_bytes >
-            FLAGS_rdma_put_v2_push_slot_bytes -
-                sizeof(petps::RdmaDescriptorRequest)) {
-          LOG(ERROR) << "descriptor inline payload too large request_id="
-                     << request.request_id
-                     << " payload_bytes=" << request.payload_bytes
-                     << " slot_bytes=" << FLAGS_rdma_put_v2_push_slot_bytes;
-          continue;
-        }
-        RpcPsDescriptorDoorbell(
-            request,
-            Slice(payload + sizeof(petps::RdmaDescriptorRequest),
-                  request.payload_bytes),
-            thread_id);
+      raw_transport->PublishAndConnect();
+      raw_connected_endpoints_.fetch_add(1, std::memory_order_acq_rel);
+      const int serving_thread_count = static_cast<int>(
+          petps::GetRdmaDescriptorServingThreadIDs(thread_count_).size());
+      while (!petps::CanPublishRdmaDescriptorReady(
+          registered_polling_threads_.load(std::memory_order_acquire),
+          thread_count_,
+          raw_connected_endpoints_.load(std::memory_order_acquire) ==
+              serving_thread_count)) {
+        std::this_thread::yield();
       }
+      PublishReadyKeys();
+      while (!ready_published_.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      DescriptorPollLoop(thread_id);
     }
     auto msg = RawMessage::get_new_msg();
 
@@ -677,6 +764,7 @@ private:
   int thread_count_;
   DSM* dsm_;
   std::atomic_int registered_polling_threads_{0};
+  std::atomic<bool> ready_published_{false};
   xmh::Timer get_parameter_timer_;
   xmh::Timer index_timer_;
   xmh::Timer value_timer_;
@@ -684,11 +772,10 @@ private:
   base::epoch::EpochManager* epoch_manager_;
   petps::RdmaTransportMode transport_mode_ =
       petps::RdmaTransportMode::kRawMessage;
-  std::unique_ptr<petps::RawVerbsTransport> raw_transport_;
-  std::atomic<bool> raw_connected_{false};
+  std::vector<std::unique_ptr<petps::RawVerbsTransport>> raw_transports_;
+  std::atomic<int> raw_connected_endpoints_{0};
 
   constexpr static int kMaxThread = 128;
-  constexpr static std::uint64_t kDescriptorDsmWriteSignalBatchMask = 31;
   uint64_t tp[kMaxThread][8];
   std::uint64_t descriptor_dsm_write_counters_[kMaxThread] = {};
 };

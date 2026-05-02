@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import queue
 import re
 import shutil
 import socket
@@ -588,14 +589,51 @@ class PetPSClusterRunner:
         )
 
         output_lines = []
-        try:
-            for line in iter(process.stdout.readline, ""):
-                if not line:
-                    break
-                output_lines.append(line)
-                print(line, end="")
-            returncode = process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
+        line_queue = queue.Queue()
+
+        def read_stdout():
+            try:
+                for line in iter(process.stdout.readline, ""):
+                    if not line:
+                        break
+                    line_queue.put(line)
+            finally:
+                line_queue.put(None)
+
+        reader = threading.Thread(target=read_stdout, daemon=True)
+        reader.start()
+
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        returncode = None
+        timed_out = False
+        reader_done = False
+
+        while True:
+            try:
+                line = line_queue.get(timeout=0.05)
+                if line is None:
+                    reader_done = True
+                else:
+                    output_lines.append(line)
+                    print(line, end="")
+            except queue.Empty:
+                pass
+
+            if returncode is None:
+                returncode = process.poll()
+
+            if (
+                deadline is not None
+                and time.monotonic() >= deadline
+                and returncode is None
+            ):
+                timed_out = True
+                break
+
+            if returncode is not None and reader_done:
+                break
+
+        if timed_out:
             process.terminate()
             try:
                 process.wait(timeout=5)
@@ -606,6 +644,19 @@ class PetPSClusterRunner:
             output_lines.append(timeout_line)
             print(timeout_line, end="")
             returncode = 124
+        elif returncode is None:
+            returncode = process.wait()
+
+        reader.join(timeout=1)
+        while True:
+            try:
+                line = line_queue.get_nowait()
+            except queue.Empty:
+                break
+            if line is None:
+                continue
+            output_lines.append(line)
+            print(line, end="")
 
         class Completed:
             def __init__(self, returncode, stdout):
