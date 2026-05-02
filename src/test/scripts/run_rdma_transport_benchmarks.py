@@ -185,6 +185,7 @@ def print_summary_table(rows):
     header = [
         "transport",
         "mode",
+        "put_v2",
         "op",
         "rounds",
         "iterations",
@@ -200,6 +201,7 @@ def print_summary_table(rows):
             [
                 row["transport"],
                 row.get("transport_mode", ""),
+                row.get("put_v2_transfer_mode", ""),
                 row["op"],
                 str(row["rounds"]),
                 str(row["iterations"]),
@@ -331,6 +333,7 @@ def main():
         rows = collect_summary_rows(completed.stdout)
         for row in rows:
             row["transport_mode"] = args.rdma_transport_mode or "raw_message"
+            row["put_v2_transfer_mode"] = args.rdma_put_v2_transfer_mode
         summary_rows.extend(rows)
         rc = completed.returncode
         if rc != 0:

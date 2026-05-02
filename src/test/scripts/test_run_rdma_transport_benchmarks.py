@@ -121,6 +121,8 @@ class TestRunRDMATransportBenchmarks(unittest.TestCase):
         rows = [
             {
                 "transport": "RDMA",
+                "transport_mode": "descriptor_doorbell",
+                "put_v2_transfer_mode": "read",
                 "op": "put",
                 "rounds": 50,
                 "iterations": 20,
@@ -134,6 +136,8 @@ class TestRunRDMATransportBenchmarks(unittest.TestCase):
             },
             {
                 "transport": "RDMA",
+                "transport_mode": "descriptor_doorbell",
+                "put_v2_transfer_mode": "read",
                 "op": "get",
                 "rounds": 50,
                 "iterations": 20,
@@ -152,6 +156,8 @@ class TestRunRDMATransportBenchmarks(unittest.TestCase):
         text = out.getvalue()
         self.assertIn("=== Benchmark Summary (measure phase) ===", text)
         self.assertIn("| transport", text)
+        self.assertIn("| put_v2", text)
+        self.assertIn("| read", text)
         self.assertIn("| op ", text)
         self.assertIn("| RDMA", text)
         self.assertIn("| put", text)

@@ -395,8 +395,7 @@ inline bool DecodeRdmaDescriptorRequest(std::string_view payload,
   }
   RdmaDescriptorRequest decoded{};
   std::memcpy(&decoded, payload.data(), sizeof(decoded));
-  std::string tmp_payload;
-  if (!EncodeRdmaDescriptorRequest(decoded, &tmp_payload, error)) {
+  if (!ValidateRdmaDescriptorRequest(decoded, error)) {
     return false;
   }
   *request = decoded;

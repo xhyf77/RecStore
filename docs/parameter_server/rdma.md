@@ -132,6 +132,14 @@ python3 src/test/scripts/run_rdma_transport_benchmarks.py \
   --use-local-memcached auto
 ```
 
+summary 表中的 `put_v2` 列用于明确 PUT-v2 大 payload 的 transfer mode。对比 raw-message 和 descriptor-doorbell 时，必须保持 `thread_num`、`put_v2`、`iterations`、`batch-keys`、`rounds` 和 warmup 一致；当前推荐口径是：
+
+- `--rdma-thread-num 1`
+- `--rdma-put-protocol-version 2`
+- `--rdma-put-v2-transfer-mode read`
+
+否则很容易把 `read` / `push` 或线程数差异误判为 transport mode 差异。
+
 ### raw_message 基线
 
 raw-message 是默认模式。不要额外传 `--rdma-transport-mode raw_message`，除非你正在验证 runner 的 mode plumbing。
@@ -178,10 +186,8 @@ python3 src/test/scripts/run_rdma_transport_benchmarks.py \
   --benchmark-binary ./build/bin/ps_transport_benchmark \
   --rdma-only \
   --rdma-transport-mode descriptor_doorbell \
-  --iterations 100 \
-  --batch-keys 128 \
-  --rounds 5 \
-  --rdma-warmup-rounds 2 \
+  --iterations 300 --batch-keys 500 --rounds 20 --rdma-warmup-rounds 10 \
+  --rdma-thread-num 1 --rdma-put-protocol-version 2 --rdma-put-v2-transfer-mode read \
   --report-mode summary \
   --use-local-memcached auto
 ```
@@ -191,6 +197,42 @@ python3 src/test/scripts/run_rdma_transport_benchmarks.py \
 - `--rdma-transport-mode descriptor_doorbell` 是 runner 参数；runner 会把它翻译成 `--rdma_transport_mode=descriptor_doorbell` 传给 server 和 benchmark client。
 - 环境变量 `RECSTORE_RDMA_TRANSPORT_MODE` 仍会保留，供 op/client 其他初始化路径读取。
 - 当前 descriptor mode 目标是先保持正确性闭环，不应把它当成已证明有 async overlap 收益的路径。
+
+### GET 性能排查结论
+
+当前 raw-message GET 与 descriptor-doorbell GET 复用同一套 server lookup：
+
+- raw-message：Mayfly/DSM RawMessage 承载控制面通知。
+- descriptor-doorbell：raw verbs write 写 descriptor slot，send-with-imm 作为 doorbell，server 解码后复用 raw-message GET handler。
+
+所以 descriptor 省掉 RPC 包装后没有明显变快，主要不是 server lookup 变慢，而是 descriptor 仍有 client wrapper 和 doorbell envelope 成本。`2026-05-02` 的 trace 口径显示：raw 与 descriptor 的 server handle 总耗时基本相近，descriptor 额外多一层 envelope；差距主要来自 client 端准备 descriptor、post doorbell、等待完成这段包装成本。
+
+同步 descriptor GET 已优化为不注册 `rpcId2PollMap_`，也不保留 `DescriptorPendingRpc` slot guard；同步路径在函数内直接等待完成。async / prefetch 路径仍保留 pending map 和 slot guard，语义不变。优化后 descriptor GET 在当前口径下已能和 raw GET 持平或略快，但差距只有 1% 左右，仍需要多轮 benchmark 判断。
+
+打开 GET trace：
+
+```bash
+RECSTORE_RDMA_GET_TRACE=1 RECSTORE_RDMA_GET_TRACE_INTERVAL=5000 <benchmark command>
+```
+
+trace 会输出 client `prep/register/post/wait/total`，server handle `parse/index/response/write/total`，以及 descriptor envelope `poll/decode/handle/total`。`RECSTORE_RDMA_GET_TRACE` 默认关闭；打开后只用于定位性能结构，不应把 trace run 直接作为最终性能数。
+
+如果需要用 gperftools 抓 `petps_server` 侧 CPU profile，使用正式脚本而不是 `Testing/` 下的临时文件：
+
+```bash
+python3 src/test/scripts/profile_rdma_transport_server.py \
+  --profile-path /tmp/recstore_rdma_server.prof \
+  --rdma-transport-mode descriptor_doorbell \
+  --rdma-put-v2-transfer-mode read
+```
+
+如果 `petps_server` 没有直接链接 profiler，可通过 `RECSTORE_PROFILER_LIB=/path/to/libprofiler.so` 或 `--profiler-lib` 注入。脚本会在 profile 文件不存在或为空时失败，避免把空 profile 当成有效证据。
+
+### PUT 对比注意事项
+
+PUT 性能对比必须先确认 `put_v2` 列一致。如果 descriptor 脚本使用 `push`，raw 脚本使用 `read`，或者反过来，就不能把两者 PUT 数值直接相减。
+
+如果 raw 与 descriptor 的 PUT 同时下降，优先按环境和口径问题排查：同一台机器是否有其它负载、RDMA 设备状态是否变化、memcached / server 是否复用旧进程、rounds / warmup 是否一致。如果只有 descriptor PUT 下降，再看 descriptor doorbell 侧的 envelope、slot、raw verbs completion 处理。
 
 ### descriptor_doorbell 当前实现约束
 

@@ -5,8 +5,10 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <limits>
 #include <map>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -101,6 +103,81 @@ SharedRawVerbsClientTransport GetSharedRawVerbsClientTransport(
 bool ShouldValidateRouting() {
   const char* env = std::getenv("RECSTORE_RDMA_VALIDATE_ROUTING");
   return env != nullptr && std::string(env) != "0";
+}
+
+bool ShouldTraceRdmaGet() {
+  static const bool enabled = [] {
+    const char* env = std::getenv("RECSTORE_RDMA_GET_TRACE");
+    return env != nullptr && std::string(env) != "0";
+  }();
+  return enabled;
+}
+
+std::uint64_t RdmaGetTraceInterval() {
+  static const std::uint64_t interval = [] {
+    const char* env = std::getenv("RECSTORE_RDMA_GET_TRACE_INTERVAL");
+    if (env == nullptr) {
+      return std::uint64_t{5000};
+    }
+    const auto parsed = static_cast<std::uint64_t>(
+        std::strtoull(env, nullptr, 10));
+    return parsed == 0 ? std::uint64_t{5000} : parsed;
+  }();
+  return interval;
+}
+
+std::uint64_t ToNs(std::chrono::steady_clock::duration duration) {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count());
+}
+
+struct RdmaGetClientTraceStats {
+  std::atomic<std::uint64_t> count{0};
+  std::atomic<std::uint64_t> prep_ns{0};
+  std::atomic<std::uint64_t> register_ns{0};
+  std::atomic<std::uint64_t> post_ns{0};
+  std::atomic<std::uint64_t> wait_ns{0};
+  std::atomic<std::uint64_t> total_ns{0};
+
+  void Add(const char* mode,
+           std::uint64_t prep,
+           std::uint64_t reg,
+           std::uint64_t post,
+           std::uint64_t wait,
+           std::uint64_t total) {
+    prep_ns.fetch_add(prep, std::memory_order_relaxed);
+    register_ns.fetch_add(reg, std::memory_order_relaxed);
+    post_ns.fetch_add(post, std::memory_order_relaxed);
+    wait_ns.fetch_add(wait, std::memory_order_relaxed);
+    total_ns.fetch_add(total, std::memory_order_relaxed);
+    const auto n = count.fetch_add(1, std::memory_order_relaxed) + 1;
+    const auto interval = RdmaGetTraceInterval();
+    if (n % interval != 0) {
+      return;
+    }
+    const double denom = static_cast<double>(n) * 1000.0;
+    std::ostringstream out;
+    out << "component=rdma_get_trace side=client mode=" << mode
+        << " count=" << n
+        << " prep_us_avg=" << prep_ns.load(std::memory_order_relaxed) / denom
+        << " register_us_avg="
+        << register_ns.load(std::memory_order_relaxed) / denom
+        << " post_us_avg=" << post_ns.load(std::memory_order_relaxed) / denom
+        << " wait_us_avg=" << wait_ns.load(std::memory_order_relaxed) / denom
+        << " total_us_avg=" << total_ns.load(std::memory_order_relaxed) / denom;
+    LOG(INFO) << out.str();
+    std::cerr << out.str() << std::endl;
+  }
+};
+
+RdmaGetClientTraceStats& RawGetClientTraceStats() {
+  static RdmaGetClientTraceStats stats;
+  return stats;
+}
+
+RdmaGetClientTraceStats& DescriptorGetClientTraceStats() {
+  static RdmaGetClientTraceStats stats;
+  return stats;
 }
 
 int MaxPutKeysPerRpc(int value_size_bytes) {
@@ -512,6 +589,9 @@ int PetPSClient::GetParameter(base::ConstArray<uint64_t> keys,
                               float* values,
                               bool isAsync,
                               int async_req_id) {
+  const bool trace_get = ShouldTraceRdmaGet();
+  const auto trace_start = trace_get ? std::chrono::steady_clock::now()
+                                     : std::chrono::steady_clock::time_point{};
   if (transport_mode_ == RdmaTransportMode::kDescriptorDoorbell) {
     return GetParameterDescriptor(keys, values, isAsync);
   }
@@ -538,11 +618,15 @@ int PetPSClient::GetParameter(base::ConstArray<uint64_t> keys,
           << each << " not belong to this PS";
     }
   }
+  const auto trace_registered = trace_get ? std::chrono::steady_clock::now()
+                                          : std::chrono::steady_clock::time_point{};
 
   dsm_->rpc_call(m,
                  shard_,
                  SelectServerThreadID(),
                  Slice(keys.binary_data(), keys.binary_size()));
+  const auto trace_posted = trace_get ? std::chrono::steady_clock::now()
+                                      : std::chrono::steady_clock::time_point{};
 
   if (rpc_id > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
     {
@@ -556,17 +640,51 @@ int PetPSClient::GetParameter(base::ConstArray<uint64_t> keys,
   if (!isAsync) {
     WaitRPCFinish(static_cast<int>(rpc_id));
   }
+  if (trace_get) {
+    const auto trace_done = std::chrono::steady_clock::now();
+    RawGetClientTraceStats().Add(
+        "raw_message",
+        ToNs(trace_registered - trace_start),
+        0,
+        ToNs(trace_posted - trace_registered),
+        isAsync ? 0 : ToNs(trace_done - trace_posted),
+        ToNs(trace_done - trace_start));
+  }
   return static_cast<int>(rpc_id);
 }
 
 bool PetPSClient::QueryRPCFinished(int rpc_id) {
-  auto* poll = GetPollSlot(static_cast<uint64_t>(rpc_id));
+  std::atomic<int32_t>* poll = nullptr;
+  {
+    std::lock_guard<std::mutex> guard(rpc_mu_);
+    const auto it = rpcId2PollMap_.find(static_cast<uint64_t>(rpc_id));
+    if (it != rpcId2PollMap_.end()) {
+      poll = it->second;
+    }
+  }
+  if (poll == nullptr) {
+    CHECK(transport_mode_ == RdmaTransportMode::kDescriptorDoorbell)
+        << "unknown rpc_id=" << rpc_id;
+    return true;
+  }
   return poll->load(std::memory_order_acquire) !=
          static_cast<std::int32_t>(RpcStatus::kPending);
 }
 
 void PetPSClient::WaitRPCFinish(int rpc_id) {
-  auto* poll       = GetPollSlot(static_cast<uint64_t>(rpc_id));
+  std::atomic<int32_t>* poll = nullptr;
+  {
+    std::lock_guard<std::mutex> guard(rpc_mu_);
+    const auto it = rpcId2PollMap_.find(static_cast<uint64_t>(rpc_id));
+    if (it != rpcId2PollMap_.end()) {
+      poll = it->second;
+    }
+  }
+  if (poll == nullptr) {
+    CHECK(transport_mode_ == RdmaTransportMode::kDescriptorDoorbell)
+        << "unknown rpc_id=" << rpc_id;
+    return;
+  }
   int wait_loops   = 0;
   const auto start = std::chrono::steady_clock::now();
   while (poll->load(std::memory_order_acquire) ==
@@ -620,6 +738,9 @@ void PetPSClient::RevokeRPCResource(int rpc_id) {
 int PetPSClient::GetParameterDescriptor(base::ConstArray<uint64_t> keys,
                                         float* values,
                                         bool isAsync) {
+  const bool trace_get = ShouldTraceRdmaGet();
+  const auto trace_start = trace_get ? std::chrono::steady_clock::now()
+                                     : std::chrono::steady_clock::time_point{};
   const RdmaDescriptorClientCompletionMode completion_mode =
       GetRdmaDescriptorGetCompletionMode(isAsync);
   const std::size_t response_bytes =
@@ -685,17 +806,19 @@ int PetPSClient::GetParameterDescriptor(base::ConstArray<uint64_t> keys,
       descriptor_buffer + sizeof(RdmaDescriptorRequest),
       keys.binary_data(),
       keys.binary_size());
+  const auto trace_prepared = trace_get ? std::chrono::steady_clock::now()
+                                        : std::chrono::steady_clock::time_point{};
 
-  {
+  if (completion_mode ==
+      RdmaDescriptorClientCompletionMode::kReturnAfterPost) {
     std::lock_guard<std::mutex> guard(rpc_mu_);
     rpcId2PollMap_[request_id] = status;
-    if (completion_mode ==
-        RdmaDescriptorClientCompletionMode::kReturnAfterPost) {
-      DescriptorPendingRpc pending;
-      pending.descriptor_slot_guard = std::move(descriptor_slot_guard);
-      descriptor_pending_rpcs_.emplace(request_id, std::move(pending));
-    }
+    DescriptorPendingRpc pending;
+    pending.descriptor_slot_guard = std::move(descriptor_slot_guard);
+    descriptor_pending_rpcs_.emplace(request_id, std::move(pending));
   }
+  const auto trace_registered = trace_get ? std::chrono::steady_clock::now()
+                                          : std::chrono::steady_clock::time_point{};
 
   try {
     std::lock_guard<std::mutex> transport_guard(*descriptor_transport_mu);
@@ -715,6 +838,8 @@ int PetPSClient::GetParameterDescriptor(base::ConstArray<uint64_t> keys,
     }
     throw;
   }
+  const auto trace_posted = trace_get ? std::chrono::steady_clock::now()
+                                      : std::chrono::steady_clock::time_point{};
   if (completion_mode ==
       RdmaDescriptorClientCompletionMode::kWaitForCompletion) {
     try {
@@ -724,6 +849,18 @@ int PetPSClient::GetParameterDescriptor(base::ConstArray<uint64_t> keys,
       rpcId2PollMap_.erase(request_id);
       throw;
     }
+  }
+  if (trace_get) {
+    const auto trace_done = std::chrono::steady_clock::now();
+    DescriptorGetClientTraceStats().Add(
+        "descriptor_doorbell",
+        ToNs(trace_prepared - trace_start),
+        ToNs(trace_registered - trace_prepared),
+        ToNs(trace_posted - trace_registered),
+        completion_mode == RdmaDescriptorClientCompletionMode::kWaitForCompletion
+            ? ToNs(trace_done - trace_posted)
+            : 0,
+        ToNs(trace_done - trace_start));
   }
   return static_cast<int>(request_id);
 }
