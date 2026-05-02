@@ -60,7 +60,7 @@ else
 fi
 
 if [ ! "${PROJECT_PATH}/dockerfiles/docker_config/.bashrc" -ef "${target_dir}/.bashrc" ]; then
-  cp /app/RecStore/dockerfiles/docker_config/.bashrc /root/.bashrc
+  cp "${PROJECT_PATH}/dockerfiles/docker_config/.bashrc" "${target_dir}/.bashrc"
 fi
 
 source "${target_dir}/.bashrc"
