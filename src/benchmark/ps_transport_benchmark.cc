@@ -61,14 +61,15 @@ bool ShouldPrintSummary(const std::string& mode) {
   return mode == "summary" || mode == "both";
 }
 
-void MaybePrintPerRound(const std::string& transport,
-                        const std::string& op,
-                        const std::string& report_mode,
-                        bool is_warmup,
-                        int round,
-                        int warmup_rounds,
-                        int rounds,
-                        int64_t elapsed_us) {
+void MaybePrintPerRound(
+    const std::string& transport,
+    const std::string& op,
+    const std::string& report_mode,
+    bool is_warmup,
+    int round,
+    int warmup_rounds,
+    int rounds,
+    int64_t elapsed_us) {
   if (!ShouldPrintPerRound(report_mode)) {
     return;
   }
@@ -80,16 +81,17 @@ void MaybePrintPerRound(const std::string& transport,
 }
 
 template <typename IterationFn>
-void RunOperationRounds(const std::string& transport,
-                        const std::string& op,
-                        int total_rounds,
-                        int warmup_rounds,
-                        int rounds,
-                        int iterations,
-                        const std::string& report_mode,
-                        IterationFn&& run_iteration,
-                        std::vector<int64_t>* warmup_samples_us,
-                        std::vector<int64_t>* measure_samples_us) {
+void RunOperationRounds(
+    const std::string& transport,
+    const std::string& op,
+    int total_rounds,
+    int warmup_rounds,
+    int rounds,
+    int iterations,
+    const std::string& report_mode,
+    IterationFn&& run_iteration,
+    std::vector<int64_t>* warmup_samples_us,
+    std::vector<int64_t>* measure_samples_us) {
   for (int round = 0; round < total_rounds; ++round) {
     const bool is_warmup = round < warmup_rounds;
     auto start           = std::chrono::steady_clock::now();
@@ -100,7 +102,8 @@ void RunOperationRounds(const std::string& transport,
     const int64_t elapsed_us =
         std::chrono::duration_cast<std::chrono::microseconds>(end - start)
             .count();
-    (is_warmup ? *warmup_samples_us : *measure_samples_us).push_back(elapsed_us);
+    (is_warmup ? *warmup_samples_us : *measure_samples_us)
+        .push_back(elapsed_us);
     MaybePrintPerRound(
         transport,
         op,
@@ -124,13 +127,14 @@ double PercentileUs(std::vector<int64_t> samples, double ratio) {
   return static_cast<double>(samples[idx]);
 }
 
-void PrintSummary(const std::string& transport,
-                  const std::string& op,
-                  const std::string& phase,
-                  const std::vector<int64_t>& elapsed_us_samples,
-                  int iterations_per_round,
-                  int batch_keys,
-                  std::size_t keys_per_iteration) {
+void PrintSummary(
+    const std::string& transport,
+    const std::string& op,
+    const std::string& phase,
+    const std::vector<int64_t>& elapsed_us_samples,
+    int iterations_per_round,
+    int batch_keys,
+    std::size_t keys_per_iteration) {
   if (elapsed_us_samples.empty()) {
     return;
   }
