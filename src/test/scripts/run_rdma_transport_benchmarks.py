@@ -27,6 +27,7 @@ BENCHMARK_NOISE_PATTERNS = (
 
 SUMMARY_RE = re.compile(
     r"transport=(?P<transport>\S+) "
+    r"op=(?P<op>\S+) "
     r"phase=(?P<phase>\S+) "
     r"summary "
     r"rounds=(?P<rounds>\d+) "
@@ -52,6 +53,7 @@ def build_rdma_runner(args):
         num_clients=1,
         thread_num=getattr(args, "rdma_thread_num", 1),
         max_kv_num_per_request=max_kv_num_per_request,
+        verbose=args.show_runner_logs,
         use_local_memcached=args.use_local_memcached,
         memcached_host=args.memcached_host,
         memcached_port=args.memcached_port,
@@ -87,6 +89,8 @@ def build_rdma_runner(args):
             args, "rdma_put_server_scratch_bytes", None
         ),
         rdma_wait_timeout_ms=getattr(args, "rdma_wait_timeout_ms", None),
+        rdma_transport_mode=getattr(args, "rdma_transport_mode", None),
+        rdma_transport_mode_client_flag=True,
         validate_routing=getattr(args, "validate_routing", False),
     )
 
@@ -147,6 +151,7 @@ def collect_summary_rows(text):
         rows.append(
             {
                 "transport": m.group("transport"),
+                "op": m.group("op"),
                 "rounds": int(m.group("rounds")),
                 "iterations": int(m.group("iterations")),
                 "batch_keys": int(m.group("batch_keys")),
@@ -165,6 +170,12 @@ def _fmt_num(value):
     return f"{value:,.2f}"
 
 
+def _per_request_us(row, field):
+    if row["iterations"] <= 0:
+        return 0.0
+    return row[field] / row["iterations"]
+
+
 def print_summary_table(rows):
     if not rows:
         print("[summary] no parsed measure summary rows found")
@@ -173,14 +184,15 @@ def print_summary_table(rows):
     rows = sorted(rows, key=lambda r: r["transport"])
     header = [
         "transport",
+        "mode",
+        "put_v2",
+        "op",
         "rounds",
         "iterations",
         "batch_keys",
-        "mean_us",
-        "p50_us",
-        "p95_us",
-        "p99_us",
-        "ops/s",
+        "mean_req_us",
+        "p50_req_us",
+        "p95_req_us",
         "key_ops/s",
     ]
     table = [header]
@@ -188,14 +200,15 @@ def print_summary_table(rows):
         table.append(
             [
                 row["transport"],
+                row.get("transport_mode", ""),
+                row.get("put_v2_transfer_mode", ""),
+                row["op"],
                 str(row["rounds"]),
                 str(row["iterations"]),
                 str(row["batch_keys"]),
-                _fmt_num(row["mean"]),
-                _fmt_num(row["p50"]),
-                _fmt_num(row["p95"]),
-                _fmt_num(row["p99"]),
-                _fmt_num(row["ops"]),
+                _fmt_num(_per_request_us(row, "mean")),
+                _fmt_num(_per_request_us(row, "p50")),
+                _fmt_num(_per_request_us(row, "p95")),
                 _fmt_num(row["key_ops"]),
             ]
         )
@@ -273,6 +286,11 @@ def main():
     parser.add_argument("--rdma-put-server-scratch-bytes", type=int)
     parser.add_argument("--rdma-wait-timeout-ms", type=int)
     parser.add_argument(
+        "--rdma-transport-mode",
+        choices=["raw_message", "descriptor_doorbell"],
+        default=None,
+    )
+    parser.add_argument(
         "--rdma-client-timeout-sec",
         type=int,
         default=120,
@@ -306,12 +324,17 @@ def main():
                 report_mode=args.report_mode,
                 batch_keys=args.batch_keys,
             ),
-            stream_output=False,
+            stream_output=args.show_runner_logs,
             timeout=(args.rdma_client_timeout_sec if args.rdma_client_timeout_sec > 0 else None),
         )
-        print_filtered_output(completed.stdout, args.show_runner_logs)
-        print_filtered_output(completed.stderr, args.show_runner_logs)
-        summary_rows.extend(collect_summary_rows(completed.stdout))
+        if not args.show_runner_logs:
+            print_filtered_output(completed.stdout, args.show_runner_logs)
+            print_filtered_output(completed.stderr, args.show_runner_logs)
+        rows = collect_summary_rows(completed.stdout)
+        for row in rows:
+            row["transport_mode"] = args.rdma_transport_mode or "raw_message"
+            row["put_v2_transfer_mode"] = args.rdma_put_v2_transfer_mode
+        summary_rows.extend(rows)
         rc = completed.returncode
         if rc != 0:
             return rc
