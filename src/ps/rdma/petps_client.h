@@ -80,12 +80,10 @@ private:
   void InitDescriptorSlots();
   RawVerbsTransport* DescriptorTransportForThread(int thread_id) const;
   std::mutex* DescriptorTransportMutexForThread(int thread_id) const;
-  int GetParameterDescriptor(base::ConstArray<uint64_t> keys,
-                             float* values,
-                             bool isAsync);
-  int PutParameterDescriptor(
-      const std::vector<uint64_t>& keys,
-      const std::vector<std::vector<float>>& values);
+  int GetParameterDescriptor(
+      base::ConstArray<uint64_t> keys, float* values, bool isAsync);
+  int PutParameterDescriptor(const std::vector<uint64_t>& keys,
+                             const std::vector<std::vector<float>>& values);
   struct DescriptorPendingRpc {
     std::unique_lock<std::mutex> descriptor_slot_guard;
   };

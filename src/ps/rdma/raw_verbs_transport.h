@@ -24,33 +24,34 @@ inline int SelectRawVerbsDeviceIndex(int numa_id, int device_count) {
 }
 
 struct RawVerbsConfig {
-  int global_id = 0;
-  int local_lane = 0;
-  int remote_lane = 0;
-  int num_servers = 1;
-  int num_clients = 1;
-  int numa_id = 0;
-  bool connect_to_servers = true;
-  bool connect_to_clients = true;
-  std::size_t local_region_bytes = 128 * 1024 * 1024;
-  std::uint64_t local_base_addr = 0;
+  int global_id                         = 0;
+  int local_lane                        = 0;
+  int remote_lane                       = 0;
+  int num_servers                       = 1;
+  int num_clients                       = 1;
+  int numa_id                           = 0;
+  bool connect_to_servers               = true;
+  bool connect_to_clients               = true;
+  std::size_t local_region_bytes        = 128 * 1024 * 1024;
+  std::uint64_t local_base_addr         = 0;
   std::uint64_t allocation_start_offset = 0;
-  std::uint64_t reserved_region_offset = 0;
-  std::uint64_t reserved_region_bytes = 0;
+  std::uint64_t reserved_region_offset  = 0;
+  std::uint64_t reserved_region_bytes   = 0;
 };
 
-inline std::string RawVerbsMetaKey(int publisher_node_id,
-                                   int publisher_lane,
-                                   int receiver_node_id,
-                                   int receiver_lane) {
+inline std::string RawVerbsMetaKey(
+    int publisher_node_id,
+    int publisher_lane,
+    int receiver_node_id,
+    int receiver_lane) {
   return "raw-verbs-meta-" + std::to_string(publisher_node_id) + "-lane-" +
          std::to_string(publisher_lane) + "-to-" +
          std::to_string(receiver_node_id) + "-lane-" +
          std::to_string(receiver_lane);
 }
 
-inline bool ShouldRawVerbsConnectToNode(const RawVerbsConfig& config,
-                                        int node_id) {
+inline bool
+ShouldRawVerbsConnectToNode(const RawVerbsConfig& config, int node_id) {
   if (node_id == config.global_id) {
     return false;
   }
@@ -63,15 +64,14 @@ inline bool ShouldRawVerbsConnectToNode(const RawVerbsConfig& config,
 
 struct RawVerbsReservedRegion {
   std::uint64_t offset = 0;
-  std::uint64_t bytes = 0;
+  std::uint64_t bytes  = 0;
 };
 
 class RawVerbsRegionAllocator {
 public:
   explicit RawVerbsRegionAllocator(std::uint64_t limit_bytes,
                                    std::uint64_t allocation_start_offset = 0)
-      : limit_bytes_(limit_bytes),
-        allocation_offset_(allocation_start_offset) {
+      : limit_bytes_(limit_bytes), allocation_offset_(allocation_start_offset) {
     if (allocation_start_offset > limit_bytes) {
       throw std::runtime_error(
           "raw verbs allocation start outside local memory");
@@ -86,7 +86,7 @@ public:
             "raw verbs reserved region outside local memory");
       }
     }
-    reserved_ = reserved;
+    reserved_                        = reserved;
     const std::uint64_t reserved_end = reserved.offset + reserved.bytes;
     if (reserved.bytes != 0 && allocation_offset_ >= reserved.offset &&
         allocation_offset_ < reserved_end) {
@@ -95,15 +95,14 @@ public:
   }
 
   std::uint64_t Allocate(std::size_t bytes) {
-    const std::uint64_t aligned = Align(bytes);
-    std::uint64_t offset = allocation_offset_;
+    const std::uint64_t aligned        = Align(bytes);
+    std::uint64_t offset               = allocation_offset_;
     const std::uint64_t reserved_begin = reserved_.offset;
-    const std::uint64_t reserved_end = reserved_.offset + reserved_.bytes;
+    const std::uint64_t reserved_end   = reserved_.offset + reserved_.bytes;
     if (reserved_.bytes != 0) {
       if (offset >= reserved_begin && offset < reserved_end) {
         offset = reserved_end;
-      } else if (offset < reserved_begin &&
-                 offset + aligned > reserved_begin) {
+      } else if (offset < reserved_begin && offset + aligned > reserved_begin) {
         offset = reserved_end;
       }
     }
@@ -131,7 +130,7 @@ private:
     return (static_cast<std::uint64_t>(bytes) + 63) & ~std::uint64_t{63};
   }
 
-  std::uint64_t limit_bytes_ = 0;
+  std::uint64_t limit_bytes_       = 0;
   std::uint64_t allocation_offset_ = 0;
   RawVerbsReservedRegion reserved_{};
 };
@@ -149,25 +148,25 @@ public:
   }
 
   RawVerbsRegionAllocatorScope(const RawVerbsRegionAllocatorScope&) = delete;
-  RawVerbsRegionAllocatorScope& operator=(const RawVerbsRegionAllocatorScope&) =
-      delete;
+  RawVerbsRegionAllocatorScope&
+  operator=(const RawVerbsRegionAllocatorScope&) = delete;
 
 private:
   RawVerbsRegionAllocator* allocator_ = nullptr;
-  std::uint64_t checkpoint_ = 0;
+  std::uint64_t checkpoint_           = 0;
 };
 
 struct RawVerbsRemoteMemory {
-  std::uint16_t node_id = 0;
+  std::uint16_t node_id   = 0;
   std::uint64_t base_addr = 0;
-  std::uint32_t rkey = 0;
+  std::uint32_t rkey      = 0;
 };
 
 struct RawVerbsCompletion {
-  std::uint64_t wr_id = 0;
+  std::uint64_t wr_id    = 0;
   std::uint32_t imm_data = 0;
-  bool has_imm = false;
-  ibv_wc_opcode opcode = IBV_WC_SEND;
+  bool has_imm           = false;
+  ibv_wc_opcode opcode   = IBV_WC_SEND;
 };
 
 inline constexpr int kRawVerbsPollBatchSize = 16;
@@ -178,7 +177,7 @@ public:
 
   void Reset(ibv_wc* entries, int size) {
     entries_ = entries;
-    size_ = size;
+    size_    = size;
     current_ = 0;
   }
 
@@ -191,18 +190,18 @@ public:
 
 private:
   ibv_wc* entries_ = nullptr;
-  int size_ = 0;
-  int current_ = 0;
+  int size_        = 0;
+  int current_     = 0;
 };
 
 struct RawVerbsNodeMeta {
-  std::uint16_t node_id = 0;
-  std::uint16_t lid = 0;
-  std::uint32_t qpn = 0;
-  std::uint32_t psn = 3185;
-  std::uint32_t rkey = 0;
+  std::uint16_t node_id   = 0;
+  std::uint16_t lid       = 0;
+  std::uint32_t qpn       = 0;
+  std::uint32_t psn       = 3185;
+  std::uint32_t rkey      = 0;
   std::uint64_t base_addr = 0;
-  std::uint8_t gid[16] = {};
+  std::uint8_t gid[16]    = {};
 };
 
 class RawVerbsTransport {
@@ -210,7 +209,7 @@ public:
   explicit RawVerbsTransport(const RawVerbsConfig& config);
   ~RawVerbsTransport();
 
-  RawVerbsTransport(const RawVerbsTransport&) = delete;
+  RawVerbsTransport(const RawVerbsTransport&)            = delete;
   RawVerbsTransport& operator=(const RawVerbsTransport&) = delete;
 
   void RegisterThread();
@@ -223,14 +222,24 @@ public:
   void PublishAndConnect();
   RawVerbsNodeMeta LocalMeta() const;
 
-  void Write(const void* local, GlobalAddress remote, std::size_t bytes,
-             std::uint64_t wr_id, bool signaled);
-  void WriteWithImm(const void* local, GlobalAddress remote, std::size_t bytes,
-                    std::uint32_t imm_data, std::uint64_t wr_id, bool signaled);
-  void Read(void* local, GlobalAddress remote, std::size_t bytes,
-            std::uint64_t wr_id, bool signaled);
-  void SendDoorbell(std::uint16_t node_id, std::uint32_t imm_data,
-                    std::uint64_t wr_id);
+  void Write(const void* local,
+             GlobalAddress remote,
+             std::size_t bytes,
+             std::uint64_t wr_id,
+             bool signaled);
+  void WriteWithImm(const void* local,
+                    GlobalAddress remote,
+                    std::size_t bytes,
+                    std::uint32_t imm_data,
+                    std::uint64_t wr_id,
+                    bool signaled);
+  void Read(void* local,
+            GlobalAddress remote,
+            std::size_t bytes,
+            std::uint64_t wr_id,
+            bool signaled);
+  void SendDoorbell(
+      std::uint16_t node_id, std::uint32_t imm_data, std::uint64_t wr_id);
   bool Poll(RawVerbsCompletion* completion, int timeout_ms);
 
 private:
@@ -242,7 +251,8 @@ class RawVerbsTransportAllocationScope {
 public:
   explicit RawVerbsTransportAllocationScope(RawVerbsTransport* transport)
       : transport_(transport),
-        checkpoint_(transport != nullptr ? transport->SaveAllocationState() : 0) {}
+        checkpoint_(
+            transport != nullptr ? transport->SaveAllocationState() : 0) {}
 
   ~RawVerbsTransportAllocationScope() {
     if (transport_ != nullptr) {
@@ -250,14 +260,14 @@ public:
     }
   }
 
-  RawVerbsTransportAllocationScope(
-      const RawVerbsTransportAllocationScope&) = delete;
-  RawVerbsTransportAllocationScope& operator=(
-      const RawVerbsTransportAllocationScope&) = delete;
+  RawVerbsTransportAllocationScope(const RawVerbsTransportAllocationScope&) =
+      delete;
+  RawVerbsTransportAllocationScope&
+  operator=(const RawVerbsTransportAllocationScope&) = delete;
 
 private:
   RawVerbsTransport* transport_ = nullptr;
-  std::uint64_t checkpoint_ = 0;
+  std::uint64_t checkpoint_     = 0;
 };
 
 } // namespace petps

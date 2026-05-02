@@ -47,20 +47,20 @@ TEST(RdmaProtocolTest, ComputesDescriptorClientPermanentSlotBytes) {
 
 TEST(RdmaProtocolTest, EncodesAndDecodesDescriptorDoorbellRequest) {
   RdmaDescriptorRequest req{};
-  req.magic = kRdmaDescriptorMagic;
-  req.version = kRdmaDescriptorVersionV1;
-  req.op = static_cast<std::uint16_t>(RdmaDescriptorOp::kGet);
-  req.request_id = 42;
-  req.client_node_id = 2;
+  req.magic            = kRdmaDescriptorMagic;
+  req.version          = kRdmaDescriptorVersionV1;
+  req.op               = static_cast<std::uint16_t>(RdmaDescriptorOp::kGet);
+  req.request_id       = 42;
+  req.client_node_id   = 2;
   req.client_thread_id = 3;
-  req.lane_id = 9;
-  req.slot_id = 1;
-  req.key_count = 4;
-  req.embedding_dim = 8;
-  req.response_gaddr = GlobalAddress{2, 8192};
-  req.status_gaddr = GlobalAddress{2, 16384};
-  req.payload_bytes = 4 * sizeof(std::uint64_t);
-  req.response_bytes = FixedSlotResponseBytes(4, 8 * sizeof(float));
+  req.lane_id          = 9;
+  req.slot_id          = 1;
+  req.key_count        = 4;
+  req.embedding_dim    = 8;
+  req.response_gaddr   = GlobalAddress{2, 8192};
+  req.status_gaddr     = GlobalAddress{2, 16384};
+  req.payload_bytes    = 4 * sizeof(std::uint64_t);
+  req.response_bytes   = FixedSlotResponseBytes(4, 8 * sizeof(float));
 
   std::string payload;
   std::string error;
@@ -78,17 +78,17 @@ TEST(RdmaProtocolTest, EncodesAndDecodesDescriptorDoorbellRequest) {
 
 TEST(RdmaProtocolTest, WritesDescriptorRequestIntoExistingBuffer) {
   RdmaDescriptorRequest req{};
-  req.magic = kRdmaDescriptorMagic;
-  req.version = kRdmaDescriptorVersionV1;
-  req.op = static_cast<std::uint16_t>(RdmaDescriptorOp::kGet);
-  req.request_id = 7;
-  req.client_node_id = 1;
+  req.magic            = kRdmaDescriptorMagic;
+  req.version          = kRdmaDescriptorVersionV1;
+  req.op               = static_cast<std::uint16_t>(RdmaDescriptorOp::kGet);
+  req.request_id       = 7;
+  req.client_node_id   = 1;
   req.client_thread_id = 2;
-  req.slot_id = 3;
-  req.key_count = 4;
-  req.embedding_dim = 8;
-  req.payload_bytes = 4 * sizeof(std::uint64_t);
-  req.response_bytes = FixedSlotResponseBytes(4, 8 * sizeof(float));
+  req.slot_id          = 3;
+  req.key_count        = 4;
+  req.embedding_dim    = 8;
+  req.payload_bytes    = 4 * sizeof(std::uint64_t);
+  req.response_bytes   = FixedSlotResponseBytes(4, 8 * sizeof(float));
 
   char buffer[sizeof(RdmaDescriptorRequest)]{};
   std::string error;
@@ -105,10 +105,10 @@ TEST(RdmaProtocolTest, WritesDescriptorRequestIntoExistingBuffer) {
 
 TEST(RdmaProtocolTest, RejectsDescriptorWriteToSmallBuffer) {
   RdmaDescriptorRequest req{};
-  req.magic = kRdmaDescriptorMagic;
-  req.version = kRdmaDescriptorVersionV1;
-  req.op = static_cast<std::uint16_t>(RdmaDescriptorOp::kGet);
-  req.key_count = 1;
+  req.magic         = kRdmaDescriptorMagic;
+  req.version       = kRdmaDescriptorVersionV1;
+  req.op            = static_cast<std::uint16_t>(RdmaDescriptorOp::kGet);
+  req.key_count     = 1;
   req.embedding_dim = 4;
 
   char buffer[sizeof(RdmaDescriptorRequest) - 1]{};
@@ -119,14 +119,14 @@ TEST(RdmaProtocolTest, RejectsDescriptorWriteToSmallBuffer) {
 
 TEST(RdmaProtocolTest, RejectsInvalidDescriptorRequests) {
   RdmaDescriptorRequest req{};
-  req.magic = kRdmaDescriptorMagic;
-  req.version = kRdmaDescriptorVersionV1;
-  req.op = static_cast<std::uint16_t>(RdmaDescriptorOp::kGet);
-  req.key_count = 1;
-  req.embedding_dim = 4;
+  req.magic          = kRdmaDescriptorMagic;
+  req.version        = kRdmaDescriptorVersionV1;
+  req.op             = static_cast<std::uint16_t>(RdmaDescriptorOp::kGet);
+  req.key_count      = 1;
+  req.embedding_dim  = 4;
   req.response_gaddr = GlobalAddress{1, 8192};
-  req.status_gaddr = GlobalAddress{1, 12288};
-  req.payload_bytes = sizeof(std::uint64_t);
+  req.status_gaddr   = GlobalAddress{1, 12288};
+  req.payload_bytes  = sizeof(std::uint64_t);
   req.response_bytes = FixedSlotResponseBytes(1, 4 * sizeof(float));
 
   std::string payload;
@@ -141,14 +141,14 @@ TEST(RdmaProtocolTest, RejectsInvalidDescriptorRequests) {
 
 TEST(RdmaProtocolTest, ValidatesDescriptorLaneBounds) {
   RdmaDescriptorLaneConfig cfg{};
-  cfg.region_offset = 64 * 1024 * 1024;
-  cfg.slot_bytes = 4096;
+  cfg.region_offset    = 64 * 1024 * 1024;
+  cfg.slot_bytes       = 4096;
   cfg.slots_per_client = 8;
-  cfg.machine_count = 4;
+  cfg.machine_count    = 4;
 
   RdmaDescriptorRequest req{};
   req.client_node_id = 2;
-  req.slot_id = 3;
+  req.slot_id        = 3;
   req.descriptor_gaddr =
       GlobalAddress{0, cfg.region_offset + (2 * 8 + 3) * 4096};
 
@@ -242,8 +242,7 @@ TEST(RdmaProtocolTest, DescriptorWorkerSelectionKeepsPollerFree) {
 
 TEST(RdmaProtocolTest, DescriptorServingThreadsExposeWorkersOnly) {
   EXPECT_EQ(GetRdmaDescriptorServingThreadIDs(1), std::vector<int>({0}));
-  EXPECT_EQ(GetRdmaDescriptorServingThreadIDs(4),
-            std::vector<int>({1, 2, 3}));
+  EXPECT_EQ(GetRdmaDescriptorServingThreadIDs(4), std::vector<int>({1, 2, 3}));
 }
 
 TEST(RdmaProtocolTest, RotatesDescriptorServingThreadsBySeed) {
@@ -259,22 +258,22 @@ TEST(RdmaProtocolTest, RotatesDescriptorServingThreadsBySeed) {
 TEST(RdmaProtocolTest, DescriptorWorkerSelectionHonorsRequestedLane) {
   int worker_thread = -1;
   std::string error;
-  ASSERT_TRUE(TrySelectRdmaDescriptorWorkerThread(
-      4, 3, &worker_thread, &error)) << error;
+  ASSERT_TRUE(TrySelectRdmaDescriptorWorkerThread(4, 3, &worker_thread, &error))
+      << error;
   EXPECT_EQ(worker_thread, 3);
 
-  EXPECT_FALSE(TrySelectRdmaDescriptorWorkerThread(
-      4, 0, &worker_thread, &error));
+  EXPECT_FALSE(
+      TrySelectRdmaDescriptorWorkerThread(4, 0, &worker_thread, &error));
   EXPECT_NE(error.find("lane"), std::string::npos);
 
-  ASSERT_TRUE(TrySelectRdmaDescriptorWorkerThread(
-      1, 0, &worker_thread, &error)) << error;
+  ASSERT_TRUE(TrySelectRdmaDescriptorWorkerThread(1, 0, &worker_thread, &error))
+      << error;
   EXPECT_EQ(worker_thread, 0);
 }
 
 TEST(RdmaProtocolTest, EncodesAndDecodesDescriptorWorkerThreads) {
   const std::vector<int> threads = {1, 2, 3};
-  const std::string payload = EncodeRdmaDescriptorWorkerThreads(threads);
+  const std::string payload      = EncodeRdmaDescriptorWorkerThreads(threads);
 
   std::vector<int> decoded;
   std::string error;
