@@ -1,4 +1,3 @@
-#include <folly/Format.h>
 #include <folly/GLog.h>
 #include <folly/portability/GTest.h>
 

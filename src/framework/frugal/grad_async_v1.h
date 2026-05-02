@@ -307,7 +307,7 @@ public:
 
       CHECK_EQ(*p_old_end, old_end);
       if (new_end != old_end) {
-        // FB_LOG_EVERY_MS(WARNING, 1000) << folly::sformat(
+        // RECSTORE_LOG_EVERY_MS(WARNING, 1000) << folly::sformat(
         // LOG(WARNING) << folly::sformat(
         //     "Rank{}: Detect new sample comes, old_end{}, new_end{}", rank,
         //     old_end, new_end);
@@ -349,12 +349,12 @@ public:
     while (!dispatch_thread_stop_flag_.load()) {
       base::LockGuard _(large_lock_);
 #ifdef XMH_DEBUG_KG
-      FB_LOG_EVERY_MS(INFO, 1000) << "pq is empty";
+      RECSTORE_LOG_EVERY_MS(INFO, 1000) << "pq is empty";
 #endif
       // 后台线程，不断取堆头，dispatch给worker
       if (pq_->empty()) {
 #ifdef XMH_DEBUG_KG
-        FB_LOG_EVERY_MS(INFO, 1000) << "pq is empty";
+        RECSTORE_LOG_EVERY_MS(INFO, 1000) << "pq is empty";
 #endif
         continue;
       }
@@ -363,7 +363,7 @@ public:
       // re-read
       if (!p) {
 #ifdef XMH_DEBUG_KG
-        FB_LOG_EVERY_MS(INFO, 1000) << "pq.top is nullptr";
+        RECSTORE_LOG_EVERY_MS(INFO, 1000) << "pq.top is nullptr";
 #endif
         continue;
       }
@@ -452,7 +452,7 @@ public:
 #endif
         break;
       }
-      FB_LOG_EVERY_MS(WARNING, 1000)
+      RECSTORE_LOG_EVERY_MS(WARNING, 1000)
           << "Sleep in <BlockToStepN>, step_no=" << step_no
           << ", pq.top=" << priority;
     }
@@ -567,7 +567,7 @@ public:
 
     for (int rank = 0; rank < num_gpus_; rank++) {
       while (sample_step_cpp_seen_[rank].load() < step_no)
-        FB_LOG_EVERY_MS(ERROR, 5000)
+        RECSTORE_LOG_EVERY_MS(ERROR, 5000)
             << "Stalled in ProcessBackward: "
             << base::SFormat("rank={}, step_no={}, "
                              "sample_step_cpp_seen_[rank]={}",

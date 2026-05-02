@@ -484,7 +484,7 @@ std::vector<int> PetPSClient::GetServerThreadIDs() {
             static_cast<std::uint64_t>(dsm_->getMyThreadID());
         thread_ids =
             RotateRdmaDescriptorServingThreadIDs(thread_ids, rotate_seed);
-        LOG(INFO) << folly::sformat(
+        LOG(INFO) << base::SFormat(
             "client{} {}th thread are routed to descriptor PS{} ({})th thread",
             dsm_->getMyNodeID(),
             static_cast<int>(dsm_->getMyThreadID()),
@@ -510,7 +510,7 @@ std::vector<int> PetPSClient::GetServerThreadIDs() {
   uint64_t wr_id;
   while (1) {
     auto recv = dsm_->rpc_fast_wait(&wr_id);
-    // FB_LOG_EVERY_MS(WARNING, 5000)
+    // RECSTORE_LOG_EVERY_MS(WARNING, 5000)
     //     << "client wait the result of GetServerThreadIDs";
     if (recv) {
       CHECK_EQ(recv->type, RESP_GET_SERVER_THREADIDS);
@@ -697,7 +697,7 @@ void PetPSClient::WaitRPCFinish(int rpc_id) {
   while (poll->load(std::memory_order_acquire) ==
          static_cast<std::int32_t>(RpcStatus::kPending)) {
 #ifdef RPC_DEBUG
-    FB_LOG_EVERY_MS(INFO, 1000) << "poll = " << *poll << "\n";
+    RECSTORE_LOG_EVERY_MS(INFO, 1000) << "poll = " << *poll << "\n";
     // << "values[0]=" << values[0] << "\n"
     // << "values[1]=" << values[1] << "\n"
     // << "values[2]=" << values[2] << "\n"

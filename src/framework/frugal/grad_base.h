@@ -303,7 +303,7 @@ public:
 #ifdef USE_NEG_THREAD
     if (kForwardItersPerStep_ > 1) {
       while (processOneStepNegThread_ping_.load() == true)
-        FB_LOG_EVERY_MS(ERROR, 5000) << "waiting for processOneStepNegThread_";
+        RECSTORE_LOG_EVERY_MS(ERROR, 5000) << "waiting for processOneStepNegThread_";
       return;
     }
 #else

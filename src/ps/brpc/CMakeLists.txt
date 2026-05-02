@@ -175,6 +175,7 @@ if(brpc_FOUND)
     )
     target_link_libraries(dist_brpc_ps_client_test PUBLIC
         dist_brpc_ps_client
+        Folly::folly
         pthread
         stdc++fs
     )

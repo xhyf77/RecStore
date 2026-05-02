@@ -909,7 +909,7 @@ private:
       do {
         recv = dsm_->rpc_fast_wait(&wr_id);
         if (recv == nullptr && wr_id == petps::WR_ID_SG_GET) {
-          // FB_LOG_EVERY_MS(ERROR, 1000)
+          // RECSTORE_LOG_EVERY_MS(ERROR, 1000)
           //     << "MaxPendingEpochNumPerThread = "
           //     << epoch_manager_->MaxPendingEpochNumPerThread();
           epoch_manager_->UnProtect();

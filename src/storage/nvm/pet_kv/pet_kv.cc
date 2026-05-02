@@ -127,7 +127,7 @@ bool PetKV::Update(uint64 key, const char* log, int log_size) {
   if (!exists) {
     p_cache = dict_->Insert(key, new_cache, nullptr, true);
     if (p_cache == nullptr) {
-      FB_LOG_EVERY_MS(WARNING, 2000) << "Update fail: " << key;
+      RECSTORE_LOG_EVERY_MS(WARNING, 2000) << "Update fail: " << key;
       FREE_SHM(shm_malloc_->GetMallocData(new_cache.shm_malloc_offset()));
       return false;
     }

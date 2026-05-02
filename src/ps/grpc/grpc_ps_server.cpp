@@ -102,7 +102,7 @@ private:
     xmh::Timer timer_ps_get_req("PS GetParameter Req");
     ParameterCompressor compressor(std::numeric_limits<int>::max());
     std::vector<std::string> blocks;
-    FB_LOG_EVERY_MS(INFO, 1000)
+    RECSTORE_LOG_EVERY_MS(INFO, 1000)
         << "[PS] Getting " << keys_array.Size() << " keys";
     int total_dim = 0;
 #ifdef ENABLE_PERF_REPORT
@@ -354,7 +354,7 @@ private:
 #endif
       success = cache_ps_->UpdateParameter(table_name, reader, 0);
 
-      FB_LOG_EVERY_MS(INFO, 2000)
+      RECSTORE_LOG_EVERY_MS(INFO, 2000)
           << "UpdateParameter: table=" << table_name << ", keys=" << size;
 
       reply->set_success(success);
@@ -421,7 +421,7 @@ private:
         nlohmann::json cfg      = nlohmann::json::parse(payload);
         uint64_t num_embeddings = cfg.value("num_embeddings", 0);
         uint64_t embedding_dim  = cfg.value("embedding_dim", 0);
-        FB_LOG_EVERY_MS(INFO, 2000)
+        RECSTORE_LOG_EVERY_MS(INFO, 2000)
             << "InitEmbeddingTable: table=" << request->table_name()
             << ", num_embeddings=" << num_embeddings
             << ", embedding_dim=" << embedding_dim;

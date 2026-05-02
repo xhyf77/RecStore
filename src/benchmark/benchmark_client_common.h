@@ -3,6 +3,8 @@
 #include <folly/init/Init.h>
 
 #include "base/factory.h"
+#include "base/random.h"
+#include "base/string.h"
 #include "base/timer.h"
 #include "ps/base/Postoffice.h"
 #include "ps/rdma/allshards_ps_client.h"
@@ -132,7 +134,7 @@ public:
     // wait all threads in client ready
     for (int i = 0; i < args_.thread_count_; i++) {
       while (tp[i][0] != 0)
-        FB_LOG_EVERY_MS(WARNING, 5000)
+        RECSTORE_LOG_EVERY_MS(WARNING, 5000)
             << "main client thread, stalled for waiting thread " << i;
     }
     // wait all clients ready
@@ -171,14 +173,14 @@ public:
         }
         // pause all running threads
         pause_flags_ = true;
-        LOG(INFO) << folly::sformat(
+        LOG(INFO) << base::SFormat(
             "Stop {} threads; remaining {} threads",
             stride,
             stop_thread_id_orders.size());
         sleep(1);
         // wait for all client processes;
         clients[0]->Barrier(
-            folly::sformat("clients pause {}", stop_thread_id_orders.size()),
+            base::SFormat("clients pause {}", stop_thread_id_orders.size()),
             XPostoffice::GetInstance()->NumClients());
         // clean Timer
         xmh::Reporter::Clear();
@@ -240,7 +242,7 @@ private:
               sample->fillArray(&client_keys[req_i * args_.batch_read_count_]);
           float* values = recv_buffers[req_i];
 
-          if (folly::Random::rand32(100) < args_.read_ratio_) {
+          if (base::Random::rand32(100) < static_cast<uint32_t>(args_.read_ratio_)) {
             // read request
             isPullRequest[req_i] = true;
             running_rpc_ids[req_i] =
@@ -270,7 +272,7 @@ private:
             int emb_dim   = args_.value_size_ / sizeof(float);
             float* values = recv_buffers[req_i];
             CheckEmbDebug(emb_dim, keys, values);
-            FB_LOG_EVERY_MS(ERROR, 2000)
+            RECSTORE_LOG_EVERY_MS(ERROR, 2000)
                 << "successfully ------------------------------";
 #endif
             client->RevokeRPCResource(running_rpc_ids[req_i]);
@@ -289,7 +291,7 @@ private:
           &values[i * emb_dim],
           emb_dim,
           keys[i],
-          folly::sformat("client embedding check error, key={}", keys[i]));
+          base::SFormat("client embedding check error, key={}", keys[i]));
     }
   }
 

@@ -480,7 +480,7 @@ public:
 
   bool Healthy() const { return true; }
   void AddMallocs4Recovery(int64_t shm_offset) {
-    FB_LOG_EVERY_MS(ERROR, 1000) << "AddMallocs4Recovery not implement";
+    RECSTORE_LOG_EVERY_MS(ERROR, 1000) << "AddMallocs4Recovery not implement";
   }
 
 private:

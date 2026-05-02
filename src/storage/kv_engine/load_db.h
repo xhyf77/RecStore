@@ -59,7 +59,7 @@ public:
                j < std::min(end, start + (i + 1) * warm_kv_per_thread);
                ++j) {
             if (i == 0) {
-              FB_LOG_EVERY_MS(INFO, 60000)
+              RECSTORE_LOG_EVERY_MS(INFO, 60000)
                   << (j - start - i * warm_kv_per_thread) * 100LL /
                          warm_kv_per_thread
                   << " %";
@@ -93,7 +93,7 @@ public:
       }
 
       for (int64_t j = 0; j < to_insert_keys.size(); ++j) {
-        FB_LOG_EVERY_MS(INFO, 60000)
+        RECSTORE_LOG_EVERY_MS(INFO, 60000)
             << j * 100LL / to_insert_keys.size() << " %";
         uint64_t key = to_insert_keys[j];
         float* emb   = (float*)pool;
@@ -126,7 +126,7 @@ public:
                  j < std::min(end, start + (i + 1) * warm_kv_per_thread);
                  ++j) {
               if (i == 0) {
-                FB_LOG_EVERY_MS(INFO, 10000)
+                RECSTORE_LOG_EVERY_MS(INFO, 10000)
                     << (j - start - i * warm_kv_per_thread) * 100LL /
                            warm_kv_per_thread
                     << " %";

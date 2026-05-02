@@ -59,7 +59,10 @@ else
     target_dir="/home/$USER"
 fi
 
-cp "${PROJECT_PATH}/dockerfiles/docker_config/.bashrc" "${target_dir}/.bashrc"
+if [ ! "${PROJECT_PATH}/dockerfiles/docker_config/.bashrc" -ef "${target_dir}/.bashrc" ]; then
+  cp /app/RecStore/dockerfiles/docker_config/.bashrc /root/.bashrc
+fi
+
 source "${target_dir}/.bashrc"
 
 # ===============================================

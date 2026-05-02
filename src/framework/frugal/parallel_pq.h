@@ -407,7 +407,7 @@ private:
   //   Node<T> *node;
   //   do {
   //     node = index_[value];
-  //     FB_LOG_EVERY_MS(ERROR, 1000) << "node is nullptr";
+  //     RECSTORE_LOG_EVERY_MS(ERROR, 1000) << "node is nullptr";
   //   } while (!node);
 
   //   CHECK(node);

@@ -62,7 +62,7 @@ public:
       int64_t old_end = *p_old_end;
 
       if (new_end != old_end) {
-        FB_LOG_EVERY_MS(WARNING, 1000) << base::SFormat(
+        RECSTORE_LOG_EVERY_MS(WARNING, 1000) << base::SFormat(
             "Detect new sample comes, old_end{}, new_end{}", old_end, new_end);
 
         // add [circle_buffer_old_end, new_end)
@@ -208,7 +208,7 @@ public:
 #endif
         break;
       }
-      FB_LOG_EVERY_MS(WARNING, 1000)
+      RECSTORE_LOG_EVERY_MS(WARNING, 1000)
           << "Sleep in <BlockToStepN>, step_no=" << step_no
           << ", pq.top=" << priority;
     }
@@ -321,7 +321,7 @@ public:
 
     for (int rank = 0; rank < num_gpus_; rank++) {
       while (sample_step_cpp_seen_[rank].load() < step_no)
-        FB_LOG_EVERY_MS(ERROR, 5000)
+        RECSTORE_LOG_EVERY_MS(ERROR, 5000)
             << "Stalled in ProcessBackward: "
             << base::SFormat("rank={}, step_no={}, "
                              "sample_step_cpp_seen_[rank]={}",

@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
                j < std::min((i + 1) * file_num_per_thread, nr_dataset_files);
                j++) {
             if (i == 0)
-              FB_LOG_EVERY_MS(INFO, 10000)
+              RECSTORE_LOG_EVERY_MS(INFO, 10000)
                   << (j - i * file_num_per_thread) * 100 / file_num_per_thread
                   << " %";
 

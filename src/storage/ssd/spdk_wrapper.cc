@@ -115,7 +115,7 @@ public:
       if (ret == 0) {
         return;
       } else if (ret == -ENOMEM) {
-        FB_LOG_EVERY_MS(ERROR, 10000)
+        RECSTORE_LOG_EVERY_MS(ERROR, 10000)
             << "SubmitReadCommand return with ENOMEM, let's poll CQ";
         PollCompleteQueue(qp_id);
       } else {
@@ -181,7 +181,7 @@ public:
     if (ret == 0) {
       LOG(INFO) << "submit successful 1";
     } else if (ret == -ENOMEM) {
-      FB_LOG_EVERY_MS(ERROR, 10000)
+      RECSTORE_LOG_EVERY_MS(ERROR, 10000)
           << "SubmitReadCommand return with ENOMEM, let's poll CQ";
       PollCompleteQueue(qp_id);
     } else {
@@ -200,7 +200,7 @@ public:
     if (ret == 0) {
       LOG(INFO) << "submit successful 2";
     } else if (ret == -ENOMEM) {
-      FB_LOG_EVERY_MS(ERROR, 10000)
+      RECSTORE_LOG_EVERY_MS(ERROR, 10000)
           << "SubmitReadCommand return with ENOMEM, let's poll CQ";
       PollCompleteQueue(qp_id);
     } else {

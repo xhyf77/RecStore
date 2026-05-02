@@ -184,22 +184,6 @@ list(APPEND CMAKE_PREFIX_PATH "/home/pod/.local/share/cmake/")
 list(APPEND CMAKE_PREFIX_PATH "${PROJECT_SOURCE_DIR}/third_party/libtorch/libtorch/share/cmake/Torch")
 set(Torch_DIR "${PROJECT_SOURCE_DIR}/third_party/libtorch/libtorch/share/cmake/Torch")
 
-# list(APPEND CMAKE_PREFIX_PATH "/home/xieminhui/.local/lib/python3.10/site-packages/torch/share/cmake/Torch/")
-
-
-# if (EXISTS "/home/pod/.local/lib/python3.10/site-packages/torch/share/cmake/Torch")
-#   list(APPEND CMAKE_PREFIX_PATH "/home/pod/.local/lib/python3.10/site-packages/torch/share/cmake/Torch")
-# endif()
-
-# if (EXISTS "/home/xieminhui/miniconda3/lib/python3.11/site-packages/torch/share/cmake/Torch")
-#   set(Torch_DIR "/home/xieminhui/miniconda3/lib/python3.11/site-packages/torch/share/cmake/Torch")
-# endif()
-
-# if (EXISTS "/home/xieminhui/anaconda3/lib/python3.1/site-packages/torch/share/cmake/Torch")
-#   set(Torch_DIR "/home/xieminhui/anaconda3/lib/python3.1/site-packages/torch/share/cmake/Torch")
-# endif()
-
-
 
 
 
@@ -211,6 +195,9 @@ set(FOLLY_ROOT_DIR "${folly_DIR}")
 set(FMT_DEBUG_POSTFIX "" CACHE STRING "Debug library postfix." FORCE)
 add_subdirectory(third_party/fmt)
 find_package(folly REQUIRED)
+if(TARGET Folly::folly)
+  set_target_properties(Folly::folly PROPERTIES MAP_IMPORTED_CONFIG_DEBUG Release)
+endif()
 find_package(gflags REQUIRED)
 
 include_directories(${PROJECT_SOURCE_DIR}/third_party/folly/folly-install-fPIC/usr/local/include)

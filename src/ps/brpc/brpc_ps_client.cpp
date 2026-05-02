@@ -268,7 +268,7 @@ int BRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
         std::copy_n(
             item->embedding, item->dim, values + item->dim * get_embedding_acc);
       } else {
-        FB_LOG_EVERY_MS(ERROR, 2000)
+        RECSTORE_LOG_EVERY_MS(ERROR, 2000)
             << "error; not find key " << keys[get_embedding_acc] << " in ps";
       }
       get_embedding_acc++;

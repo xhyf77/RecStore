@@ -38,7 +38,8 @@ cmake-build-default
 src/framework_adapters/torch/benchmark
 binary
 log
-dockerfiles/init_env.log
+dockerfiles/codex/auth.json
+dockerfiles/codex/config.json
 dlrm_venv/
 libtorch/
 libreport.so
