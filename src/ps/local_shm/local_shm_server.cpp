@@ -151,12 +151,16 @@ void LocalShmStoreRuntime::ProcessSlot(uint32_t slot_id) {
         const std::size_t output_bytes =
             sizeof(float) * packs.size() *
             static_cast<std::size_t>(max_embedding_dim);
-        if (output_bytes > region_->slot_buffer_bytes()) {
+        const std::size_t key_bytes =
+            sizeof(uint64_t) * static_cast<std::size_t>(header->key_count);
+        const std::size_t payload_bytes = key_bytes + output_bytes;
+        if (payload_bytes > region_->slot_buffer_bytes()) {
           LOG(ERROR) << "LocalShmStoreRuntime::ProcessSlot get_buffer_too_small"
                      << " slot_id=" << slot_id << " request_id="
                      << header->request_id << " key_count=" << header->key_count
                      << " computed_embedding_dim=" << max_embedding_dim
                      << " output_bytes=" << output_bytes
+                     << " payload_bytes=" << payload_bytes
                      << " slot_buffer_bytes=" << region_->slot_buffer_bytes();
           ReportLocalShmStageMetric(
               "server_process_total_us", LocalShmElapsedUs(process_start));
@@ -164,8 +168,9 @@ void LocalShmStoreRuntime::ProcessSlot(uint32_t slot_id) {
           return;
         }
         const auto payload_pack_start = std::chrono::steady_clock::now();
-        std::memset(payload, 0, output_bytes);
-        float* out = reinterpret_cast<float*>(payload);
+        uint8_t* output               = payload + key_bytes;
+        std::memset(output, 0, output_bytes);
+        float* out = reinterpret_cast<float*>(output);
         for (std::size_t row = 0; row < packs.size(); ++row) {
           if (packs[row].dim > 0 && packs[row].emb_data != nullptr) {
             std::copy_n(
@@ -187,12 +192,16 @@ void LocalShmStoreRuntime::ProcessSlot(uint32_t slot_id) {
       const std::size_t output_bytes =
           sizeof(float) * static_cast<std::size_t>(header->key_count) *
           static_cast<std::size_t>(embedding_dim);
-      if (output_bytes > region_->slot_buffer_bytes()) {
+      const std::size_t key_bytes =
+          sizeof(uint64_t) * static_cast<std::size_t>(header->key_count);
+      const std::size_t payload_bytes = key_bytes + output_bytes;
+      if (payload_bytes > region_->slot_buffer_bytes()) {
         LOG(ERROR) << "LocalShmStoreRuntime::ProcessSlot get_buffer_too_small"
                    << " slot_id=" << slot_id << " request_id="
                    << header->request_id << " key_count=" << header->key_count
                    << " computed_embedding_dim=" << embedding_dim
                    << " output_bytes=" << output_bytes
+                   << " payload_bytes=" << payload_bytes
                    << " slot_buffer_bytes=" << region_->slot_buffer_bytes();
         ReportLocalShmStageMetric(
             "server_process_total_us", LocalShmElapsedUs(process_start));
@@ -202,7 +211,7 @@ void LocalShmStoreRuntime::ProcessSlot(uint32_t slot_id) {
       const auto backend_start = std::chrono::steady_clock::now();
       if (!cache_ps_->GetParameterFlat(
               key_array,
-              reinterpret_cast<float*>(payload),
+              reinterpret_cast<float*>(payload + key_bytes),
               static_cast<int64_t>(header->key_count),
               static_cast<int64_t>(embedding_dim),
               static_cast<int>(worker_tid_))) {

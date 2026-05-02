@@ -154,6 +154,40 @@ TEST_F(LocalShmPSClientTest, PutGetAndUpdateFlatRoundTrip) {
   ASSERT_EQ(
       client.UpdateParameterFlat("table_b", key_array, grads.data(), 2, 4), 0);
   ASSERT_EQ(client.GetParameter(key_array, readback.data()), 0);
+  EXPECT_FLOAT_EQ(readback[0], 0.99f);
+  EXPECT_FLOAT_EQ(readback[1], 1.99f);
+  EXPECT_FLOAT_EQ(readback[4], 4.98f);
+  EXPECT_FLOAT_EQ(readback[7], 7.98f);
+
+  server.Stop();
+  server_thread.join();
+}
+
+TEST_F(LocalShmPSClientTest, UpdateParameterFlatInitializesMissingRows) {
+  const auto config = MakeLocalShmConfig(
+      MakeUniqueRegionName("recstore_local_shm_ps_client_update_missing"));
+  LocalShmParameterServer server;
+  server.Init(config);
+
+  std::thread server_thread([&]() { server.Run(); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+  LocalShmPSClient client(config["local_shm"]);
+  ASSERT_EQ(client.InitEmbeddingTable("table_update_missing", {128, 4}), 0);
+
+  std::vector<uint64_t> keys = {17};
+  base::ConstArray<uint64_t> key_array(keys);
+  std::vector<float> grads = {1.0f, 2.0f, 3.0f, 4.0f};
+  ASSERT_EQ(client.UpdateParameterFlat(
+                "table_update_missing", key_array, grads.data(), 1, 4),
+            0);
+
+  std::vector<float> readback(4, 0.0f);
+  ASSERT_EQ(client.GetParameterFlat(key_array, readback.data(), 1, 4), 0);
+  EXPECT_FLOAT_EQ(readback[0], -0.01f);
+  EXPECT_FLOAT_EQ(readback[1], -0.02f);
+  EXPECT_FLOAT_EQ(readback[2], -0.03f);
+  EXPECT_FLOAT_EQ(readback[3], -0.04f);
 
   server.Stop();
   server_thread.join();
@@ -247,6 +281,17 @@ TEST_F(LocalShmPSClientTest,
   ASSERT_NE(handle.slot_id, std::numeric_limits<uint32_t>::max());
   ASSERT_EQ(client.WaitGetParameterFlat(&handle), 0);
   ASSERT_NE(handle.values, nullptr);
+  const void* client_payload_base  = nullptr;
+  std::size_t client_payload_bytes = 0;
+  ASSERT_TRUE(
+      client.GetSlotPayloadRegion(&client_payload_base, &client_payload_bytes));
+  auto* client_slot_payload =
+      static_cast<const uint8_t*>(client_payload_base) +
+      AlignUp(config["local_shm"]["slot_buffer_bytes"].get<uint32_t>()) *
+          handle.slot_id;
+  EXPECT_EQ(handle.values,
+            reinterpret_cast<const float*>(
+                client_slot_payload + sizeof(uint64_t) * keys.size()));
   ASSERT_EQ(handle.num_rows, 2);
   ASSERT_EQ(handle.embedding_dim, 4);
   ASSERT_EQ(handle.output_bytes, sizeof(float) * 8);

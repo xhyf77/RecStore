@@ -164,6 +164,19 @@ class _FakeClientWithOpsGpuCache(_FakeClient):
         self.ops = _FakeOpsWithGpuCache()
 
 
+class _FakeClientWithWriteRowLimit(_FakeClient):
+    def __init__(self, max_rows_per_write: int) -> None:
+        super().__init__()
+        self.max_rows_per_write = int(max_rows_per_write)
+        self.write_batch_sizes: list[int] = []
+
+    def emb_write(self, keys: torch.Tensor, values: torch.Tensor) -> None:
+        self.write_batch_sizes.append(int(keys.numel()))
+        if keys.numel() > self.max_rows_per_write:
+            raise RuntimeError("single emb_write request exceeds fake slot limit")
+        super().emb_write(keys, values)
+
+
 class TestShardedRecstoreClient(unittest.TestCase):
     def _make_runtime_dir(
         self,
@@ -471,6 +484,30 @@ class TestShardedRecstoreClient(unittest.TestCase):
         self.assertEqual(sorted(fake_client.writes[20000].keys()), sorted(shard_to_keys[20000]))
         self.assertEqual(sorted(fake_client.writes[20001].keys()), sorted(shard_to_keys[20001]))
 
+    def test_init_data_splits_large_writes_to_fit_local_shm_slot(self) -> None:
+        runtime_dir = self._make_runtime_dir(
+            cache_ps_type="LOCAL_SHM",
+            cache_servers=[{"host": "127.0.0.1", "port": 20000, "shard": 0}],
+            distributed_servers=[{"host": "127.0.0.1", "port": 20000, "shard": 0}],
+            distributed_num_shards=1,
+        )
+        fake_client = _FakeClientWithWriteRowLimit(max_rows_per_write=16_131)
+        fake_client.ops.active_port = 20000
+        client = ShardedRecstoreClient(fake_client, runtime_dir)
+
+        client.init_data(
+            name="large_fused",
+            shape=(20_000, 128),
+            dtype=torch.float32,
+        )
+
+        self.assertGreater(len(fake_client.write_batch_sizes), 1)
+        self.assertLessEqual(max(fake_client.write_batch_sizes), 16_131)
+        self.assertEqual(sum(fake_client.write_batch_sizes), 20_000)
+        ids = torch.tensor([0, 16_130, 16_131, 19_999], dtype=torch.int64)
+        pulled = client.pull("large_fused", ids)
+        self.assertTrue(torch.allclose(pulled, torch.zeros((4, 128))))
+
     def test_prefetch_wait_and_get_handles_colliding_shard_ids(self) -> None:
         runtime_dir = self._make_runtime_dir(hash_method="simple_mod", distributed_num_shards=2)
         fake_client = _FakeClientCollidingPrefetchId()
@@ -557,6 +594,23 @@ class TestShardedRecstoreClient(unittest.TestCase):
 
         self.assertEqual(len(fake_client.updates), 2)
         self.assertEqual(fake_client.ops.clear_gpu_cache_calls, 1)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required")
+    def test_wait_keeps_cuda_updates_for_precise_gpu_cache_invalidation(self) -> None:
+        runtime_dir = self._make_runtime_dir(hash_method="simple_mod", distributed_num_shards=2)
+        fake_client = _FakeClient()
+        client = ShardedRecstoreClient(fake_client, runtime_dir)
+        client.register_tensor_meta("default", shape=(8, 2), dtype=torch.float32)
+
+        handle = client.update_async(
+            "default",
+            torch.arange(0, 4, dtype=torch.int64, device="cuda"),
+            torch.ones((4, 2), dtype=torch.float32, device="cuda"),
+        )
+        client.wait(handle)
+
+        self.assertEqual(len(fake_client.updates), 2)
+        self.assertEqual(fake_client.ops.clear_gpu_cache_calls, 0)
 
     def test_current_and_set_ps_backend_forward_to_underlying_ops(self) -> None:
         runtime_dir = self._make_runtime_dir()

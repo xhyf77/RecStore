@@ -36,6 +36,7 @@ class RunConfig:
     run_id: str = ""
     jsonl: str = ""
     csv: str = ""
+    local_shm_server_csv: str = ""
     recstore_main_csv: str = ""
     recstore_main_agg_csv: str = ""
     library_path: str = ""
@@ -154,6 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allocator", type=str, default="R2ShmMalloc")
     parser.add_argument("--jsonl", type=str, default="")
     parser.add_argument("--csv", type=str, default="")
+    parser.add_argument("--local-shm-server-csv", type=str, default="")
     parser.add_argument("--recstore-main-csv", type=str, default="")
     parser.add_argument("--recstore-main-agg-csv", type=str, default="")
     parser.add_argument("--library-path", type=str, default="")
@@ -304,6 +306,8 @@ def populate_default_paths(cfg: RunConfig) -> None:
         cfg.jsonl = str(outputs_base / "recstore_events.jsonl")
     if not cfg.csv:
         cfg.csv = str(outputs_base / "recstore_embupdate.csv")
+    if not cfg.local_shm_server_csv:
+        cfg.local_shm_server_csv = str(outputs_base / "recstore_local_shm_server.csv")
     if not cfg.recstore_main_csv:
         cfg.recstore_main_csv = str(outputs_base / "recstore_main.csv")
     if not cfg.recstore_main_agg_csv:
@@ -325,6 +329,7 @@ def populate_default_paths(cfg: RunConfig) -> None:
 def ensure_parent_dirs(cfg: RunConfig) -> None:
     ensure_shared_dir(Path(cfg.jsonl).parent)
     ensure_shared_dir(Path(cfg.csv).parent)
+    ensure_shared_dir(Path(cfg.local_shm_server_csv).parent)
     ensure_shared_dir(Path(cfg.recstore_main_csv).parent)
     ensure_shared_dir(Path(cfg.recstore_main_agg_csv).parent)
     ensure_shared_dir(Path(cfg.server_log).parent)

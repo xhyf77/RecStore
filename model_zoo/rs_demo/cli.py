@@ -14,7 +14,11 @@ from .config import (
     validate_recstore_config,
     validate_torchrec_config,
 )
-from .runtime.report import analyze_embupdate, setup_local_report_env
+from .runtime.report import (
+    analyze_embupdate,
+    analyze_stage_table,
+    setup_local_report_env,
+)
 from .runtime.torchrec_aggregate import aggregate_torchrec_main_csv, write_aggregate_csv
 from .runtime.torchrec_compare import build_compare_rows, write_compare_csv
 from .runtime.torchrec_trace_report import summarize_trace_dir, write_trace_csv
@@ -176,6 +180,17 @@ def main(argv: list[str] | None = None) -> int:
             extra_inputs=extra_inputs,
         )
         print(analyze_output)
+        if effective_ps_type == "LOCAL_SHM":
+            print("[rs_demo] analyzing local_shm server stages...")
+            local_shm_output = analyze_stage_table(
+                repo_root=repo_root,
+                jsonl_path=cfg.jsonl,
+                csv_path=cfg.local_shm_server_csv,
+                table_name="local_shm_server_stages",
+                top_n=20,
+                extra_inputs=extra_inputs,
+            )
+            print(local_shm_output)
         agg = aggregate_torchrec_main_csv(Path(cfg.recstore_main_csv))
         write_aggregate_csv(Path(cfg.recstore_main_agg_csv), agg)
         print(f"[rs_demo] recstore main csv: {cfg.recstore_main_csv}")
@@ -183,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"[rs_demo] jsonl: {cfg.jsonl}")
         print(f"[rs_demo] csv:   {cfg.csv}")
+        if effective_ps_type == "LOCAL_SHM":
+            print(f"[rs_demo] local shm server csv: {cfg.local_shm_server_csv}")
         if server_needed:
             print(f"[rs_demo] server log: {cfg.server_log}")
         return 0

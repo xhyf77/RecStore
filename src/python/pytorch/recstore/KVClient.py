@@ -452,6 +452,7 @@ class RecStoreClient:
             "local_update_keys_stage_ms": float(values[1]),
             "local_update_grads_stage_ms": float(values[2]),
             "local_update_shm_call_ms": float(values[3]),
+            "local_update_backend_call_ms": float(values[3]),
             "local_update_stage_wait_ms": float(values[4]) if len(values) > 4 else 0.0,
         }
 

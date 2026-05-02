@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Tuple
 import torch
 
 _LOCAL_FAST_PATH_BACKENDS = {"local_shm", "hierkv"}
+_DEFAULT_LOCAL_SHM_SLOT_BUFFER_BYTES = 8 * 1024 * 1024
 _GPU_CACHE_PROFILE_KEYS = (
     "gpu_cache_query_ms",
     "gpu_cache_backend_lookup_ms",
@@ -123,6 +124,15 @@ class ShardedRecstoreClient:
         distributed_cfg, cache_cfg = _load_client_configs(cfg)
         self._client = client
         self._cache_ps_type = str(cache_cfg.get("ps_type", "")).upper()
+        local_shm_cfg = cfg.get("local_shm")
+        self._local_shm_slot_buffer_bytes = _DEFAULT_LOCAL_SHM_SLOT_BUFFER_BYTES
+        if isinstance(local_shm_cfg, dict):
+            self._local_shm_slot_buffer_bytes = int(
+                local_shm_cfg.get(
+                    "slot_buffer_bytes",
+                    _DEFAULT_LOCAL_SHM_SLOT_BUFFER_BYTES,
+                )
+            )
         self._cache_servers = _load_cache_servers(cache_cfg)
         self._cache_num_shards = _load_num_shards({}, cache_cfg, self._cache_servers)
         self._servers = _load_shard_servers(
@@ -231,7 +241,12 @@ class ShardedRecstoreClient:
                 f"{api_name} requires local_shm or hierkv backend, but current backend is {backend}."
             )
 
-    def _group_ids_by_shard(self, keys: torch.Tensor) -> list[tuple[int, torch.Tensor, torch.Tensor]]:
+    def _group_ids_by_shard(
+        self,
+        keys: torch.Tensor,
+        *,
+        keep_key_device: bool = False,
+    ) -> list[tuple[int, torch.Tensor, torch.Tensor]]:
         ids_cpu = self._normalize_ids(keys)
         shard_to_indices: dict[int, list[int]] = {}
         shard_order: list[int] = []
@@ -245,7 +260,12 @@ class ShardedRecstoreClient:
         for shard in shard_order:
             indices = shard_to_indices[shard]
             index_tensor = torch.tensor(indices, dtype=torch.long)
-            shard_keys = ids_cpu.index_select(0, index_tensor)
+            key_source = keys if keep_key_device else ids_cpu
+            if keep_key_device and key_source.device.type != "cpu":
+                index_for_source = index_tensor.to(key_source.device)
+            else:
+                index_for_source = index_tensor
+            shard_keys = key_source.index_select(0, index_for_source)
             if not shard_keys.is_contiguous():
                 shard_keys = shard_keys.contiguous()
             grouped.append((shard, index_tensor, shard_keys))
@@ -368,6 +388,28 @@ class ShardedRecstoreClient:
             clear()
         self._gpu_cache_table_name = None
 
+    def _max_emb_write_rows(self, embedding_dim: int) -> int:
+        if self._cache_ps_type != "LOCAL_SHM":
+            return 0
+        bytes_per_row = 8 + int(embedding_dim) * 4
+        if bytes_per_row <= 0:
+            return 0
+        return max(1, int(self._local_shm_slot_buffer_bytes) // bytes_per_row)
+
+    def _emb_write_chunked_if_needed(
+        self,
+        keys: torch.Tensor,
+        values: torch.Tensor,
+        embedding_dim: int,
+    ) -> None:
+        max_rows = self._max_emb_write_rows(embedding_dim)
+        if max_rows <= 0 or keys.numel() <= max_rows:
+            self._client.emb_write(keys, values)
+            return
+        for start in range(0, int(keys.numel()), max_rows):
+            end = min(start + max_rows, int(keys.numel()))
+            self._client.emb_write(keys[start:end], values[start:end])
+
     def _ensure_gpu_cache_table(self, name: str) -> None:
         if self._gpu_cache_table_name is None:
             self._gpu_cache_table_name = name
@@ -452,6 +494,7 @@ class ShardedRecstoreClient:
             "local_update_keys_stage_ms": float(values[1]),
             "local_update_grads_stage_ms": float(values[2]),
             "local_update_shm_call_ms": float(values[3]),
+            "local_update_backend_call_ms": float(values[3]),
             "local_update_stage_wait_ms": float(values[4]) if len(values) > 4 else 0.0,
         }
 
@@ -499,7 +542,7 @@ class ShardedRecstoreClient:
         for shard, index_tensor, shard_keys in self._group_ids_by_shard(keys):
             self._activate_shard(shard)
             shard_values = initial_data.index_select(0, index_tensor).contiguous()
-            self._client.emb_write(shard_keys, shard_values)
+            self._emb_write_chunked_if_needed(shard_keys, shard_values, embedding_dim)
 
     def pull(self, name: str, ids: torch.Tensor) -> torch.Tensor:
         if name not in self._tensor_meta:
@@ -545,8 +588,8 @@ class ShardedRecstoreClient:
     def update_async(self, name: str, ids: torch.Tensor, grads: torch.Tensor) -> int:
         if name not in self._tensor_meta:
             raise RuntimeError(f"Tensor {name} has not been initialized.")
-        normalized_ids = self._normalize_ids(ids)
-        normalized_grads = self._normalize_grads(grads)
+        normalized_ids = self._normalize_ids(ids, keep_device=True)
+        normalized_grads = self._normalize_grads(grads, keep_device=True)
         if normalized_ids.size(0) != normalized_grads.size(0):
             raise RuntimeError("ids and grads must have the same number of rows for update_async")
         handle = self._next_async_handle
@@ -561,8 +604,17 @@ class ShardedRecstoreClient:
         name, ids, grads = pending
         if ids.numel() == 0:
             return
-        for shard, index_tensor, shard_keys in self._group_ids_by_shard(ids):
-            shard_grads = grads.index_select(0, index_tensor).contiguous()
+        updated_on_cpu = ids.device.type == "cpu"
+        for shard, index_tensor, shard_keys in self._group_ids_by_shard(
+            ids,
+            keep_key_device=True,
+        ):
+            if grads.device.type != "cpu":
+                grad_index = index_tensor.to(grads.device)
+            else:
+                grad_index = index_tensor
+            shard_grads = grads.index_select(0, grad_index).contiguous()
             self._activate_shard(shard)
             self._client.emb_update_table(name, shard_keys, shard_grads)
-        self._clear_gpu_cache_if_available()
+        if updated_on_cpu:
+            self._clear_gpu_cache_if_available()

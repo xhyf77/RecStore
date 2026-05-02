@@ -452,6 +452,14 @@ target_link_libraries(test_ps_transport_benchmark PUBLIC
     pthread
 )
 add_test(NAME test_ps_transport_benchmark COMMAND test_ps_transport_benchmark)
+
+add_executable(test_raw_verbs_allocator test_raw_verbs_allocator.cpp)
+target_link_libraries(test_raw_verbs_allocator PUBLIC
+    gtest
+    gtest_main
+    pthread
+)
+add_test(NAME test_raw_verbs_allocator COMMAND test_raw_verbs_allocator)
 add_executable(test_storage_cache_lru test_storage_cache_lru.cpp)
 target_link_libraries(test_storage_cache_lru PUBLIC
     gtest

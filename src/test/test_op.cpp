@@ -159,19 +159,30 @@ public:
 class InjectedClientOpTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    client_ = new RecordingPSClient();
-    recstore::KVClientOp::ps_client_holder_.reset(client_);
-    recstore::KVClientOp::ps_client_ = client_;
-    op_.ps_backend_name_             = "grpc";
+    previous_ps_client_ = recstore::KVClientOp::ps_client_;
+    previous_ps_client_holder_ =
+        std::move(recstore::KVClientOp::ps_client_holder_);
+
+    auto client = std::make_unique<RecordingPSClient>();
+    client_     = client.get();
+    recstore::KVClientOp::ps_client_holder_ = std::move(client);
+    recstore::KVClientOp::ps_client_        = client_;
+    op_                   = std::make_unique<recstore::KVClientOp>();
+    op_->ps_backend_name_ = "grpc";
   }
 
   void TearDown() override {
+    op_.reset();
     recstore::KVClientOp::ps_client_holder_.reset();
-    recstore::KVClientOp::ps_client_ = nullptr;
+    recstore::KVClientOp::ps_client_holder_ =
+        std::move(previous_ps_client_holder_);
+    recstore::KVClientOp::ps_client_ = previous_ps_client_;
   }
 
-  recstore::KVClientOp op_;
-  RecordingPSClient* client_ = nullptr;
+  std::unique_ptr<recstore::KVClientOp> op_;
+  RecordingPSClient* client_                  = nullptr;
+  recstore::BasePSClient* previous_ps_client_ = nullptr;
+  std::unique_ptr<recstore::BasePSClient> previous_ps_client_holder_;
 };
 
 base::RecTensor UInt64Tensor(std::vector<uint64_t>* values) {
@@ -378,7 +389,7 @@ TEST_F(InjectedClientOpTest, NonHierKVWriteCopiesRowsAndRejectsClientFailure) {
   auto keys   = UInt64Tensor(&key_values);
   auto values = FloatTensor(&value_values, 2, 3);
 
-  op_.EmbWrite(keys, values);
+  op_->EmbWrite(keys, values);
 
   EXPECT_EQ(client_->put_calls, 1);
   ASSERT_EQ(client_->last_put_values.size(), 2);
@@ -388,7 +399,7 @@ TEST_F(InjectedClientOpTest, NonHierKVWriteCopiesRowsAndRejectsClientFailure) {
             (std::vector<float>{4.0f, 5.0f, 6.0f}));
 
   client_->write_return = 0;
-  EXPECT_THROW(op_.EmbWrite(keys, values), std::runtime_error);
+  EXPECT_THROW(op_->EmbWrite(keys, values), std::runtime_error);
 }
 
 TEST_F(InjectedClientOpTest, NonHierKVReadClearsOutputAndChecksRows) {
@@ -398,7 +409,7 @@ TEST_F(InjectedClientOpTest, NonHierKVReadClearsOutputAndChecksRows) {
   auto keys   = UInt64Tensor(&key_values);
   auto values = FloatTensor(&value_values, 2, 3);
 
-  op_.EmbRead(keys, values);
+  op_->EmbRead(keys, values);
 
   EXPECT_EQ(client_->get_calls, 1);
   EXPECT_EQ(client_->last_get_rows, 2);
@@ -406,11 +417,11 @@ TEST_F(InjectedClientOpTest, NonHierKVReadClearsOutputAndChecksRows) {
             (std::vector<float>{9.0f, 8.0f, 7.0f, 0.0f, 0.0f, 0.0f}));
 
   client_->read_return = 0;
-  EXPECT_THROW(op_.EmbRead(keys, values), std::runtime_error);
+  EXPECT_THROW(op_->EmbRead(keys, values), std::runtime_error);
 
   std::vector<float> one_row_values(3, 0.0f);
   auto one_row_tensor = FloatTensor(&one_row_values, 1, 3);
-  EXPECT_THROW(op_.EmbRead(keys, one_row_tensor), std::invalid_argument);
+  EXPECT_THROW(op_->EmbRead(keys, one_row_tensor), std::invalid_argument);
 }
 
 TEST_F(InjectedClientOpTest, NonHierKVUpdatePassesTableKeysAndFlatGrads) {
@@ -419,7 +430,7 @@ TEST_F(InjectedClientOpTest, NonHierKVUpdatePassesTableKeysAndFlatGrads) {
   auto keys  = UInt64Tensor(&key_values);
   auto grads = FloatTensor(&grad_values, 2, 3);
 
-  op_.EmbUpdate("table_x", keys, grads);
+  op_->EmbUpdate("table_x", keys, grads);
 
   EXPECT_EQ(client_->update_calls, 1);
   EXPECT_EQ(client_->last_update_table, "table_x");
@@ -429,7 +440,7 @@ TEST_F(InjectedClientOpTest, NonHierKVUpdatePassesTableKeysAndFlatGrads) {
   EXPECT_EQ(client_->last_update_grads, grad_values);
 
   client_->update_return = -1;
-  EXPECT_THROW(op_.EmbUpdate(keys, grads), std::runtime_error);
+  EXPECT_THROW(op_->EmbUpdate(keys, grads), std::runtime_error);
 }
 
 TEST_F(InjectedClientOpTest, NonHierKVInitEmbeddingTableReturnsClientStatus) {
@@ -438,14 +449,14 @@ TEST_F(InjectedClientOpTest, NonHierKVInitEmbeddingTableReturnsClientStatus) {
       .embedding_dim  = 3,
   };
 
-  EXPECT_TRUE(op_.InitEmbeddingTable("table_init", config));
+  EXPECT_TRUE(op_->InitEmbeddingTable("table_init", config));
   EXPECT_EQ(client_->init_table_calls, 1);
   EXPECT_EQ(client_->last_init_table, "table_init");
   EXPECT_EQ(client_->last_init_config.num_embeddings, 64);
   EXPECT_EQ(client_->last_init_config.embedding_dim, 3);
 
   client_->init_table_return = 1;
-  EXPECT_FALSE(op_.InitEmbeddingTable("table_init", config));
+  EXPECT_FALSE(op_->InitEmbeddingTable("table_init", config));
 }
 
 TEST_F(InjectedClientOpTest, NonHierKVPrefetchDelegatesStatusAndResults) {
@@ -454,23 +465,23 @@ TEST_F(InjectedClientOpTest, NonHierKVPrefetchDelegatesStatusAndResults) {
   auto keys  = UInt64Tensor(&key_values);
   auto dummy = FloatTensor(&dummy_values, 2, 3);
 
-  const uint64_t prefetch_id = op_.EmbPrefetch(keys, dummy);
+  const uint64_t prefetch_id = op_->EmbPrefetch(keys, dummy);
   EXPECT_EQ(prefetch_id, 700);
   EXPECT_EQ(client_->last_prefetch_keys, key_values);
 
-  EXPECT_TRUE(op_.IsPrefetchDone(prefetch_id));
+  EXPECT_TRUE(op_->IsPrefetchDone(prefetch_id));
   EXPECT_EQ(client_->last_prefetch_done_id, prefetch_id);
-  op_.WaitForPrefetch(prefetch_id);
+  op_->WaitForPrefetch(prefetch_id);
   EXPECT_EQ(client_->last_wait_prefetch_id, prefetch_id);
 
   std::vector<std::vector<float>> rows;
-  op_.GetPretchResult(prefetch_id, &rows);
+  op_->GetPretchResult(prefetch_id, &rows);
   EXPECT_EQ(client_->last_result_prefetch_id, prefetch_id);
   EXPECT_EQ(rows, client_->prefetch_result);
 
   std::vector<float> flat;
   int64_t num_rows = 0;
-  op_.GetPretchResultFlat(prefetch_id, &flat, &num_rows, 3);
+  op_->GetPretchResultFlat(prefetch_id, &flat, &num_rows, 3);
   EXPECT_EQ(client_->last_flat_result_prefetch_id, prefetch_id);
   EXPECT_EQ(num_rows, 1);
   EXPECT_EQ(flat, (std::vector<float>{1.0f, 2.0f, 3.0f}));

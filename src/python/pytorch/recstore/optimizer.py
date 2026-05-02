@@ -120,7 +120,7 @@ def _uses_shared_local_shm_single_table(mod: Any) -> bool:
 
 
 def _can_use_shared_local_shm_direct_fast_path(mod: Any) -> bool:
-    return _can_use_single_node_distributed_fast_path(mod) and _uses_shared_local_shm_single_table(mod)
+    return _uses_shared_local_shm_single_table(mod)
 
 
 def _collect_traces_by_name(mod: Any) -> Dict[str, List[Tuple[torch.Tensor, torch.Tensor]]]:
@@ -288,7 +288,13 @@ def _process_generic_module_with_trace_shared_local_shm_single_table(mod: Any) -
         return
 
     dist = torch.distributed
-    rank = int(dist.get_rank())
+    dist_available = (
+        not hasattr(dist, "is_available") or bool(dist.is_available())
+    )
+    dist_initialized = (
+        hasattr(dist, "is_initialized") and bool(dist.is_initialized())
+    )
+    rank = int(dist.get_rank()) if dist_available and dist_initialized else 0
     module_kv_client = getattr(mod, "kv_client", None)
     if module_kv_client is None:
         raise RuntimeError("shared local_shm single-table sparse update requires module kv_client")

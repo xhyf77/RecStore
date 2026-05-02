@@ -102,6 +102,15 @@ void SGD::UpdateFlat(
     throw std::runtime_error("Table not found: " + table);
   }
 
+  const auto direct_update_start = std::chrono::steady_clock::now();
+  if (it->second->ApplySgdUpdateFlat(
+          keys, grads, num_rows, embedding_dim, learning_rate_, tid)) {
+    recstore::ReportLocalShmStageMetric(
+        "sgd_update_direct_us",
+        recstore::LocalShmElapsedUs(direct_update_start));
+    return;
+  }
+
   std::vector<uint64_t> key_vec(keys.Data(), keys.Data() + keys.Size());
   const auto batch_get_start = std::chrono::steady_clock::now();
   std::vector<base::ConstArray<float>> current_values;

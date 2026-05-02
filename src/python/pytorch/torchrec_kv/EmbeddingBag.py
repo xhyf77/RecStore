@@ -439,7 +439,10 @@ class RecStoreEmbeddingBagCollection(torch.nn.Module):
     def _can_use_shared_local_shm_direct_fast_path(self) -> bool:
         return self._can_use_single_node_distributed_fast_path() and self._uses_shared_local_shm_single_table()
 
-    def _prepare_single_node_local_shm_fast_path_client(self, rank: int) -> None:
+    def _can_use_local_shm_direct_fast_path(self) -> bool:
+        return self._uses_shared_local_shm_single_table()
+
+    def _prepare_single_node_local_shm_fast_path_client(self, rank: int = 0) -> None:
         current_backend = None
         if hasattr(self.kv_client, "current_ps_backend"):
             current_backend = self.kv_client.current_ps_backend()
@@ -612,7 +615,14 @@ class RecStoreEmbeddingBagCollection(torch.nn.Module):
             "lookup_rebuild_ms": 0.0,
             "lookup_post_rebuild_h2d_ms": 0.0,
         }
-        rank = int(torch.distributed.get_rank())
+        dist = torch.distributed
+        dist_available = (
+            not hasattr(dist, "is_available") or bool(dist.is_available())
+        )
+        dist_initialized = (
+            hasattr(dist, "is_initialized") and bool(dist.is_initialized())
+        )
+        rank = int(dist.get_rank()) if dist_available and dist_initialized else 0
         self._prepare_single_node_local_shm_fast_path_client(rank)
         lookup_start = time.perf_counter()
         local_embeddings = self.kv_client.local_lookup_flat(
@@ -654,12 +664,15 @@ class RecStoreEmbeddingBagCollection(torch.nn.Module):
             fused_values_list: List[torch.Tensor] = []
             lengths_total_list: List[torch.Tensor] = []
             compute_device = features.device()  # target device (cuda or cpu)
+            use_local_shm_direct_fast_path = self._can_use_local_shm_direct_fast_path()
             use_shared_local_shm_direct_fast_path = self._can_use_shared_local_shm_direct_fast_path()
             use_single_node_owner_exchange_fast_path = (
                 self._can_use_single_node_distributed_fast_path()
                 and not use_shared_local_shm_direct_fast_path
             )
             use_single_node_fast_path = (
+                use_local_shm_direct_fast_path
+                or
                 use_shared_local_shm_direct_fast_path
                 or use_single_node_owner_exchange_fast_path
             )
@@ -703,7 +716,7 @@ class RecStoreEmbeddingBagCollection(torch.nn.Module):
             # Obtain embeddings: prefer single-node owner lookup; else fused prefetch; else merge per-feature prefetch; else single pull
             all_embeddings: torch.Tensor
             used_fused_prefetch = False
-            if use_shared_local_shm_direct_fast_path:
+            if use_local_shm_direct_fast_path:
                 all_embeddings = self._lookup_fused_embeddings_shared_local_shm_single_table(
                     fused_values_all,
                     compute_device=compute_device,

@@ -36,6 +36,11 @@ class TestPetPSClusterRunner(unittest.TestCase):
         self.assertTrue(
             runner.is_ready_line("[RDMA-DBG] Server polling thread ready 0")
         )
+        self.assertTrue(
+            runner.is_ready_line(
+                "component=rdma_server event=polling_thread_ready thread_id=0"
+            )
+        )
         self.assertFalse(runner.is_ready_line("Starts PS polling thread 0"))
         self.assertFalse(runner.is_ready_line("xmh: finish construct DSM"))
         self.assertFalse(runner.is_ready_line("throughput 0.1234 Mkv/s"))
@@ -47,6 +52,17 @@ class TestPetPSClusterRunner(unittest.TestCase):
             "[RDMA-DBG] Server polling thread ready 0\n"
             "throughput 0.1234 Mkv/s\n"
             "[RDMA-DBG] Server polling thread ready 1\n"
+        )
+
+        runner._monitor(0, pipe)
+
+        self.assertEqual(runner.ready, {0})
+
+    def test_monitor_supports_new_ready_log_format(self):
+        runner = PetPSClusterRunner(num_servers=1, thread_num=2)
+        pipe = StringIO(
+            "component=rdma_server event=polling_thread_ready thread_id=0\n"
+            "component=rdma_server event=polling_thread_ready thread_id=1\n"
         )
 
         runner._monitor(0, pipe)
@@ -88,6 +104,34 @@ class TestPetPSClusterRunner(unittest.TestCase):
         self.assertIn("--rdma_server_ready_timeout_sec=45", client_cmd)
         self.assertIn("--rdma_server_ready_poll_ms=3", client_cmd)
         self.assertIn("--rdma_client_receive_arena_bytes=134217728", client_cmd)
+
+    def test_builds_transport_mode_flags_for_server_and_client(self):
+        runner = PetPSClusterRunner(
+            server_path="./build/bin/petps_server",
+            config_path="./src/test/configs/recstore_config.rdma_test.json",
+            use_local_memcached="never",
+            rdma_transport_mode="descriptor_doorbell",
+        )
+
+        server_cmd = runner.build_server_cmd(global_id=0)
+        client_cmd = runner.build_client_cmd(["./build/bin/petps_integration_test"])
+
+        self.assertIn("--rdma_transport_mode=descriptor_doorbell", server_cmd)
+        self.assertIn("--rdma_transport_mode=descriptor_doorbell", client_cmd)
+
+    def test_can_disable_transport_mode_client_flag(self):
+        runner = PetPSClusterRunner(
+            rdma_transport_mode="descriptor_doorbell",
+            rdma_transport_mode_client_flag=False,
+        )
+
+        env = runner.build_env()
+        server_cmd = runner.build_server_cmd(global_id=0)
+        client_cmd = runner.build_client_cmd(["./build/bin/ps_transport_benchmark"])
+
+        self.assertEqual(env["RECSTORE_RDMA_TRANSPORT_MODE"], "descriptor_doorbell")
+        self.assertIn("--rdma_transport_mode=descriptor_doorbell", server_cmd)
+        self.assertNotIn("--rdma_transport_mode=descriptor_doorbell", client_cmd)
 
     @mock.patch("petps_cluster_runner.os.geteuid", return_value=0)
     @mock.patch("petps_cluster_runner.shutil.which", return_value="/usr/bin/memcached")
@@ -345,6 +389,29 @@ class TestPetPSClusterRunner(unittest.TestCase):
         self.assertIn("partial-out", completed.stdout)
         self.assertIn("timed out after 1 seconds", completed.stdout)
         self.assertEqual(completed.stderr, "partial-err")
+
+    @mock.patch("petps_cluster_runner.subprocess.Popen")
+    def test_run_client_stream_output_timeout_does_not_block_on_readline(
+        self, mock_popen
+    ):
+        runner = PetPSClusterRunner()
+        fake_process = mock.Mock()
+        fake_process.stdout.readline.side_effect = ["partial\n", ""]
+        fake_process.poll.return_value = None
+        fake_process.wait.return_value = 0
+        fake_process.pid = 1234
+        mock_popen.return_value = fake_process
+
+        completed = runner.run_client(
+            ["/bin/echo", "x"],
+            stream_output=True,
+            timeout=1,
+        )
+
+        self.assertEqual(completed.returncode, 124)
+        self.assertIn("partial", completed.stdout)
+        self.assertIn("timed out after 1 seconds", completed.stdout)
+        fake_process.terminate.assert_called_once()
 
 
 if __name__ == "__main__":

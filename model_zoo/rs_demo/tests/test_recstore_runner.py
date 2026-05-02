@@ -49,9 +49,15 @@ class _FakeShardedClient:
         self.local_shm_warmup_calls = 0
         self._shared_local_shm_table = False
         self._last_prefetch_keys = torch.empty((0,), dtype=torch.int64)
+        self._current_ps_backend = "local_shm"
 
     def set_ps_backend(self, backend: str) -> None:
-        self.set_ps_backend_calls.append(str(backend))
+        backend = str(backend)
+        self.set_ps_backend_calls.append(backend)
+        self._current_ps_backend = backend
+
+    def current_ps_backend(self) -> str:
+        return self._current_ps_backend
 
     def activate_shard(self, shard: int) -> None:
         self.activate_shard_calls.append(int(shard))
@@ -220,6 +226,26 @@ class TestRecStoreRunner(unittest.TestCase):
         self.assertTrue(warmed)
         self.assertEqual(client.local_shm_warmup_calls, 1)
 
+    def test_warmup_gpu_local_shm_fast_path_skips_hierkv_backend(self) -> None:
+        cfg = RunConfig(
+            backend="recstore",
+            enable_single_node_distributed_fast_path=True,
+            single_node_ps_backend="hierkv",
+        )
+        client = _FakeShardedClient()
+        client._shared_local_shm_table = True
+        client.set_ps_backend("hierkv")
+
+        warmed = recstore_runner._maybe_warmup_gpu_local_shm_fast_path(
+            cfg=cfg,
+            client=client,
+            device=torch.device("cuda:0"),
+        )
+
+        self.assertFalse(warmed)
+        self.assertEqual(client.current_ps_backend(), "hierkv")
+        self.assertEqual(client.local_shm_warmup_calls, 0)
+
     def test_warmup_gpu_local_shm_fast_path_skips_when_conditions_do_not_match(self) -> None:
         cfg = RunConfig(
             backend="recstore",
@@ -274,6 +300,7 @@ class TestRecStoreRunner(unittest.TestCase):
                 self._last_step_profile = {
                     "exchange_ms": 2.5,
                     "local_update_ms": 3.5,
+                    "local_update_backend_call_ms": 3.25,
                     "trace_collect_ms": 0.5,
                     "trace_aggregate_ms": 1.5,
                 }
@@ -837,6 +864,7 @@ class TestRecStoreRunner(unittest.TestCase):
                 self._last_step_profile = {
                     "exchange_ms": 2.5,
                     "local_update_ms": 3.5,
+                    "local_update_backend_call_ms": 3.25,
                     "trace_collect_ms": 0.5,
                     "trace_aggregate_ms": 1.5,
                 }
@@ -1237,6 +1265,7 @@ class TestRecStoreRunner(unittest.TestCase):
                 self._last_step_profile = {
                     "exchange_ms": 2.5,
                     "local_update_ms": 3.5,
+                    "local_update_backend_call_ms": 3.25,
                     "trace_collect_ms": 0.5,
                     "trace_aggregate_ms": 1.5,
                 }
@@ -1315,6 +1344,7 @@ class TestRecStoreRunner(unittest.TestCase):
         self.assertEqual(float(rows[0]["lookup_wait_ms"]), 0.75)
         self.assertEqual(float(rows[0]["exchange_ms"]), 2.5)
         self.assertEqual(float(rows[0]["local_update_ms"]), 3.5)
+        self.assertEqual(float(rows[0]["local_update_backend_call_ms"]), 3.25)
         self.assertEqual(float(rows[0]["trace_collect_ms"]), 0.5)
         self.assertEqual(float(rows[0]["trace_aggregate_ms"]), 1.5)
         self.assertIn("sparse_backward_replay_ms", rows[0])
