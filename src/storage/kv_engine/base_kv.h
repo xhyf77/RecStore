@@ -33,7 +33,8 @@ struct BaseKVConfig {
    `json_config_["allocator_type"]` 选择：
    - "PERSIST_LOOP_SLAB"（默认）
    - "R2_SLAB"
-   `value_memory_management` 由 `allocator_type` 推导填充（见 allocator 归一化）。
+   `value_memory_management` 由 `allocator_type` 推导填充（见 allocator
+归一化）。
 
 二、必须/可选配置字段
 -------------------

@@ -38,8 +38,8 @@ TEST(BasicSSDKv, test) {
 
   for (int _ = 0; _ < 1000; _++) {
     for (int i = 0; i < batch_get_num; i++) {
-      test_get_keys[i] = base::Random::rand32(
-          static_cast<uint32_t>(test_key_capability));
+      test_get_keys[i] =
+          base::Random::rand32(static_cast<uint32_t>(test_key_capability));
     }
     xmh::Timer timer("get");
     ssd.BatchGet(test_get_keys_array, (void*)test_get_values.data(), 0);

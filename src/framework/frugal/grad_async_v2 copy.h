@@ -267,8 +267,8 @@ public:
       if (priority > step_no) {
 #ifdef XMH_DEBUG_KG
         LOG(INFO) << base::SFormat("top(pq)'s priority={} > step_no{}.",
-                                    priority,
-                                    step_no)
+                                   priority,
+                                   step_no)
                   << pq_.ToString();
 #endif
         break;
@@ -419,10 +419,10 @@ public:
         RECSTORE_LOG_EVERY_MS(ERROR, 5000)
             << "Stalled in ProcessBackward: "
             << base::SFormat("rank={}, step_no={}, "
-                              "sample_step_cpp_seen_[rank]={}",
-                              rank,
-                              step_no,
-                              sample_step_cpp_seen_[rank].load());
+                             "sample_step_cpp_seen_[rank]={}",
+                             rank,
+                             step_no,
+                             sample_step_cpp_seen_[rank].load());
     }
 
     UpsertPq(input_keys, input_grads, step_no);
