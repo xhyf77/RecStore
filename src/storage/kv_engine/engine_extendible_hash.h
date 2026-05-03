@@ -355,8 +355,6 @@ public:
       }
 
       std::unique_lock<std::shared_mutex> lk(KeyMutex(key));
-      Key_t hash_key = key;
-      Value_t read_value;
       hash_table_->Get(hash_key, read_value, tid);
       if (read_value != NONE) {
         base::PetKVData shmkv_data;
