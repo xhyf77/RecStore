@@ -8,11 +8,16 @@ add_library(grpc_ps_client SHARED
     grpc_ps_client.cpp grpc_ps_client.h
 )
 
+target_include_directories(grpc_ps_client PUBLIC
+    ${PROJECT_BINARY_DIR}/src/ps/proto
+)
+
 
 target_link_libraries(
     grpc_ps_client PUBLIC
     base
     ps_base
+    PRIVATE
     ps_proto
     gRPC::grpc++_reflection
     gRPC::grpc++
@@ -69,10 +74,6 @@ target_link_libraries(dist_grpc_ps_client PUBLIC
     base
     ps_base
     grpc_ps_client
-    ps_proto
-    gRPC::grpc++_reflection
-    gRPC::grpc++
-    protobuf::libprotobuf
 )
 if(USE_PERF_REPORT)
     target_compile_definitions(dist_grpc_ps_client PUBLIC ENABLE_PERF_REPORT)
