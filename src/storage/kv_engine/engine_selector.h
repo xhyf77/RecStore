@@ -16,19 +16,6 @@ inline std::string Upper(std::string s) {
   return s;
 }
 
-inline void CanonicalizeAlias(json& j, const char* lhs, const char* rhs) {
-  const bool has_lhs = j.contains(lhs);
-  const bool has_rhs = j.contains(rhs);
-  if (has_lhs && has_rhs && j.at(lhs) != j.at(rhs)) {
-    throw std::invalid_argument(
-        std::string(lhs) + " conflicts with alias " + rhs);
-  }
-  if (!has_lhs && has_rhs)
-    j[lhs] = j.at(rhs);
-  if (has_lhs && !has_rhs)
-    j[rhs] = j.at(lhs);
-}
-
 struct EngineResolved {
   std::string
       engine; // "KVEngineExtendibleHash" / "KVEngineCCEH" / "KVEngineHybrid"
@@ -38,15 +25,6 @@ struct EngineResolved {
 inline EngineResolved ResolveEngine(BaseKVConfig cfg) {
   auto& j = cfg.json_config_;
 
-  // 1) 字段别名统一（新老字段双向兼容）
-  CanonicalizeAlias(j, "path", "DATA_DIR");
-  CanonicalizeAlias(j, "index_type", "index_medium");
-  CanonicalizeAlias(j, "value_type", "value_medium");
-  CanonicalizeAlias(j, "capacity", "ENTRY_CAPACITY");
-  CanonicalizeAlias(j, "value_size", "VALUE_SIZE_BYTES");
-  CanonicalizeAlias(j, "shmcapacity", "DRAM_SIZE");
-  CanonicalizeAlias(j, "ssdcapacity", "SSD_SIZE");
-  CanonicalizeAlias(j, "queue_cnt", "IO_QUEUE_COUNT");
   base::allocators::NormalizeAllocatorConfig(j);
 
   std::string idx = Upper(j.value("index_type", "DRAM")); // 缺省 DRAM 索引
@@ -56,10 +34,8 @@ inline EngineResolved ResolveEngine(BaseKVConfig cfg) {
 
   if (idx == "DRAM/SSD")
     idx = "DRAM";
-  j["index_type"]   = idx;
-  j["index_medium"] = idx;
-  j["value_type"]   = val;
-  j["value_medium"] = val;
+  j["index_type"] = idx;
+  j["value_type"] = val;
 
   const bool mode_explicit = j.contains("mode");
   std::string mode =
@@ -90,13 +66,10 @@ inline EngineResolved ResolveEngine(BaseKVConfig cfg) {
     if (idx != "DRAM" && idx != "SSD")
       throw std::invalid_argument(
           "HYBRID value currently supports DRAM/SSD index");
-    // Hybrid 需要 DRAM/SSD 双层容量
     if (!j.contains("shmcapacity") || !j.contains("ssdcapacity")) {
-      throw std::invalid_argument("HYBRID requires DRAM_SIZE/SSD_SIZE (or "
-                                  "legacy shmcapacity/ssdcapacity)");
+      throw std::invalid_argument(
+          "HYBRID requires shmcapacity and ssdcapacity");
     }
-    j["DRAM_SIZE"] = j.at("shmcapacity");
-    j["SSD_SIZE"]  = j.at("ssdcapacity");
     if (!j.contains("cache_policy"))
       j["cache_policy"] = "LRU";
   } else if (val == "DRAM" || val == "SSD") {
@@ -110,8 +83,7 @@ inline EngineResolved ResolveEngine(BaseKVConfig cfg) {
     // 非 Hybrid 固定长度路径至少需要 value_size。
     // capacity 可选：若缺失则优先由 DRAM_SIZE/SSD_SIZE 反推。
     if (!j.contains("value_size")) {
-      throw std::invalid_argument(
-          "Non-HYBRID requires VALUE_SIZE_BYTES (or legacy value_size)");
+      throw std::invalid_argument("Non-HYBRID requires value_size");
     }
     const uint64_t value_size = j.at("value_size").get<uint64_t>();
     if (value_size == 0) {
@@ -126,8 +98,7 @@ inline EngineResolved ResolveEngine(BaseKVConfig cfg) {
 
       if (bytes_budget == 0) {
         throw std::invalid_argument(
-            "Non-HYBRID requires ENTRY_CAPACITY (legacy capacity) or "
-            "DRAM_SIZE/SSD_SIZE to infer it");
+            "Non-HYBRID requires capacity or DRAM_SIZE/SSD_SIZE to infer it");
       }
       j["capacity"] = std::max<uint64_t>(1, bytes_budget / value_size);
     }

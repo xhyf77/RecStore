@@ -1,5 +1,6 @@
-#include "folly/Format.h"
 #include "torch_utils.h"
+
+#include "base/string.h"
 
 namespace recstore {
 
@@ -11,13 +12,13 @@ std::string toStringInner(const torch::Tensor& tensor, bool simplified = true) {
     if (simplified) {
       ss << "tensor([";
       for (int i = 0; i < std::min(tensor.size(0), (int64_t)3); ++i) {
-        ss << folly::sformat("{},", tensor[i].item<T>());
+        ss << base::SFormat("{},", tensor[i].item<T>());
       }
-      ss << folly::sformat("], shape=[{}])", tensor.size(0));
+      ss << base::SFormat("], shape=[{}])", tensor.size(0));
     } else {
       ss << "tensor([";
       for (int i = 0; i < tensor.size(0); ++i) {
-        ss << folly::sformat("{},", tensor[i].item<T>());
+        ss << base::SFormat("{},", tensor[i].item<T>());
       }
       ss << "])";
     }
@@ -26,11 +27,11 @@ std::string toStringInner(const torch::Tensor& tensor, bool simplified = true) {
     for (int i = 0; i < tensor.size(0); i++) {
       ss << "[";
       for (int j = 0; j < tensor.size(1); j++) {
-        ss << folly::sformat("{},", tensor[i][j].item<T>());
+        ss << base::SFormat("{},", tensor[i][j].item<T>());
       }
       ss << "],";
     }
-    ss << folly::sformat("], shape=[{}, {}])", tensor.size(0), tensor.size(1));
+    ss << base::SFormat("], shape=[{}, {}])", tensor.size(0), tensor.size(1));
   } else {
     LOG(FATAL) << "for dim >=3, not implemented yet";
   }

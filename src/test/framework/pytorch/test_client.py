@@ -9,6 +9,13 @@ from client import RecstoreClient
 _server_runner = None
 TEST_PHASE = os.environ.get("RECSTORE_CLIENT_TEST_PHASE", "full").lower()
 RDMA_MEMCACHED_MODE = os.environ.get("RECSTORE_USE_LOCAL_MEMCACHED", "never").lower()
+RDMA_GFLAG_PREFIXES = (
+    "--global_id=",
+    "--num_server_processes=",
+    "--num_client_processes=",
+    "--value_size=",
+    "--max_kv_num_per_request=",
+)
 
 
 def log(message):
@@ -74,6 +81,14 @@ def maybe_reexec_for_rdma_flags():
     )
 
 
+def unittest_argv_without_cpp_gflags():
+    return [sys.argv[0]] + [
+        arg
+        for arg in sys.argv[2:]
+        if not any(arg.startswith(prefix) for prefix in RDMA_GFLAG_PREFIXES)
+    ]
+
+
 def start_server_if_needed():
     global _server_runner
 
@@ -112,6 +127,7 @@ def start_server_if_needed():
             max_kv_num_per_request=rdma_config["max_kv_num_per_request"],
             timeout=15,
             use_local_memcached=RDMA_MEMCACHED_MODE,
+            rdma_transport_mode=os.environ.get("RECSTORE_RDMA_TRANSPORT_MODE"),
         )
         _server_runner.start()
         os.environ["RECSTORE_MEMCACHED_HOST"] = _server_runner.memcached_host
@@ -278,4 +294,4 @@ class TestRecstoreClient(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(argv=sys.argv[:1] + sys.argv[2:])
+    unittest.main(argv=unittest_argv_without_cpp_gflags())

@@ -26,7 +26,7 @@ public:
   }
 
   void xmhprintdebug() {
-    LOG(INFO) << folly::sformat(
+    LOG(INFO) << base::SFormat(
         "LoadFactor : {}/{}={}",
         dict_->Size(),
         dict_->Capacity(),

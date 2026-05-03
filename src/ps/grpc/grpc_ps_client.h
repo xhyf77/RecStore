@@ -1,9 +1,5 @@
 #pragma once
 
-#include <folly/Portability.h>
-#include <folly/executors/CPUThreadPoolExecutor.h>
-#include <folly/init/Init.h>
-
 #include <cstdint>
 #include <future>
 #include <string>
@@ -12,6 +8,7 @@
 
 #include "base/array.h"
 #include "base/flatc.h"
+#include "base/init.h"
 #include "base/json.h"
 #include "ps/base/base_client.h"
 #include "ps/base/parameters.h"
@@ -121,15 +118,15 @@ struct PrewriteBatch {
 
 class GRPCParameterClient : public recstore::BasePSClient {
 public:
-  // 新的构造函数，接收 json 配置参数
+  // New constructor with JSON config
   explicit GRPCParameterClient(json config);
 
-  // 保留原有的构造函数以保持向后兼容
+  // Legacy constructor for backward compatibility
   explicit GRPCParameterClient(const std::string& host, int port, int shard);
 
   ~GRPCParameterClient() {}
 
-  // 实现 BasePSClient 的纯虚函数
+  // BasePSClient pure virtual implementations
   virtual int
   GetParameter(const base::ConstArray<uint64_t>& keys, float* values) override;
 
@@ -141,7 +138,7 @@ public:
 
   void Command(recstore::PSCommand command) override;
 
-  // 原有的接口方法
+  // Legacy API methods
   int GetParameter(const base::ConstArray<uint64_t>& keys,
                    std::vector<std::vector<float>>* values);
   bool GetParameter(const base::ConstArray<unsigned int>& keys,
@@ -184,7 +181,8 @@ public:
                              std::vector<float>* values,
                              int64_t* num_rows,
                              int64_t embedding_dim) override;
-  // 注意这里的value是应用，不同于Get时的指针。Get是兼容之前的写法
+  // Embeddings are vectors here; Get(float*) uses a flat buffer for legacy
+  // callers
   virtual uint64_t EmbWriteAsync(const base::ConstArray<uint64_t>& keys,
                                  const std::vector<std::vector<float>>& values);
   virtual bool IsWriteDone(uint64_t write_id);
@@ -208,7 +206,7 @@ protected:
       get_param_resonse_readers_;
   std::shared_ptr<Channel> channel_;
   std::vector<std::unique_ptr<recstoreps::ParameterService::Stub>> stubs_;
-  grpc::CompletionQueue cq;
+  std::unique_ptr<grpc::CompletionQueue> cq_;
 
 private:
   std::unordered_map<uint64_t, struct PrefetchBatch> prefetch_batches_;

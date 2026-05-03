@@ -1,7 +1,6 @@
 #pragma once
 #include <ATen/cuda/CUDAContext.h>
 #include <fcntl.h> // for open()
-#include <folly/system/MemoryMapping.h>
 #include <immintrin.h>
 #include <sys/mman.h> // for mmap()
 #include <sys/stat.h> // for mode constants
@@ -20,6 +19,7 @@
 #include "base/lock.h"
 #include "base/log.h"
 #include "base/math.h"
+#include "base/mmap.h"
 #include "base/pprint.h"
 #include "base/sleep.h"
 

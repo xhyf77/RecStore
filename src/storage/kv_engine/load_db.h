@@ -1,12 +1,12 @@
 #pragma once
 
-#include <folly/Conv.h>
-#include <folly/GLog.h>
 #include <stdlib.h>
 
 #include <cmath>
 #include <thread>
 
+#include "base/log.h"
+#include "base/string.h"
 #include "ps/base/shard_manager.h"
 #include "storage/kv_engine/base_kv.h"
 
@@ -39,7 +39,7 @@ public:
     }
 
     warmup_kv_count_in_this_ps_ = insert_to_this_db;
-    LOG(INFO) << folly::sformat(
+    LOG(INFO) << base::SFormat(
         "Server{} before load db, warm_capacity_ = {}, {}M, belong to this "
         "partititon inserting {} KVs, "
         "{}M ",
@@ -59,7 +59,7 @@ public:
                j < std::min(end, start + (i + 1) * warm_kv_per_thread);
                ++j) {
             if (i == 0) {
-              FB_LOG_EVERY_MS(INFO, 60000)
+              RECSTORE_LOG_EVERY_MS(INFO, 60000)
                   << (j - start - i * warm_kv_per_thread) * 100LL /
                          warm_kv_per_thread
                   << " %";
@@ -93,7 +93,7 @@ public:
       }
 
       for (int64_t j = 0; j < to_insert_keys.size(); ++j) {
-        FB_LOG_EVERY_MS(INFO, 60000)
+        RECSTORE_LOG_EVERY_MS(INFO, 60000)
             << j * 100LL / to_insert_keys.size() << " %";
         uint64_t key = to_insert_keys[j];
         float* emb   = (float*)pool;
@@ -126,7 +126,7 @@ public:
                  j < std::min(end, start + (i + 1) * warm_kv_per_thread);
                  ++j) {
               if (i == 0) {
-                FB_LOG_EVERY_MS(INFO, 10000)
+                RECSTORE_LOG_EVERY_MS(INFO, 10000)
                     << (j - start - i * warm_kv_per_thread) * 100LL /
                            warm_kv_per_thread
                     << " %";
@@ -156,7 +156,7 @@ public:
     }
 
     if (inserted_kv_nr != warmup_kv_count_in_this_ps_)
-      LOG(ERROR) << folly::sformat(
+      LOG(ERROR) << base::SFormat(
           "Only insert {}/{}={}%",
           inserted_kv_nr.load(),
           warmup_kv_count_in_this_ps_,

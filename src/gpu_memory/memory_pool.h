@@ -3,6 +3,8 @@
 #include <memory>
 #include <string>
 
+#include "base/queue.h"
+
 namespace rmm {
 namespace mr {
 class device_memory_resource;
@@ -14,11 +16,6 @@ template <typename Upstream>
 class binning_memory_resource;
 } // namespace mr
 } // namespace rmm
-
-namespace folly {
-template <class T>
-struct ProducerConsumerQueue;
-} // namespace folly
 
 namespace xmh {
 class PoolMemoryResource {
@@ -77,7 +74,7 @@ public:
 
 private:
   std::unique_ptr<rmm::mr::device_memory_resource> SourceMr_;
-  std::unordered_map<int, folly::ProducerConsumerQueue<void*>*> memory_pool_;
+  std::unordered_map<int, base::ProducerConsumerQueue<void*>*> memory_pool_;
   int initial_pool_count_;
   std::vector<std::pair<void*, int>> allocate_start_addrs_;
 };

@@ -12,8 +12,10 @@
 #include "base/json.h"
 #include "base/lock.h"
 #include "base/pq.h"
+#include "base/queue.h"
+#include "base/string.h"
+#include "base/thread.h"
 #include "base/timer.h"
-#include "folly/executors/CPUThreadPoolExecutor.h"
 #include "grad_base.h"
 #include "grad_memory_manager.h"
 #include "parallel_pq.h"
@@ -92,7 +94,7 @@ public:
     if (withLock)
       lock_.Lock();
     std::stringstream ss;
-    ss << folly::sformat("id={}, read_step=[", id_);
+    ss << base::SFormat("id={}, read_step=[", id_);
     for (auto each : read_step_) {
       ss << each << ",";
     }
@@ -188,7 +190,7 @@ protected:
 
   // for method 2
   const int kUpdatePqWorkerNum_ = 0;
-  std::unique_ptr<folly::CPUThreadPoolExecutor> update_pq_thread_pool_;
+  std::unique_ptr<base::CPUThreadPoolExecutor> update_pq_thread_pool_;
 
 public:
   GradAsyncProcessing(const std::string& json_str,
@@ -208,7 +210,7 @@ public:
                 << nr_background_threads_;
       for (int i = 0; i < nr_background_threads_; ++i) {
         backthread_work_queues_.emplace_back(
-            std::make_unique<folly::ProducerConsumerQueue<GradWorkTask>>(100));
+            std::make_unique<base::ProducerConsumerQueue<GradWorkTask>>(100));
       }
     } else {
       LOG(INFO) << "Use main thread to update emb.";
@@ -216,7 +218,7 @@ public:
 
     for (int rank = 0; rank < num_gpus_; rank++) {
       auto ret_tensor = IPCTensorFactory::FindIPCTensorFromName(
-          folly::sformat("circle_buffer_end_cppseen_r{}", rank));
+          base::SFormat("circle_buffer_end_cppseen_r{}", rank));
       circle_buffer_end_cppseen_.push_back(ret_tensor);
     }
     for (int rank = 0; rank < num_gpus_; rank++) {
@@ -225,10 +227,10 @@ public:
     if (update_pq_use_omp_ == 2) {
       int temp = json_config_.value("kUpdatePqWorkerNum", 8);
       *((int*)&kUpdatePqWorkerNum_) = temp;
-      folly::CPUThreadPoolExecutor::Options option;
+      base::CPUThreadPoolExecutor::Options option;
       option.setBlocking(
-          folly::CPUThreadPoolExecutor::Options::Blocking::prohibit);
-      update_pq_thread_pool_.reset(new folly::CPUThreadPoolExecutor(
+          base::CPUThreadPoolExecutor::Options::Blocking::prohibit);
+      update_pq_thread_pool_.reset(new base::CPUThreadPoolExecutor(
           kUpdatePqWorkerNum_, std::move(option)));
     }
   }
@@ -305,7 +307,7 @@ public:
 
       CHECK_EQ(*p_old_end, old_end);
       if (new_end != old_end) {
-        // FB_LOG_EVERY_MS(WARNING, 1000) << folly::sformat(
+        // RECSTORE_LOG_EVERY_MS(WARNING, 1000) << folly::sformat(
         // LOG(WARNING) << folly::sformat(
         //     "Rank{}: Detect new sample comes, old_end{}, new_end{}", rank,
         //     old_end, new_end);
@@ -347,12 +349,12 @@ public:
     while (!dispatch_thread_stop_flag_.load()) {
       base::LockGuard _(large_lock_);
 #ifdef XMH_DEBUG_KG
-      FB_LOG_EVERY_MS(INFO, 1000) << "pq is empty";
+      RECSTORE_LOG_EVERY_MS(INFO, 1000) << "pq is empty";
 #endif
       // 后台线程，不断取堆头，dispatch给worker
       if (pq_->empty()) {
 #ifdef XMH_DEBUG_KG
-        FB_LOG_EVERY_MS(INFO, 1000) << "pq is empty";
+        RECSTORE_LOG_EVERY_MS(INFO, 1000) << "pq is empty";
 #endif
         continue;
       }
@@ -361,7 +363,7 @@ public:
       // re-read
       if (!p) {
 #ifdef XMH_DEBUG_KG
-        FB_LOG_EVERY_MS(INFO, 1000) << "pq.top is nullptr";
+        RECSTORE_LOG_EVERY_MS(INFO, 1000) << "pq.top is nullptr";
 #endif
         continue;
       }
@@ -445,12 +447,12 @@ public:
       int priority = pq_->MinPriority();
       if (priority > step_no) {
 #ifdef XMH_DEBUG_KG
-        LOG(INFO) << folly::sformat(
+        LOG(INFO) << base::SFormat(
             "top(pq)'s priority={} > step_no{}.", priority, step_no);
 #endif
         break;
       }
-      FB_LOG_EVERY_MS(WARNING, 1000)
+      RECSTORE_LOG_EVERY_MS(WARNING, 1000)
           << "Sleep in <BlockToStepN>, step_no=" << step_no
           << ", pq.top=" << priority;
     }
@@ -489,7 +491,7 @@ public:
         p->MarkWriteInStepN(step_no, grad_tensor);
         p->RecaculatePriority();
 #ifdef XMH_DEBUG_KG
-        LOG(INFO) << folly::sformat(
+        LOG(INFO) << base::SFormat(
             "Push pq_ | id={}, step_no={}, grad={}",
             id,
             step_no,
@@ -528,7 +530,7 @@ public:
           p->MarkWriteInStepN(step_no, grad_tensor);
           p->RecaculatePriority();
 #ifdef XMH_DEBUG_KG
-          LOG(INFO) << folly::sformat(
+          LOG(INFO) << base::SFormat(
               "Push pq_ | id={}, step_no={}, grad={}",
               id,
               step_no,
@@ -565,13 +567,13 @@ public:
 
     for (int rank = 0; rank < num_gpus_; rank++) {
       while (sample_step_cpp_seen_[rank].load() < step_no)
-        FB_LOG_EVERY_MS(ERROR, 5000)
+        RECSTORE_LOG_EVERY_MS(ERROR, 5000)
             << "Stalled in ProcessBackward: "
-            << folly::sformat("rank={}, step_no={}, "
-                              "sample_step_cpp_seen_[rank]={}",
-                              rank,
-                              step_no,
-                              sample_step_cpp_seen_[rank].load());
+            << base::SFormat("rank={}, step_no={}, "
+                             "sample_step_cpp_seen_[rank]={}",
+                             rank,
+                             step_no,
+                             sample_step_cpp_seen_[rank].load());
     }
 
     UpsertPq(input_keys, input_grads, step_no);
@@ -591,7 +593,7 @@ protected:
   std::thread detect_thread_;
   std::thread dispatch_thread_;
   std::vector<std::thread> backward_threads_;
-  std::vector<std::unique_ptr<folly::ProducerConsumerQueue<GradWorkTask>>>
+  std::vector<std::unique_ptr<base::ProducerConsumerQueue<GradWorkTask>>>
       backthread_work_queues_;
 
   std::vector<torch::Tensor> circle_buffer_end_cppseen_;

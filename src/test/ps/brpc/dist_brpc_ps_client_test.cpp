@@ -9,6 +9,8 @@
 #include "base/array.h"
 #include "base/factory.h"
 #include "base/hash.h"
+#include "base/init.h"
+#include "base/thread.h"
 #include "base/timer.h"
 #include "ps/base/base_client.h"
 #include "test/server_mgr/ps_server_launcher.h"
@@ -201,7 +203,6 @@ void TestLargeBatch() {
 
     int put_result = client.PutParameter(keys_array, large_values);
     CHECK(put_result == 0);
-
     std::vector<std::vector<float>> retrieved_values;
     bool get_success = client.GetParameter(keys_array, &retrieved_values);
     CHECK(get_success);

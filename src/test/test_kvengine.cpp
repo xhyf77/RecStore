@@ -18,8 +18,8 @@
 
 #include "base/json.h"
 #include "memory/shm_file.h"
-#include "storage/kv_engine/engine_extendible_hash.h"
 
+#include "storage/kv_engine/engine_extendible_hash.h"
 #include "storage/kv_engine/engine_factory.h"
 #include "storage/kv_engine/engine_selector.h"
 
@@ -55,6 +55,7 @@ public:
   static bool ShouldRunHeavyScenario(const std::string& idx,
                                      const std::string& val,
                                      const std::string& mem_mgr) {
+    return true;
     if (idx == "DRAM" && val == "DRAM")
       return true;
     if (mem_mgr != "R2ShmMalloc")
@@ -133,8 +134,8 @@ protected:
     }
 
     if (value_type_ == "HYBRID") {
-      cfg_.json_config_["DRAM_SIZE"] = capacity * value_sz / 2;
-      cfg_.json_config_["SSD_SIZE"]  = capacity * value_sz;
+      cfg_.json_config_["shmcapacity"] = capacity * value_sz / 2;
+      cfg_.json_config_["ssdcapacity"] = capacity * value_sz;
     }
 
     auto r       = base::ResolveEngine(cfg_);

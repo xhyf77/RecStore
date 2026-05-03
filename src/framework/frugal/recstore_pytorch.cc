@@ -1,11 +1,11 @@
 #include <ATen/cuda/CUDAContext.h>
-#include <folly/init/Init.h>
 #include <stdlib.h>
 #include <torch/custom_class.h>
 #include <torch/extension.h>
 #include <torch/torch.h>
 
 #include "IPCTensor.h"
+#include "base/init.h"
 #include "base/timer.h"
 #include "base/zipf.h"
 #include "recstore_gpu_cache.h"

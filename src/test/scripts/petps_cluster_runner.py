@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import os
+import queue
+import re
 import shutil
 import socket
 import subprocess
@@ -55,6 +57,8 @@ class PetPSClusterRunner:
         rdma_put_client_send_arena_bytes=None,
         rdma_put_server_scratch_bytes=None,
         rdma_wait_timeout_ms=None,
+        rdma_transport_mode=None,
+        rdma_transport_mode_client_flag=True,
         validate_routing=False,
     ):
         self.server_path = Path(server_path)
@@ -98,6 +102,8 @@ class PetPSClusterRunner:
         self.rdma_put_client_send_arena_bytes = rdma_put_client_send_arena_bytes
         self.rdma_put_server_scratch_bytes = rdma_put_server_scratch_bytes
         self.rdma_wait_timeout_ms = rdma_wait_timeout_ms
+        self.rdma_transport_mode = rdma_transport_mode
+        self.rdma_transport_mode_client_flag = rdma_transport_mode_client_flag
         self.validate_routing = validate_routing
         self.processes = []
         self.process_logs = {}
@@ -133,6 +139,8 @@ class PetPSClusterRunner:
         env["RECSTORE_MEMCACHED_TEXT_PROTOCOL"] = "1"
         if self.memcached_namespace:
             env["RECSTORE_MEMCACHED_NAMESPACE"] = self.memcached_namespace
+        if self.rdma_transport_mode is not None:
+            env["RECSTORE_RDMA_TRANSPORT_MODE"] = self.rdma_transport_mode
         if self.validate_routing:
             env["RECSTORE_RDMA_VALIDATE_ROUTING"] = "1"
         return env
@@ -195,6 +203,8 @@ class PetPSClusterRunner:
                 "--rdma_put_v2_push_region_offset="
                 f"{self.rdma_put_v2_push_region_offset}"
             )
+        if self.rdma_transport_mode is not None:
+            cmd.append(f"--rdma_transport_mode={self.rdma_transport_mode}")
         return cmd
 
     def build_client_cmd(self, argv, client_index=0):
@@ -250,10 +260,25 @@ class PetPSClusterRunner:
             )
         if self.rdma_wait_timeout_ms is not None:
             cmd.append(f"--rdma_wait_timeout_ms={self.rdma_wait_timeout_ms}")
+        if (
+            self.rdma_transport_mode is not None
+            and self.rdma_transport_mode_client_flag
+        ):
+            cmd.append(f"--rdma_transport_mode={self.rdma_transport_mode}")
         return cmd
 
     def is_ready_line(self, line):
-        return "[RDMA-DBG] Server polling thread ready" in line
+        return (
+            "[RDMA-DBG] Server polling thread ready" in line
+            or "component=rdma_server event=polling_thread_ready" in line
+        )
+
+    def _extract_ready_thread_token(self, line):
+        if "component=rdma_server event=polling_thread_ready" in line:
+            match = re.search(r"thread_id=(\d+)", line)
+            if match is not None:
+                return match.group(1)
+        return line.rsplit(" ", 1)[-1]
 
     def _monitor(self, global_id, pipe):
         for raw_line in iter(pipe.readline, ""):
@@ -263,7 +288,7 @@ class PetPSClusterRunner:
                 print(f"[petps_server:{global_id}] {line}")
             if self.is_ready_line(line):
                 ready = self.ready_threads.setdefault(global_id, set())
-                ready.add(line.rsplit(" ", 1)[-1])
+                ready.add(self._extract_ready_thread_token(line))
                 if len(ready) >= self.thread_num:
                     self.ready.add(global_id)
 
@@ -494,13 +519,13 @@ class PetPSClusterRunner:
                 raise TimeoutError(
                     f"Timed out waiting for {self.num_servers} petps_server processes"
                 )
-            for process, _thread in self.processes:
+            for idx, (process, _thread) in enumerate(self.processes):
                 if process.poll() is not None:
                     self.emit_status(
                         "startup-crash",
                         f"exit_code={process.returncode}",
                     )
-                    crash_details = self._format_captured_process_output(global_id)
+                    crash_details = self._format_captured_process_output(idx)
                     self.stop()
                     raise RuntimeError(
                         "petps_server exited early with code "
@@ -564,14 +589,51 @@ class PetPSClusterRunner:
         )
 
         output_lines = []
-        try:
-            for line in iter(process.stdout.readline, ""):
-                if not line:
-                    break
-                output_lines.append(line)
-                print(line, end="")
-            returncode = process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
+        line_queue = queue.Queue()
+
+        def read_stdout():
+            try:
+                for line in iter(process.stdout.readline, ""):
+                    if not line:
+                        break
+                    line_queue.put(line)
+            finally:
+                line_queue.put(None)
+
+        reader = threading.Thread(target=read_stdout, daemon=True)
+        reader.start()
+
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        returncode = None
+        timed_out = False
+        reader_done = False
+
+        while True:
+            try:
+                line = line_queue.get(timeout=0.05)
+                if line is None:
+                    reader_done = True
+                else:
+                    output_lines.append(line)
+                    print(line, end="")
+            except queue.Empty:
+                pass
+
+            if returncode is None:
+                returncode = process.poll()
+
+            if (
+                deadline is not None
+                and time.monotonic() >= deadline
+                and returncode is None
+            ):
+                timed_out = True
+                break
+
+            if returncode is not None and reader_done:
+                break
+
+        if timed_out:
             process.terminate()
             try:
                 process.wait(timeout=5)
@@ -582,6 +644,19 @@ class PetPSClusterRunner:
             output_lines.append(timeout_line)
             print(timeout_line, end="")
             returncode = 124
+        elif returncode is None:
+            returncode = process.wait()
+
+        reader.join(timeout=1)
+        while True:
+            try:
+                line = line_queue.get_nowait()
+            except queue.Empty:
+                break
+            if line is None:
+                continue
+            output_lines.append(line)
+            print(line, end="")
 
         class Completed:
             def __init__(self, returncode, stdout):

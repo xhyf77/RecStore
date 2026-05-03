@@ -79,7 +79,7 @@ public:
   std::string GetInfo() const {
     // TODO
     std::string info;
-    info.append(folly::stringPrintf("total_malloc: %ld\n", total_malloc_));
+    info.append(base::StringPrintf("total_malloc: %ld\n", total_malloc_));
     return info;
   }
   void Initialize() {

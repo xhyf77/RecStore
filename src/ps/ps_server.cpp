@@ -6,10 +6,10 @@
 #include <cstdlib>
 
 #include <gflags/gflags.h>
-#include <folly/init/Init.h>
 
 #include "base/base.h"
 #include "base/factory.h"
+#include "base/init.h"
 #include "base/json.h"
 #include "ps/base/base_ps_server.h"
 #include "recstore_config.h"
@@ -44,7 +44,7 @@ static inline std::string ToUpper(std::string s) {
 }
 
 int main(int argc, char** argv) {
-  folly::Init(&argc, &argv);
+  base::Init(&argc, &argv);
 
 #ifdef ENABLE_GPERF_PROFILING
   std::signal(SIGINT, StopProfilerAndExit);

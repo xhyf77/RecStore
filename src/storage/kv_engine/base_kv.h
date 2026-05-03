@@ -33,24 +33,25 @@ struct BaseKVConfig {
    `json_config_["allocator_type"]` 选择：
    - "PERSIST_LOOP_SLAB"（默认）
    - "R2_SLAB"
-   兼容旧字段 `value_memory_management`。
+   `value_memory_management` 由 `allocator_type` 推导填充（见 allocator
+归一化）。
 
 二、必须/可选配置字段
 -------------------
 必填（非 HYBRID）：
-  - "DATA_DIR"    : 工作目录（每个实例建议唯一，兼容旧字段 "path"）
+  - "path"        : 工作目录（每个实例建议唯一）
   - "index_type"  : "DRAM" | "SSD"
   - "value_type"  : "DRAM" | "SSD"
-  - "VALUE_SIZE_BYTES" : 每条 value 字节数（兼容旧字段 "value_size"，例如 128）
+  - "value_size"  : 每条 value 字节数（例如 128）
   - "DRAM_SIZE"/"SSD_SIZE" : 对应 value 介质容量预算（字节，二选一）
-    或显式给 "ENTRY_CAPACITY"（兼容旧字段 "capacity"）
+    或显式给 "capacity"（按条数）
 
 必填（HYBRID）：
-  - "DATA_DIR"    : 兼容旧字段 "path"
+  - "path"        : 工作目录
   - "index_type"  : "DRAM" | "SSD"
   - "value_type"  : "HYBRID"
-  - "DRAM_SIZE"   : DRAM/SHM 侧的字节数预算（兼容旧字段 "shmcapacity"）
-  - "SSD_SIZE"    : SSD 侧的字节数预算（兼容旧字段 "ssdcapacity"）
+  - "shmcapacity" : DRAM/SHM 侧字节数预算
+  - "ssdcapacity" : SSD 侧字节数预算
 
 可选：
   - "allocator_type" : "PERSIST_LOOP_SLAB" | "R2_SLAB"
@@ -62,11 +63,11 @@ struct BaseKVConfig {
 BaseKVConfig cfg;
 cfg.num_threads_ = 16;
 cfg.json_config_ = {
-  {"DATA_DIR", "/tmp/recstore"},
+  {"path", "/tmp/recstore"},
   {"index_type", "DRAM"},
   {"value_type", "SSD"},
   {"DRAM_SIZE", 128000000},
-  {"VALUE_SIZE_BYTES", 128},
+  {"value_size", 128},
   {"allocator_type", "PERSIST_LOOP_SLAB"} // 或 "R2_SLAB"
 };
 
@@ -83,31 +84,31 @@ if (!kv) throw std::runtime_error("Create KV engine failed: " + r.engine);
 ---------------
 1) DRAM 索引 + SSD 值（KVEngineExtendibleHash）
    cfg.json_config_ = {
-     {"DATA_DIR", "/data/eh"},
+     {"path", "/data/eh"},
      {"index_type", "DRAM"},
      {"value_type", "SSD"},
      {"SSD_SIZE", 256000000},
-     {"VALUE_SIZE_BYTES", 128},
+     {"value_size", 128},
      {"allocator_type", "PERSIST_LOOP_SLAB"} // 或 "R2_SLAB"
    };
 
 2) SSD 索引 + SSD 值（KVEngineCCEH）
    cfg.json_config_ = {
-     {"DATA_DIR", "/data/cceh"},
+     {"path", "/data/cceh"},
      {"index_type", "SSD"},
      {"value_type", "SSD"},
      {"SSD_SIZE", 256000000},
-     {"VALUE_SIZE_BYTES", 128},
+     {"value_size", 128},
      {"allocator_type", "PERSIST_LOOP_SLAB"}
    };
 
 3) HYBRID 值（KVEngineHybrid)
    cfg.json_config_ = {
-     {"DATA_DIR", "/data/hybrid"},
+     {"path", "/data/hybrid"},
      {"index_type", "DRAM"},
      {"value_type", "HYBRID"},
-     {"DRAM_SIZE",  128ull * 1'000'000},  // DRAM 侧字节数
-     {"SSD_SIZE",   256ull * 1'000'000},  // SSD  侧字节数
+     {"shmcapacity", 128ull * 1'000'000},
+     {"ssdcapacity", 256ull * 1'000'000},
      {"allocator_type", "PERSIST_LOOP_SLAB"}
    };
 
@@ -119,10 +120,10 @@ if (!kv) throw std::runtime_error("Create KV engine failed: " + r.engine);
 -------------
 - 若你仍显式配置了 "engine_type"，它必须与 ResolveEngine
 推导结果一致；不一致会抛异常。
-- HYBRID 缺 "DRAM_SIZE"/"SSD_SIZE"（或旧字段）→ ResolveEngine 会抛
+- HYBRID 缺 "shmcapacity"/"ssdcapacity" → ResolveEngine 会抛
 std::invalid_argument。
-- 非 HYBRID 缺 "VALUE_SIZE_BYTES" 且无法由 DRAM_SIZE/SSD_SIZE 推导容量
-  （也未显式给 ENTRY_CAPACITY）→ 同上抛异常。
+- 非 HYBRID 缺 "value_size" 且无法由 DRAM_SIZE/SSD_SIZE 推导 capacity
+  （也未显式给 "capacity"）→ 同上抛异常。
 
 
 （完）

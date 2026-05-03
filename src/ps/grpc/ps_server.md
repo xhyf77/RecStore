@@ -261,7 +261,7 @@ gRPC / bRPC 的 `ParameterServiceImpl` / `BRPCParameterServiceImpl` 不直接碰
 - `num_threads` → `BaseKVConfig::num_threads_`
 - `base_kv_config` → `BaseKVConfig::json_config_`
 
-随后 `base::ResolveEngine(kv_config)` 根据 `index_type` / `value_type` 等解析具体引擎名，再通过 `base::Factory<BaseKV, const BaseKVConfig&>::NewInstance(engine, cfg)` 创建 **`std::unique_ptr<BaseKV> base_kv_`**。引擎注册与配置字段说明见 `base_kv.h` 顶部注释（`DATA_DIR`、`VALUE_SIZE_BYTES`、HYBRID 等）。
+随后 `base::ResolveEngine(kv_config)` 根据 `index_type` / `value_type` 等解析具体引擎名，再通过 `base::Factory<BaseKV, const BaseKVConfig&>::NewInstance(engine, cfg)` 创建 **`std::unique_ptr<BaseKV> base_kv_`**。引擎注册与配置字段说明见 `base_kv.h` 顶部注释（`path`、`value_size`、HYBRID 的 `shmcapacity`/`ssdcapacity` 等）。
 
 
 

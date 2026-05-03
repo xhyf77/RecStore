@@ -2,9 +2,9 @@
 #include <cstdint>
 
 #include "base/log.h"
-#include "folly/Format.h"
-#include "folly/Random.h"
-#include "folly/init/Init.h"
+#include "base/init.h"
+#include "base/random.h"
+#include "base/string.h"
 
 #ifndef __has_include
 static_assert(false, "__has_include not supported");
@@ -27,9 +27,11 @@ namespace fs = boost::filesystem;
 #if defined(__GNUC__)
 #  define LIKELY(x) (__builtin_expect((x), 1))
 #  define UNLIKELY(x) (__builtin_expect((x), 0))
+#  define ALWAYS_INLINE inline __attribute__((always_inline))
 #else
 #  define LIKELY(x) (x)
 #  define UNLIKELY(x) (x)
+#  define ALWAYS_INLINE inline
 #endif
 
 #include <limits.h>
@@ -114,34 +116,6 @@ public:
   }
 };
 
-class PseudoRandom {
-  folly::Random::DefaultGenerator rng;
-
-public:
-  explicit PseudoRandom(uint64 seed) { rng.seed(seed); }
-
-  PseudoRandom() { rng.seed(base::GetTimestamp()); }
-
-  void SetSeed(uint64 seed) { rng.seed(seed); }
-
-  int GetInt(int min, int max) { return folly::Random::rand32(min, max, rng); }
-
-  uint64 GetUint64() { return folly::Random::rand64(rng); }
-
-  uint64 GetUint64LT(uint64 max) { return folly::Random::rand64(max, rng); }
-
-  // Fills a string of length |length| with with random data and returns it.
-  //
-  // Not that this is a variation of |RandBytes| with a different return type.
-  std::string GetString(size_t length) {
-    std::string ret(length, 'a');
-    for (int i = 0; i < length; i++) {
-      ret[i] = GetInt(1, 256);
-    }
-    return ret;
-  }
-};
-
 class Rdtsc {
   static constexpr int CPU_FREQ_MHZ_ = 3300;
 
@@ -185,19 +159,19 @@ public:
   FilePath path() const { return path_; }
 
   bool CreateUniqueTempDir() {
-    auto temp        = folly::Random::rand64();
-    std::string path = folly::sformat("/tmp/temp-{}", temp);
+    auto temp        = base::Random::rand64();
+    std::string path = base::SFormat("/tmp/temp-{}", temp);
     file_util::CreateDirectory(path);
     path_.setPath(path);
     return true;
   }
 
   bool CreateUniqueTempDirUnderPath(const std::string& dir) {
-    auto temp = folly::Random::rand64();
-    auto path = folly::sformat("{}/temp-{}", dir, temp);
+    auto temp = base::Random::rand64();
+    auto path = base::SFormat("{}/temp-{}", dir, temp);
     while (file_util::PathExists(path)) {
-      temp = folly::Random::rand64();
-      path = folly::sformat("{}/temp-{}", dir, temp);
+      temp = base::Random::rand64();
+      path = base::SFormat("{}/temp-{}", dir, temp);
     }
     auto r = file_util::CreateDirectory(path);
     path_.setPath(path);

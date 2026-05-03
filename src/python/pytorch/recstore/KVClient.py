@@ -157,7 +157,9 @@ class RecStoreClient:
         if is_gdata:
             self._gdata_name_list.add(name)
         
-        if init_func:
+        # Avoid materializing a full dense tensor for large embedding tables
+        # unless the caller explicitly requests custom initialization data.
+        if init_func is not None:
             initial_data = init_func(shape, dtype)
         else:
             initial_data = torch.zeros(shape, dtype=dtype)

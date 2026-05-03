@@ -11,6 +11,7 @@
 #include "base/json.h"
 #include "base/lock.h"
 #include "base/pq.h"
+#include "base/string.h"
 #include "base/timer.h"
 #include "cpu_embedding.h"
 #include "parallel_pq.h"
@@ -56,7 +57,7 @@ private:
     // full_emb_ = IPCTensorFactory::FindIPCTensorFromName("full_emb");
 
     nr_graph_node_ = nr_graph_node;
-    LOG(WARNING) << folly::sformat("KGCacheController, config={}", json_str);
+    LOG(WARNING) << base::SFormat("KGCacheController, config={}", json_str);
   }
 
 public:
@@ -68,14 +69,14 @@ public:
       CUDA_CHECK(cudaSetDevice(rank));
       input_keys_per_rank_.push_back(
           IPCTensorFactory::GetSlicedIPCTensorFromName(
-              folly::sformat("input_keys_{}", rank)));
+              base::SFormat("input_keys_{}", rank)));
       input_keys_neg_per_rank_.push_back(
           IPCTensorFactory::GetSlicedIPCTensorFromName(
-              folly::sformat("input_keys_neg_{}", rank)));
+              base::SFormat("input_keys_neg_{}", rank)));
 
       // cache tensor
       cache_per_rank_.push_back(IPCTensorFactory::FindIPCTensorFromName(
-          folly::sformat("embedding_cache_{}", rank)));
+          base::SFormat("embedding_cache_{}", rank)));
 
       // L buffer of input ids
       cached_id_circle_buffer_.push_back(
@@ -83,30 +84,30 @@ public:
       for (int j = 0; j < L_; ++j) {
         cached_id_circle_buffer_[rank].push_back(
             IPCTensorFactory::GetSlicedIPCTensorFromName(
-                folly::sformat("cached_sampler_r{}_{}", rank, j)));
+                base::SFormat("cached_sampler_r{}_{}", rank, j)));
       }
       // step tensor
       step_tensor_per_rank_.push_back(IPCTensorFactory::FindIPCTensorFromName(
-          folly::sformat("step_r{}", rank)));
+          base::SFormat("step_r{}", rank)));
 
       backward_grads_per_rank_.push_back(
           IPCTensorFactory::GetSlicedIPCTensorFromName(
-              folly::sformat("backward_grads_{}", rank)));
+              base::SFormat("backward_grads_{}", rank)));
       backward_grads_neg_per_rank_.push_back(
           IPCTensorFactory::GetSlicedIPCTensorFromName(
-              folly::sformat("backward_grads_neg_{}", rank)));
+              base::SFormat("backward_grads_neg_{}", rank)));
       if (backgrad_init_ == "both") {
         backward_grads_gpu_.push_back(
             IPCTensorFactory::GetSlicedIPCTensorFromName(
-                folly::sformat("backward_grads_{}_gpu", rank)));
+                base::SFormat("backward_grads_{}_gpu", rank)));
         backward_grads_neg_gpu_.push_back(
             IPCTensorFactory::GetSlicedIPCTensorFromName(
-                folly::sformat("backward_grads_neg_{}_gpu", rank)));
+                base::SFormat("backward_grads_neg_{}_gpu", rank)));
       }
 
       circle_buffer_end_per_rank_.push_back(
           IPCTensorFactory::FindIPCTensorFromName(
-              folly::sformat("circle_buffer_end_r{}", rank)));
+              base::SFormat("circle_buffer_end_r{}", rank)));
     }
   }
 
@@ -302,7 +303,8 @@ public:
 #ifdef USE_NEG_THREAD
     if (kForwardItersPerStep_ > 1) {
       while (processOneStepNegThread_ping_.load() == true)
-        FB_LOG_EVERY_MS(ERROR, 5000) << "waiting for processOneStepNegThread_";
+        RECSTORE_LOG_EVERY_MS(ERROR, 5000)
+            << "waiting for processOneStepNegThread_";
       return;
     }
 #else

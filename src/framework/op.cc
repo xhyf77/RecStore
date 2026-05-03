@@ -20,6 +20,7 @@
 #include <numeric>
 #include <thread>
 #include <cstdlib>
+#include <emmintrin.h>
 #include <string>
 #include <fstream>
 #include "base/tensor.h"

@@ -19,10 +19,10 @@ using json = nlohmann::json;
 namespace recstore {
 
 /**
- * @brief 分布式grpc参数服务器客户端
+ * @brief Distributed gRPC parameter-server client
  *
- * 支持多对多的连接模式，通过hash函数将key路由到对应的服务器。
- * 配置通过JSON文件指定服务器列表和hash分区方法。
+ * Many-to-many connections; routes keys to shards via a hash function.
+ * Server list and hash method come from JSON config.
  */
 class DistributedGRPCParameterClient : public BasePSClient {
 public:
@@ -30,7 +30,7 @@ public:
 
   ~DistributedGRPCParameterClient();
 
-  // 实现 BasePSClient 的纯虚函数
+  // BasePSClient pure virtual implementations
   int GetParameter(const base::ConstArray<uint64_t>& keys,
                    float* values) override;
 
@@ -42,7 +42,7 @@ public:
 
   void Command(PSCommand command) override;
 
-  // Prefetch 接口实现
+  // Prefetch API (stubbed for distributed client)
   uint64_t PrefetchParameter(const base::ConstArray<uint64_t>& keys) override;
   bool IsPrefetchDone(uint64_t prefetch_id) override;
   void WaitForPrefetch(uint64_t prefetch_id) override;
@@ -65,7 +65,7 @@ public:
   int InitEmbeddingTable(const std::string& table_name,
                          const recstore::EmbeddingTableConfig& config) override;
 
-  // 扩展接口
+  // Extended API
   bool GetParameter(const base::ConstArray<uint64_t>& keys,
                     std::vector<std::vector<float>>* values);
 
@@ -113,12 +113,12 @@ private:
       float* values) const;
 
 private:
-  // 配置信息
+  // Config
   int num_shards_;
   int max_keys_per_request_;
   std::string hash_method_;
 
-  // 服务器配置
+  // Per-server entries
   struct ServerConfig {
     std::string host;
     int port;
@@ -126,13 +126,13 @@ private:
   };
   std::vector<ServerConfig> server_configs_;
 
-  // grpc客户端实例
+  // gRPC clients (one per server entry)
   std::vector<std::unique_ptr<GRPCParameterClient>> clients_;
 
-  // 分片到客户端的映射
+  // Logical shard id -> index in clients_
   std::unordered_map<int, int> shard_to_client_index_;
 
-  // 分区缓冲区
+  // Partition buffers (reused)
   mutable std::vector<std::vector<uint64_t>> partitioned_key_buffer_;
   mutable std::vector<std::vector<size_t>> key_index_mapping_;
 

@@ -1,4 +1,3 @@
-#include <folly/executors/CPUThreadPoolExecutor.h>
 #include <grpcpp/ext/proto_server_reflection_plugin.h>
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/health_check_service_interface.h>
@@ -13,6 +12,7 @@
 #include "base/array.h"
 #include "base/base.h"
 #include "base/flatc.h"
+#include "base/init.h"
 #include "base/timer.h"
 #include "ps.grpc.pb.h"
 #include "ps.pb.h"
@@ -102,7 +102,7 @@ private:
     xmh::Timer timer_ps_get_req("PS GetParameter Req");
     ParameterCompressor compressor(std::numeric_limits<int>::max());
     std::vector<std::string> blocks;
-    FB_LOG_EVERY_MS(INFO, 1000)
+    RECSTORE_LOG_EVERY_MS(INFO, 1000)
         << "[PS] Getting " << keys_array.Size() << " keys";
     int total_dim = 0;
 #ifdef ENABLE_PERF_REPORT
@@ -354,7 +354,7 @@ private:
 #endif
       success = cache_ps_->UpdateParameter(table_name, reader, 0);
 
-      FB_LOG_EVERY_MS(INFO, 2000)
+      RECSTORE_LOG_EVERY_MS(INFO, 2000)
           << "UpdateParameter: table=" << table_name << ", keys=" << size;
 
       reply->set_success(success);
@@ -421,7 +421,7 @@ private:
         nlohmann::json cfg      = nlohmann::json::parse(payload);
         uint64_t num_embeddings = cfg.value("num_embeddings", 0);
         uint64_t embedding_dim  = cfg.value("embedding_dim", 0);
-        FB_LOG_EVERY_MS(INFO, 2000)
+        RECSTORE_LOG_EVERY_MS(INFO, 2000)
             << "InitEmbeddingTable: table=" << request->table_name()
             << ", num_embeddings=" << num_embeddings
             << ", embedding_dim=" << embedding_dim;
@@ -477,27 +477,27 @@ public:
   GRPCParameterServer() = default;
 
   void Run() {
-    // 检查是否配置了多分片
-    int num_shards = 1; // 默认单分片
+    // Check whether multi-shard mode is configured
+    int num_shards = 1; // default: single shard
     if (config_["cache_ps"].contains("num_shards")) {
       num_shards = config_["cache_ps"]["num_shards"];
     }
 
     if (num_shards > 1) {
-      // 多服务器启动逻辑
+      // Multi-server startup
       std::cout << "Starting distributed parameter server (gRPC), number "
                    "of shards: "
                 << num_shards << std::endl;
 
       if (!config_["cache_ps"].contains("servers")) {
-        LOG(FATAL) << "配置了 num_shards > 1 但缺少 servers 配置";
+        LOG(FATAL) << "num_shards > 1 but cache_ps.servers is missing";
         return;
       }
 
       auto servers = config_["cache_ps"]["servers"];
       if (servers.size() != num_shards) {
-        LOG(FATAL) << "servers 配置数量 (" << servers.size()
-                   << ") 与 num_shards (" << num_shards << ") 不匹配";
+        LOG(FATAL) << "servers count (" << servers.size()
+                   << ") does not match num_shards (" << num_shards << ")";
         return;
       }
 
@@ -565,13 +565,13 @@ public:
         });
       }
 
-      // 等待所有服务器线程
+      // Wait for all server threads
       for (auto& t : server_threads) {
         t.join();
       }
     } else {
-      // 单服务器启动逻辑
-      std::cout << "启动单参数服务器" << std::endl;
+      // Single-server startup
+      std::cout << "Starting single parameter server" << std::endl;
       std::string server_address("0.0.0.0:15000");
       auto cache_ps = std::make_unique<CachePS>(config_["cache_ps"]);
       ParameterServiceImpl service(cache_ps.get());
@@ -625,7 +625,7 @@ FACTORY_REGISTER(BaseParameterServer, GRPCParameterServer, GRPCParameterServer);
 
 #ifndef RECSTORE_NO_SERVER_MAIN
 int main(int argc, char** argv) {
-  folly::Init(&argc, &argv);
+  base::Init(&argc, &argv);
   xmh::Reporter::StartReportThread(2000);
   std::ifstream config_file(FLAGS_config_path);
   nlohmann::json ex;

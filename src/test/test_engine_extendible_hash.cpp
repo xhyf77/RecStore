@@ -127,6 +127,109 @@ TEST_F(KVEngineExtendibleHashTest, KeyOverwrite) {
   EXPECT_EQ(retrieved_value, value2);
 }
 
+TEST_F(KVEngineExtendibleHashTest, SameSizeOverwriteReusesValueAllocation) {
+  auto* engine = dynamic_cast<KVEngineExtendibleHash*>(kv_engine_.get());
+  ASSERT_NE(engine, nullptr);
+
+  uint64_t key       = 101;
+  std::string value1 = CreateFixedLengthValue("initial_value");
+  std::string value2 = CreateFixedLengthValue("updated_value");
+  std::string retrieved_value;
+
+  kv_engine_->Put(key, value1, 0);
+  const uint64_t malloc_count_after_insert =
+      engine->ValueAllocationCountForTest();
+
+  kv_engine_->Put(key, value2, 0);
+  EXPECT_EQ(engine->ValueAllocationCountForTest(), malloc_count_after_insert);
+
+  kv_engine_->Get(key, retrieved_value, 0);
+  EXPECT_EQ(retrieved_value, value2);
+}
+
+TEST_F(KVEngineExtendibleHashTest, BatchOverwriteEmitsOneFencePerBatch) {
+  auto* engine = dynamic_cast<KVEngineExtendibleHash*>(kv_engine_.get());
+  ASSERT_NE(engine, nullptr);
+
+  const int num_keys = 4;
+  std::vector<uint64_t> keys;
+  keys.reserve(num_keys);
+
+  std::vector<std::vector<float>> initial_values(num_keys);
+  std::vector<std::vector<float>> updated_values(num_keys);
+  std::vector<base::ConstArray<float>> initial_slices;
+  std::vector<base::ConstArray<float>> updated_slices;
+  initial_slices.reserve(num_keys);
+  updated_slices.reserve(num_keys);
+
+  for (int i = 0; i < num_keys; ++i) {
+    keys.push_back(20000 + i);
+    initial_values[i].resize(32);
+    updated_values[i].resize(32);
+    for (int j = 0; j < 32; ++j) {
+      initial_values[i][j] = static_cast<float>(i * 100 + j);
+      updated_values[i][j] = static_cast<float>(i * 1000 + j);
+    }
+    initial_slices.emplace_back(
+        initial_values[i].data(), static_cast<int>(initial_values[i].size()));
+    updated_slices.emplace_back(
+        updated_values[i].data(), static_cast<int>(updated_values[i].size()));
+  }
+
+  base::ConstArray<uint64_t> keys_array(keys.data(), keys.size());
+  kv_engine_->BatchPut(keys_array, &initial_slices, 0);
+
+  engine->ResetFenceCountForTest();
+  kv_engine_->BatchPut(keys_array, &updated_slices, 0);
+
+  EXPECT_EQ(engine->FenceCountForTest(), 1);
+
+  std::vector<base::ConstArray<float>> batch_get_values;
+  kv_engine_->BatchGet(keys_array, &batch_get_values, 0);
+  ASSERT_EQ(batch_get_values.size(), num_keys);
+  for (int i = 0; i < num_keys; ++i) {
+    ASSERT_EQ(batch_get_values[i].Size(),
+              static_cast<int>(updated_values[i].size()));
+    for (int j = 0; j < batch_get_values[i].Size(); ++j) {
+      EXPECT_FLOAT_EQ(batch_get_values[i][j], updated_values[i][j])
+          << "Failed for key " << keys[i] << ", index " << j;
+    }
+  }
+}
+
+TEST_F(KVEngineExtendibleHashTest, BatchPutFlatWritesContiguousRows) {
+  auto* engine = dynamic_cast<KVEngineExtendibleHash*>(kv_engine_.get());
+  ASSERT_NE(engine, nullptr);
+
+  const int num_keys      = 5;
+  const int embedding_dim = 32;
+  std::vector<uint64_t> keys;
+  std::vector<float> values(num_keys * embedding_dim);
+  keys.reserve(num_keys);
+
+  for (int i = 0; i < num_keys; ++i) {
+    keys.push_back(21000 + i);
+    for (int j = 0; j < embedding_dim; ++j) {
+      values[i * embedding_dim + j] = static_cast<float>(i * 100 + j);
+    }
+  }
+
+  base::ConstArray<uint64_t> keys_array(keys.data(), keys.size());
+  ASSERT_TRUE(engine->BatchPutFlat(
+      keys_array, values.data(), num_keys, embedding_dim, 0));
+
+  std::vector<base::ConstArray<float>> batch_get_values;
+  kv_engine_->BatchGet(keys_array, &batch_get_values, 0);
+  ASSERT_EQ(batch_get_values.size(), num_keys);
+  for (int i = 0; i < num_keys; ++i) {
+    ASSERT_EQ(batch_get_values[i].Size(), embedding_dim);
+    for (int j = 0; j < embedding_dim; ++j) {
+      EXPECT_FLOAT_EQ(batch_get_values[i][j], values[i * embedding_dim + j])
+          << "Failed for key " << keys[i] << ", index " << j;
+    }
+  }
+}
+
 // 测试多个键值对
 TEST_F(KVEngineExtendibleHashTest, MultiplePutAndGet) {
   const int num_pairs = 50;

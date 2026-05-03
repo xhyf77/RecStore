@@ -1,5 +1,4 @@
 #pragma once
-#include <folly/ProducerConsumerQueue.h>
 
 #include <algorithm>
 #include <atomic>
@@ -96,6 +95,18 @@ public:
       return;
     }
     base::ConstArray<uint64_t> key_array(keys, key_count);
+    if (auto* extendible_hash =
+            dynamic_cast<KVEngineExtendibleHash*>(base_kv_.get());
+        extendible_hash != nullptr) {
+      const bool ok = extendible_hash->BatchPutFlat(
+          key_array, values, key_count, embedding_dim, tid);
+      if (ok) {
+        return;
+      }
+      LOG(ERROR) << "PutDenseParameterBatch direct path failed, fallback to "
+                    "generic BatchPut";
+    }
+
     std::vector<base::ConstArray<float>> value_slices;
     value_slices.reserve(static_cast<std::size_t>(key_count));
     for (int i = 0; i < key_count; ++i) {
@@ -151,7 +162,7 @@ public:
       pack.key      = key;
       pack.dim      = 0;
       pack.emb_data = nullptr;
-      FB_LOG_EVERY_MS(ERROR, 1000) << "key " << key << " not existing";
+      RECSTORE_LOG_EVERY_MS(ERROR, 1000) << "key " << key << " not existing";
       return false;
     }
     pack.key      = key;

@@ -1,10 +1,9 @@
-#include <folly/Random.h>
-#include <folly/init/Init.h>
-
 #include <atomic>
 #include <iostream>
 #include <vector>
 
+#include "base/init.h"
+#include "base/random.h"
 #include "base/timer.h"
 #include "spdk_wrapper.h"
 
@@ -17,7 +16,7 @@ void cb(void* ctx, const struct spdk_nvme_cpl* cpl) {
 }
 
 int main(int argc, char** argv) {
-  folly::Init(&argc, &argv);
+  base::Init(&argc, &argv);
   xmh::Reporter::StartReportThread();
   auto ssd = ssdps::SpdkWrapper::create(1);
   ssd->Init();
@@ -36,7 +35,7 @@ int main(int argc, char** argv) {
 
   while (1) {
     for (int i = 0; i < batch_get_num; i++) {
-      batch_get_lba_id[i] = folly::Random::rand32(FLAGS_key_space_M * 1e6);
+      batch_get_lba_id[i] = base::Random::rand32(FLAGS_key_space_M * 1000000);
     }
     xmh::Timer timer("get");
     std::atomic<int> counter{0};

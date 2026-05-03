@@ -191,7 +191,7 @@ public:
             uint8 sign        = Sign(hash_value);
             if (UNLIKELY(chunk.tags_[chunk_offset] != sign)) {
               // inconsistent tags
-              FB_LOG_EVERY_MS(WARNING, 2000)
+              RECSTORE_LOG_EVERY_MS(WARNING, 2000)
                   << "inconsistent tag, key = " << chunkItem.first
                   << " , correct it";
               chunk.tags_[chunk_offset] = sign;
@@ -585,7 +585,7 @@ public:
         return &val->second;
       }
       if (UNLIKELY(Full())) {
-        FB_LOG_EVERY_MS(ERROR, 1000) << fmt::format(
+        RECSTORE_LOG_EVERY_MS(ERROR, 1000) << fmt::format(
             "Warning pethash dict full, {}/{}={}",
             size_.load(),
             capacity_,

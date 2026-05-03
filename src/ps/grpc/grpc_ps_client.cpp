@@ -15,7 +15,6 @@
 #include "base/log.h"
 #include "base/timer.h"
 #include "ps/base/parameters.h"
-#include "folly/executors/CPUThreadPoolExecutor.h"
 #include "ps.grpc.pb.h"
 #include "ps.pb.h"
 
@@ -41,6 +40,11 @@ using recstoreps::UpdateParameterRequest;
 using recstoreps::UpdateParameterResponse;
 
 namespace {
+
+void SetRpcDeadline(grpc::ClientContext* context, int timeout_ms = 15000) {
+  context->set_deadline(
+      std::chrono::system_clock::now() + std::chrono::milliseconds(timeout_ms));
+}
 
 int BuildUpdateBlocksFromFlat(
     const base::ConstArray<uint64_t>& keys,
@@ -78,9 +82,9 @@ int BuildUpdateBlocksFromFlat(
 DEFINE_int32(get_parameter_threads, 4, "get clients per shard");
 DEFINE_bool(parameter_client_random_init, false, "");
 
-// 新的构造函数，接收 json 配置参数
+// New constructor that takes JSON config.
 /*
-可用下面的代码来读取配置文件
+Example: load config from file
 std::ifstream config_file(FLAGS_config_path);
   nlohmann::json ex;
   config_file >> ex;
@@ -89,7 +93,7 @@ std::ifstream config_file(FLAGS_config_path);
 */
 GRPCParameterClient::GRPCParameterClient(json config)
     : recstore::BasePSClient(config) {
-  // 从json配置中提取参数
+  // Extract fields from JSON config
   host_       = config.value("host", "localhost");
   port_       = config.value("port", 15000);
   shard_      = config.value("shard", 0);
@@ -104,6 +108,8 @@ GRPCParameterClient::GRPCParameterClient(json config)
       fmt::format("{}:{}", host_, port_),
       grpc::InsecureChannelCredentials(),
       args);
+  auto* raw_cq = new grpc::CompletionQueue();
+  cq_.reset(raw_cq);
 
   for (int i = 0; i < nr_clients_; i++) {
     stubs_.push_back(nullptr);
@@ -112,7 +118,7 @@ GRPCParameterClient::GRPCParameterClient(json config)
   }
 }
 
-// 保留原有的构造函数以保持向后兼容
+// Legacy constructor for backward compatibility
 GRPCParameterClient::GRPCParameterClient(
     const std::string& host, int port, int shard)
     : recstore::BasePSClient(
@@ -131,6 +137,8 @@ GRPCParameterClient::GRPCParameterClient(
       fmt::format("{}:{}", host, port),
       grpc::InsecureChannelCredentials(),
       args);
+  auto* raw_cq = new grpc::CompletionQueue();
+  cq_.reset(raw_cq);
 
   for (int i = 0; i < nr_clients_; i++) {
     stubs_.push_back(nullptr);
@@ -180,14 +188,14 @@ int GRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
     }
     std::unique_ptr<ClientAsyncResponseReader<GetParameterResponse>> rpc =
         stubs_[0]->AsyncGetParameter(
-            get_param_contexts_[index].get(), request, &cq);
+            get_param_contexts_[index].get(), request, cq_.get());
     rpc->Finish(&response, &status, reinterpret_cast<void*>(index));
   }
   int get = 0;
   while (get != request_num) {
     void* got_tag;
     bool ok = false;
-    cq.Next(&got_tag, &ok);
+    cq_->Next(&got_tag, &ok);
     if (!ok) {
       LOG(ERROR) << "error";
     }
@@ -235,7 +243,7 @@ int GRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
         std::copy_n(
             item->embedding, item->dim, values + item->dim * get_embedding_acc);
       } else {
-        FB_LOG_EVERY_MS(ERROR, 2000)
+        RECSTORE_LOG_EVERY_MS(ERROR, 2000)
             << "error; not find key " << keys[get_embedding_acc] << " in ps";
       }
       get_embedding_acc++;
@@ -335,7 +343,7 @@ int GRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
       get_param_contexts_[index] = std::make_unique<grpc::ClientContext>();
     }
     get_param_resonse_readers_.emplace_back(stubs_[0]->AsyncGetParameter(
-        get_param_contexts_[index].get(), request, &cq));
+        get_param_contexts_[index].get(), request, cq_.get()));
     auto& rpc = get_param_resonse_readers_.back();
     // GetParameter(&context, request, &response);
     rpc->Finish(&response, &status, reinterpret_cast<void*>(index));
@@ -345,7 +353,7 @@ int GRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
   while (get != request_num) {
     void* got_tag;
     bool ok = false;
-    cq.Next(&got_tag, &ok);
+    cq_->Next(&got_tag, &ok);
     if (unlikely(!ok)) {
       LOG(ERROR) << "error";
     }
@@ -519,19 +527,37 @@ void GRPCParameterClient::WaitForPrefetch(uint64_t prefetch_id) {
     LOG(ERROR) << "Invalid prefetch_id: " << prefetch_id;
     return;
   }
-  auto& pb      = it->second;
-  void* got_tag = nullptr;
-  bool ok       = false;
+  auto& pb                     = it->second;
+  void* got_tag                = nullptr;
+  bool ok                      = false;
+  int idle_rounds              = 0;
+  constexpr auto kPollInterval = std::chrono::milliseconds(200);
+  constexpr int kMaxIdleRounds = 150; // 30s
   while (pb.completed_count_ < pb.batch_size_) {
-    auto status = pb.cqs_->Next(&got_tag, &ok);
-    if (!status) {
+    auto deadline = std::chrono::system_clock::now() + kPollInterval;
+    auto status   = pb.cqs_->AsyncNext(&got_tag, &ok, deadline);
+    if (status == grpc::CompletionQueue::NextStatus::GOT_EVENT) {
+      idle_rounds = 0;
+      if (unlikely(!ok)) {
+        LOG(ERROR) << "CompletionQueue returned not ok for prefetch";
+      }
+      pb.completed_count_++;
+      continue;
+    }
+    if (status == grpc::CompletionQueue::NextStatus::TIMEOUT) {
+      idle_rounds++;
+      if (idle_rounds >= kMaxIdleRounds) {
+        LOG(ERROR) << "WaitForPrefetch timed out for prefetch_id "
+                   << prefetch_id << ", completed " << pb.completed_count_
+                   << "/" << pb.batch_size_;
+        break;
+      }
+      continue;
+    }
+    if (status == grpc::CompletionQueue::NextStatus::SHUTDOWN) {
       LOG(ERROR) << "CompletionQueue shutdown while waiting prefetch";
       break;
     }
-    if (unlikely(!ok)) {
-      LOG(ERROR) << "CompletionQueue returned not ok for prefetch";
-    }
-    pb.completed_count_++;
   }
 }
 
@@ -639,7 +665,12 @@ bool GRPCParameterClient::ClearPS() {
   CommandResponse response;
   request.set_command(PSCommand::CLEAR_PS);
   grpc::ClientContext context;
+  SetRpcDeadline(&context);
   grpc::Status status = stubs_[0]->Command(&context, request, &response);
+  if (!status.ok()) {
+    LOG(ERROR) << "gRPC ClearPS failed: " << status.error_code() << " "
+               << status.error_message();
+  }
   return status.ok();
 }
 
@@ -651,6 +682,7 @@ bool GRPCParameterClient::LoadFakeData(int64_t n) {
   request.set_command(PSCommand::LOAD_FAKE_DATA);
   request.add_arg1(&n, sizeof(int64_t));
   grpc::ClientContext context;
+  SetRpcDeadline(&context);
   grpc::Status status = stubs_[0]->Command(&context, request, &response);
   if (!status.ok()) {
     LOG(ERROR) << "gRPC LoadFakeData failed: " << status.error_code() << " "
@@ -672,6 +704,7 @@ bool GRPCParameterClient::DumpFakeData(int64_t n) {
   request.set_command(PSCommand::DUMP_FAKE_DATA);
   request.add_arg1(&n, sizeof(int64_t));
   grpc::ClientContext context;
+  SetRpcDeadline(&context);
   grpc::Status status = stubs_[0]->Command(&context, request, &response);
   if (!status.ok()) {
     LOG(ERROR) << "gRPC DumpFakeData failed: " << status.error_code() << " "
@@ -699,6 +732,7 @@ bool GRPCParameterClient::LoadCkpt(
     request.add_arg2(each);
   }
   grpc::ClientContext context;
+  SetRpcDeadline(&context, 30000);
   grpc::Status status = stubs_[0]->Command(&context, request, &response);
   return status.ok();
 }
@@ -731,6 +765,7 @@ bool GRPCParameterClient::PutParameter(
     CHECK_EQ(blocks.size(), 1);
     request.mutable_parameter_value()->swap(blocks[0]);
     grpc::ClientContext context;
+    SetRpcDeadline(&context);
     grpc::Status status = stubs_[0]->PutParameter(&context, request, &response);
     if (status.ok()) {
       continue;
@@ -787,6 +822,7 @@ int GRPCParameterClient::UpdateParameter(
   }
 
   grpc::ClientContext context;
+  SetRpcDeadline(&context);
 #ifdef ENABLE_PERF_REPORT
   if (trace_id != 0) {
     context.AddMetadata("x-recstore-trace-id", std::to_string(trace_id));
@@ -873,6 +909,7 @@ int GRPCParameterClient::UpdateParameterFlat(
   }
 
   grpc::ClientContext context;
+  SetRpcDeadline(&context);
 #ifdef ENABLE_PERF_REPORT
   if (trace_id != 0) {
     context.AddMetadata("x-recstore-trace-id", std::to_string(trace_id));
@@ -950,7 +987,7 @@ int GRPCParameterClient::InitEmbeddingTable(
   return response.success() ? 0 : -1;
 }
 
-// 实现 BasePSClient 的纯虚函数
+// BasePSClient pure virtual implementations
 // int GRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
 // float* values) {
 //   return GetParameter(ConstArray<uint64_t>(keys.Data(), keys.Size()), values)
@@ -1015,7 +1052,7 @@ uint64_t GRPCParameterClient::EmbWriteAsync(
     auto& request  = pb.requests_[index];
     auto& response = pb.responses_[index];
 
-    // 将键值对打包
+    // Pack key/embedding pairs
     ParameterCompressor compressor;
     std::vector<std::string> blocks;
     for (int i = start; i < start + key_size; i++) {
@@ -1032,16 +1069,16 @@ uint64_t GRPCParameterClient::EmbWriteAsync(
 
     request.mutable_parameter_value()->swap(blocks[0]);
 
-    // 发送异步请求
+    // Issue async RPC
     pb.response_readers_.emplace_back(stubs_[0]->AsyncPutParameter(
         pb.contexts_[index].get(), request, pb.cqs_.get()));
 
-    // 异步调用，设置回调
+    // Async call; completion via CQ tag
     auto& rpc = pb.response_readers_.back();
     rpc->Finish(&response, &status, reinterpret_cast<void*>(index));
   }
 
-  // 将批次信息存储到 prewrite_batches_ 中
+  // Store batch state in prewrite_batches_
   prewrite_batches_.emplace(prewrite_id, std::move(pb));
   return prewrite_id;
 }
@@ -1078,6 +1115,6 @@ void GRPCParameterClient::WaitForWrite(uint64_t write_id) {
   }
 }
 
-// 注册 GRPCParameterClient 到工厂
+// Register GRPCParameterClient with the factory
 using BasePSClient = recstore::BasePSClient;
 FACTORY_REGISTER(BasePSClient, grpc, GRPCParameterClient, json);

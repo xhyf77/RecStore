@@ -1,9 +1,8 @@
 #pragma once
-#include <folly/GLog.h>
-#include <folly/Portability.h>
-
 #include <vector>
 
+#include "base/base.h"
+#include "base/log.h"
 #include "naiveKVell.h"
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
