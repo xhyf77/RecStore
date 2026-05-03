@@ -88,7 +88,8 @@ json ResolveFrameworkPSClientTransportConfig(const json& config) {
 PSClientCreateOptions
 ResolvePSClientOptionsFromFrameworkConfig(const json& config) {
   json raw_config = config;
-  const json distributed_client = ResolveFrameworkDistributedClientConfig(config);
+  const json distributed_client =
+      ResolveFrameworkDistributedClientConfig(config);
   if (!distributed_client.empty()) {
     raw_config["distributed_client"] = distributed_client;
   }

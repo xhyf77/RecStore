@@ -86,7 +86,7 @@ void RDMAPSClientAdapter::EnsureClientInitialized() {
       config_.contains("client") ? config_["client"] : json::object();
   const json dist_cfg = ResolveFrameworkDistributedClientConfig(config_);
 
-  const int num_shards = dist_cfg.value("num_shards", 1);
+  const int num_shards       = dist_cfg.value("num_shards", 1);
   FLAGS_num_server_processes = num_shards;
   FLAGS_num_client_processes = 1;
   FLAGS_global_id            = num_shards;

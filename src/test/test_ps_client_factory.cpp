@@ -68,10 +68,9 @@ TEST(PSClientFactoryTest, ResolvesDistributedClientConfigWithFieldFallback) {
        {{"ps_type", "BRPC"}, {"num_shards", 2}, {"hash_method", "city_hash"}}},
       {"distributed_client",
        {{"servers",
-         json::array({{{"host", "10.0.0.1"}, {"port", 25123}, {"shard", 1}},
-                      {{"host", "10.0.0.2"},
-                       {"port", 25124},
-                       {"shard", 0}}})}}},
+         json::array(
+             {{{"host", "10.0.0.1"}, {"port", 25123}, {"shard", 1}},
+              {{"host", "10.0.0.2"}, {"port", 25124}, {"shard", 0}}})}}},
   };
 
   json client_config = ResolveFrameworkDistributedClientConfig(config);
