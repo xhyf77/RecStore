@@ -36,6 +36,13 @@ file(GLOB_RECURSE YCSB_CORE_SRC "core/*.cc")
 
 include(FindThreads)
 
+add_executable(ycsb_basic ${YCSB_CORE_SRC})
+target_include_directories(ycsb_basic PRIVATE ${PROJECT_SOURCE_DIR})
+target_link_libraries(ycsb_basic PRIVATE Threads::Threads)
+set_target_properties(ycsb_basic PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+
 add_executable(ycsb ${YCSB_CORE_SRC})
 target_include_directories(ycsb PRIVATE ${PROJECT_SOURCE_DIR})
 
@@ -203,7 +210,7 @@ endif()
 
 add_subdirectory(HdrHistogram_c)
 include_directories(HdrHistogram_c/include)
-add_compile_definitions(HDRMEASUREMENT)
+target_compile_definitions(ycsb PRIVATE HDRMEASUREMENT)
 add_dependencies(ycsb hdr_histogram_static)
 target_link_libraries(ycsb PRIVATE hdr_histogram_static)
 
@@ -238,10 +245,8 @@ target_link_libraries(ycsb PRIVATE
 # ④ gperftools 存在就连；否则用本地 stub
 find_library(GPERF_PROFILER_LIB profiler)
 if (GPERF_PROFILER_LIB)
+  target_compile_definitions(ycsb PRIVATE YCSB_USE_GPERFTOOLS)
   target_link_libraries(ycsb PRIVATE ${GPERF_PROFILER_LIB})
-else()
-  message(STATUS "libprofiler not found; using local profiler stubs")
-  target_sources(ycsb PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/recstore/profiler_stub.cc)
 endif()
 
 # ⑤ 可选：统一输出目录

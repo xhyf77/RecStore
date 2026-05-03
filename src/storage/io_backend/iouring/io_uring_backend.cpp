@@ -12,6 +12,7 @@ class IoUringBackend : public IOBackend {
 private:
   std::string file_path;
   int fd;
+  bool use_io_uring_;
 
   static char* AllocateAligned(size_t bytes) {
     void* ptr = nullptr;
@@ -59,10 +60,48 @@ private:
     return thread_qpair.get(queue_cnt);
   }
 
+  void ReadPageFallback(PageID_t page_id, char* buffer) {
+    ssize_t ret = pread(fd, buffer, PAGE_SIZE, page_id * PAGE_SIZE);
+    CHECK_EQ(ret, static_cast<ssize_t>(PAGE_SIZE))
+        << "Fallback pread failed: "
+        << ((ret < 0) ? std::string(strerror(errno))
+                      : std::string("short read"));
+  }
+
+  void WritePageFallback(PageID_t page_id, char* buffer) {
+    ssize_t ret = pwrite(fd, buffer, PAGE_SIZE, page_id * PAGE_SIZE);
+    CHECK_EQ(ret, static_cast<ssize_t>(PAGE_SIZE))
+        << "Fallback pwrite failed: "
+        << ((ret < 0) ? std::string(strerror(errno))
+                      : std::string("short write"));
+  }
+
+  void ReadPagesFallback(const IOEntry& entry) {
+    const size_t bytes = entry.page_count * PAGE_SIZE;
+    ssize_t ret = pread(fd, entry.buffer, bytes, entry.page_id * PAGE_SIZE);
+    CHECK_EQ(ret, static_cast<ssize_t>(bytes))
+        << "Fallback batch pread failed: "
+        << ((ret < 0) ? std::string(strerror(errno))
+                      : std::string("short read"));
+  }
+
+  void WritePagesFallback(const IOEntry& entry) {
+    const size_t bytes = entry.page_count * PAGE_SIZE;
+    ssize_t ret = pwrite(fd, entry.buffer, bytes, entry.page_id * PAGE_SIZE);
+    CHECK_EQ(ret, static_cast<ssize_t>(bytes))
+        << "Fallback batch pwrite failed: "
+        << ((ret < 0) ? std::string(strerror(errno))
+                      : std::string("short write"));
+  }
+
   void ReadPageAsync(coroutine<void>::push_type& sink,
                      uint64_t index,
                      PageID_t page_id,
                      char* buffer) override {
+    if (!use_io_uring_) {
+      ReadPageFallback(page_id, buffer);
+      return;
+    }
     struct io_uring* ring    = get_thread_ring();
     struct io_uring_sqe* sqe = io_uring_get_sqe(ring);
     CHECK_NE(sqe, nullptr) << "Failed to get SQE for read operation";
@@ -73,6 +112,10 @@ private:
     sink();
   }
   void ReadPageSync(PageID_t page_id, char* buffer) override {
+    if (!use_io_uring_) {
+      ReadPageFallback(page_id, buffer);
+      return;
+    }
     struct io_uring* ring    = get_thread_ring();
     struct io_uring_sqe* sqe = io_uring_get_sqe(ring);
     CHECK_NE(sqe, nullptr) << "Failed to get SQE for sync read operation";
@@ -94,6 +137,10 @@ private:
                       uint64_t index,
                       PageID_t page_id,
                       char* buffer) override {
+    if (!use_io_uring_) {
+      WritePageFallback(page_id, buffer);
+      return;
+    }
     struct io_uring* ring    = get_thread_ring();
     struct io_uring_sqe* sqe = io_uring_get_sqe(ring);
     CHECK_NE(sqe, nullptr) << "Failed to get SQE for write operation";
@@ -104,6 +151,10 @@ private:
     sink();
   }
   void WritePageSync(PageID_t page_id, char* buffer) override {
+    if (!use_io_uring_) {
+      WritePageFallback(page_id, buffer);
+      return;
+    }
     struct io_uring* ring    = get_thread_ring();
     struct io_uring_sqe* sqe = io_uring_get_sqe(ring);
     CHECK_NE(sqe, nullptr) << "Failed to get SQE for sync write operation";
@@ -122,7 +173,8 @@ private:
   }
 
 public:
-  IoUringBackend(const BaseKVConfig& config) : IOBackend(config), fd(-1) {
+  IoUringBackend(const BaseKVConfig& config)
+      : IOBackend(config), fd(-1), use_io_uring_(true) {
     file_path = config.json_config_.at("file_path").get<std::string>();
   }
   ~IoUringBackend() {
@@ -154,6 +206,25 @@ public:
       next_page_id = 1;
     }
     empty_page = AllocateAligned(PAGE_SIZE);
+
+    if (std::getenv("RECSTORE_IOURING_FORCE_FALLBACK") != nullptr) {
+      use_io_uring_ = false;
+      LOG(WARNING) << "io_uring disabled by RECSTORE_IOURING_FORCE_FALLBACK "
+                   << "for " << file_path
+                   << ", falling back to synchronous pread/pwrite";
+      return;
+    }
+
+    io_uring probe_ring{};
+    int ret = io_uring_queue_init(2, &probe_ring, 0);
+    if (ret == 0) {
+      io_uring_queue_exit(&probe_ring);
+    } else {
+      use_io_uring_ = false;
+      LOG(WARNING) << "io_uring unavailable for " << file_path
+                   << ", falling back to synchronous pread/pwrite: "
+                   << strerror(-ret);
+    }
   }
 
   char* AllocateBuffer() override { return AllocateAligned(PAGE_SIZE); }
@@ -192,6 +263,8 @@ public:
   }
 
   void PollCompletion() override {
+    if (!use_io_uring_)
+      return;
     struct io_uring* ring = get_thread_ring();
     struct io_uring_cqe* cqe;
     int ret = io_uring_peek_cqe(ring, &cqe);
@@ -209,6 +282,8 @@ public:
   }
 
   void submit() override {
+    if (!use_io_uring_)
+      return;
     struct io_uring* ring = get_thread_ring();
     int ret               = io_uring_submit(ring);
     CHECK_GE(ret, 0) << "Failed to submit io_uring operation: " +
@@ -218,6 +293,12 @@ public:
   void BatchWritePages(const std::vector<IOEntry>& entries) override {
     if (entries.empty())
       return;
+    if (!use_io_uring_) {
+      for (const auto& entry : entries) {
+        WritePagesFallback(entry);
+      }
+      return;
+    }
     struct io_uring* ring = get_thread_ring();
     int max_inflight      = std::max(queue_cnt / 2, 1);
     size_t submitted      = 0;
@@ -249,6 +330,12 @@ public:
   void BatchReadPages(const std::vector<IOEntry>& entries) override {
     if (entries.empty())
       return;
+    if (!use_io_uring_) {
+      for (const auto& entry : entries) {
+        ReadPagesFallback(entry);
+      }
+      return;
+    }
     struct io_uring* ring = get_thread_ring();
     int max_inflight      = std::max(queue_cnt / 2, 1);
     size_t submitted      = 0;

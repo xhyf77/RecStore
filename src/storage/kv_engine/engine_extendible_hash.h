@@ -320,10 +320,41 @@ public:
       const uint64_t key = (static_cast<uint64_t>(tag) << shift) |
                            (key_snapshot[static_cast<size_t>(row)] & key_mask);
       const float* row_grad = grads + row * embedding_dim;
+      Key_t hash_key        = key;
+      Value_t read_value;
+      {
+        std::shared_lock<std::shared_mutex> lk(KeyMutex(key));
+        hash_table_->Get(hash_key, read_value, tid);
+
+        if (read_value != NONE) {
+          base::PetKVData shmkv_data;
+          shmkv_data.data_value = read_value;
+          char* data =
+              shm_malloc_->GetMallocData(shmkv_data.shm_malloc_offset());
+          if (data == nullptr) {
+            ok.store(false, std::memory_order_relaxed);
+            continue;
+          }
+
+#ifdef XMH_VARIABLE_SIZE_KV
+          const int size =
+              shm_malloc_->GetMallocSize(shmkv_data.shm_malloc_offset());
+          if (size != static_cast<int>(row_bytes)) {
+            ok.store(false, std::memory_order_relaxed);
+            continue;
+          }
+#endif
+
+          float* out = reinterpret_cast<float*>(data);
+#pragma omp simd
+          for (int64_t col = 0; col < embedding_dim; ++col) {
+            out[col] -= learning_rate * row_grad[col];
+          }
+          continue;
+        }
+      }
 
       std::unique_lock<std::shared_mutex> lk(KeyMutex(key));
-      Key_t hash_key = key;
-      Value_t read_value;
       hash_table_->Get(hash_key, read_value, tid);
       if (read_value != NONE) {
         base::PetKVData shmkv_data;

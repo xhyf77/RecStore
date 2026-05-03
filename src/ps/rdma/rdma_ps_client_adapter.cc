@@ -11,6 +11,7 @@
 #include <folly/portability/GFlags.h>
 #include <folly/init/Init.h>
 
+#include "framework/common/ps_client_config_adapter.h"
 #include "ps/base/config.h"
 
 DECLARE_int32(global_id);
@@ -83,13 +84,9 @@ void RDMAPSClientAdapter::EnsureClientInitialized() {
       config_.contains("cache_ps") ? config_["cache_ps"] : json::object();
   const json client_cfg =
       config_.contains("client") ? config_["client"] : json::object();
-  const json dist_cfg =
-      config_.contains("distributed_client")
-          ? config_["distributed_client"]
-          : json::object();
+  const json dist_cfg = ResolveFrameworkDistributedClientConfig(config_);
 
-  const int num_shards =
-      dist_cfg.value("num_shards", cache_ps_cfg.value("num_shards", 1));
+  const int num_shards       = dist_cfg.value("num_shards", 1);
   FLAGS_num_server_processes = num_shards;
   FLAGS_num_client_processes = 1;
   FLAGS_global_id            = num_shards;
