@@ -25,7 +25,13 @@
 #include "utils/rate_limit.h"
 #include "utils/timer.h"
 #include "utils/utils.h"
+
+#if defined(YCSB_USE_GPERFTOOLS)
 #include <gperftools/profiler.h>
+#else
+static inline int ProfilerStart(const char *) { return 0; }
+static inline void ProfilerStop() {}
+#endif
 
 void UsageMessage(const char *command);
 bool StrStartWith(const char *str, const char *pre);
@@ -328,4 +334,3 @@ void UsageMessage(const char *command) {
 inline bool StrStartWith(const char *str, const char *pre) {
   return strncmp(str, pre, strlen(pre)) == 0;
 }
-

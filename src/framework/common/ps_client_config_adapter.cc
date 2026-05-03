@@ -37,6 +37,36 @@ PSClientType ResolveFrameworkPSClientType(const json& config) {
   throw std::invalid_argument("Unknown ps_type for KVClientOp: " + ps_type);
 }
 
+json ResolveFrameworkDistributedClientConfig(const json& config) {
+  json resolved = json::object();
+
+  const json* distributed_client = nullptr;
+  if (config.contains("distributed_client") &&
+      config["distributed_client"].is_object()) {
+    distributed_client = &config["distributed_client"];
+    resolved           = *distributed_client;
+  }
+
+  const json* cache_ps = nullptr;
+  if (config.contains("cache_ps") && config["cache_ps"].is_object()) {
+    cache_ps = &config["cache_ps"];
+  }
+
+  const auto copy_field_if_missing = [&](const char* field) {
+    if (!resolved.contains(field) && cache_ps != nullptr &&
+        cache_ps->contains(field)) {
+      resolved[field] = (*cache_ps)[field];
+    }
+  };
+
+  copy_field_if_missing("servers");
+  copy_field_if_missing("num_shards");
+  copy_field_if_missing("hash_method");
+  copy_field_if_missing("max_keys_per_request");
+
+  return resolved;
+}
+
 json ResolveFrameworkPSClientTransportConfig(const json& config) {
   const PSClientType ps_type = ResolveFrameworkPSClientType(config);
   if (ps_type == PSClientType::kLocalShm) {
@@ -57,10 +87,16 @@ json ResolveFrameworkPSClientTransportConfig(const json& config) {
 
 PSClientCreateOptions
 ResolvePSClientOptionsFromFrameworkConfig(const json& config) {
+  json raw_config = config;
+  const json distributed_client = ResolveFrameworkDistributedClientConfig(config);
+  if (!distributed_client.empty()) {
+    raw_config["distributed_client"] = distributed_client;
+  }
+
   return PSClientCreateOptions{
       .type             = ResolveFrameworkPSClientType(config),
       .transport_config = ResolveFrameworkPSClientTransportConfig(config),
-      .raw_config       = config,
+      .raw_config       = raw_config,
   };
 }
 
