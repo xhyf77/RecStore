@@ -9,11 +9,8 @@
 #include "test/server_mgr/ps_server_launcher.h"
 
 namespace {
-std::vector<int> AcquireGrpcTestPorts() {
-  auto ports = recstore::test::PSServerLauncher::FindAvailablePorts(2);
-  CHECK_EQ(ports.size(), 2);
-  return ports;
-}
+constexpr int kGrpcTestPort0 = 15123;
+constexpr int kGrpcTestPort1 = 15124;
 } // namespace
 
 static bool
@@ -158,15 +155,13 @@ int main(int argc, char** argv) {
   base::Init(&argc, &argv);
   xmh::Reporter::StartReportThread(2000);
 
-  const auto ports = AcquireGrpcTestPorts();
-
   auto launch_options =
       recstore::test::PSServerLauncher::LoadOptionsFromEnvironment();
   launch_options.override_ps_type = "GRPC";
-  launch_options.override_ports   = ports;
+  launch_options.override_ports   = {kGrpcTestPort0, kGrpcTestPort1};
   recstore::test::ScopedPSServer server(launch_options, true);
 
-  TestFactoryClient(ports[0]);
-  TestAsyncReadWriteConcurrency(ports[0]);
+  TestFactoryClient(kGrpcTestPort0);
+  TestAsyncReadWriteConcurrency(kGrpcTestPort0);
   return 0;
 }

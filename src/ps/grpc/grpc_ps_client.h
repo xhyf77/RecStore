@@ -206,7 +206,7 @@ protected:
       get_param_resonse_readers_;
   std::shared_ptr<Channel> channel_;
   std::vector<std::unique_ptr<recstoreps::ParameterService::Stub>> stubs_;
-  grpc::CompletionQueue cq;
+  std::unique_ptr<grpc::CompletionQueue> cq_;
 
 private:
   std::unordered_map<uint64_t, struct PrefetchBatch> prefetch_batches_;
