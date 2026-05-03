@@ -76,6 +76,24 @@ private:
                       : std::string("short write"));
   }
 
+  void ReadPagesFallback(const IOEntry& entry) {
+    const size_t bytes = entry.page_count * PAGE_SIZE;
+    ssize_t ret = pread(fd, entry.buffer, bytes, entry.page_id * PAGE_SIZE);
+    CHECK_EQ(ret, static_cast<ssize_t>(bytes))
+        << "Fallback batch pread failed: "
+        << ((ret < 0) ? std::string(strerror(errno))
+                      : std::string("short read"));
+  }
+
+  void WritePagesFallback(const IOEntry& entry) {
+    const size_t bytes = entry.page_count * PAGE_SIZE;
+    ssize_t ret = pwrite(fd, entry.buffer, bytes, entry.page_id * PAGE_SIZE);
+    CHECK_EQ(ret, static_cast<ssize_t>(bytes))
+        << "Fallback batch pwrite failed: "
+        << ((ret < 0) ? std::string(strerror(errno))
+                      : std::string("short write"));
+  }
+
   void ReadPageAsync(coroutine<void>::push_type& sink,
                      uint64_t index,
                      PageID_t page_id,
@@ -189,6 +207,14 @@ public:
     }
     empty_page = AllocateAligned(PAGE_SIZE);
 
+    if (std::getenv("RECSTORE_IOURING_FORCE_FALLBACK") != nullptr) {
+      use_io_uring_ = false;
+      LOG(WARNING) << "io_uring disabled by RECSTORE_IOURING_FORCE_FALLBACK "
+                   << "for " << file_path
+                   << ", falling back to synchronous pread/pwrite";
+      return;
+    }
+
     io_uring probe_ring{};
     int ret = io_uring_queue_init(2, &probe_ring, 0);
     if (ret == 0) {
@@ -267,6 +293,12 @@ public:
   void BatchWritePages(const std::vector<IOEntry>& entries) override {
     if (entries.empty())
       return;
+    if (!use_io_uring_) {
+      for (const auto& entry : entries) {
+        WritePagesFallback(entry);
+      }
+      return;
+    }
     struct io_uring* ring = get_thread_ring();
     int max_inflight      = std::max(queue_cnt / 2, 1);
     size_t submitted      = 0;
@@ -298,6 +330,12 @@ public:
   void BatchReadPages(const std::vector<IOEntry>& entries) override {
     if (entries.empty())
       return;
+    if (!use_io_uring_) {
+      for (const auto& entry : entries) {
+        ReadPagesFallback(entry);
+      }
+      return;
+    }
     struct io_uring* ring = get_thread_ring();
     int max_inflight      = std::max(queue_cnt / 2, 1);
     size_t submitted      = 0;
