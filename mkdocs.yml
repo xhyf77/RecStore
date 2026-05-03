@@ -96,7 +96,9 @@ nav:
       - KV 引擎实现: storage/kv_engines.md
       - 内存管理: storage/memory.md
   - 开发:
-    - 性能分析: dev/performance.md
+    - 性能分析:
+      - 端到端性能: dev/performance.md
+      - 存储端性能: dev/ycsb.md
     - 免配置运行: dev/zero_config_run.md
     - 功能实现:
       - 添加算子: dev/feature/add_operator.md
