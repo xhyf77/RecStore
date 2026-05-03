@@ -115,7 +115,7 @@ void DistributedGRPCParameterClient::InitializeClients() {
                           {"shard", server_config.shard}};
 
     auto* raw_client = new GRPCParameterClient(client_config);
-    auto client = std::unique_ptr<GRPCParameterClient>(raw_client);
+    auto client      = std::unique_ptr<GRPCParameterClient>(raw_client);
     clients_.push_back(std::move(client));
 
     LOG(INFO) << "Created gRPC client for shard " << server_config.shard
