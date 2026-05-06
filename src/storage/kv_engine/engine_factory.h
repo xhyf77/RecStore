@@ -1,3 +1,3 @@
-#include "../kv_engine/engine_cceh.h"
-#include "../kv_engine/engine_extendible_hash.h"
-#include "../kv_engine/engine_hybridkv.h"
+#pragma once
+
+#include "storage/kv_engine/kv_engine.h"

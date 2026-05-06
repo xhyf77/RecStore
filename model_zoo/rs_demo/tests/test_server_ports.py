@@ -116,7 +116,7 @@ class TestChooseAvailablePorts(unittest.TestCase):
             self.assertIn('"ps_type": "LOCAL_SHM"', runtime_cfg)
             self.assertIn('"local_shm"', runtime_cfg)
             self.assertIn('"region_name"', runtime_cfg)
-            self.assertIn('"value_size": 256', runtime_cfg)
+            self.assertIn('"default_value_size_hint": 256', runtime_cfg)
 
     def test_make_runtime_dir_uses_single_shared_local_shm_shard(self) -> None:
         base_cfg = {"cache_ps": {}, "distributed_client": {"servers": []}}

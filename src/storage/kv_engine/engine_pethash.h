@@ -13,7 +13,7 @@ public:
     std::string shm_path = config.json_config_["path"];
     const int shard_num  = 16;
     shm_kv               = std::make_unique<base::PetMultiKV>(
-        shm_path + "/shm",
+        shm_path,
         shard_num,
         config.json_config_.at("value_size").get<int>() *
             config.json_config_.at("capacity").get<int>() / shard_num,

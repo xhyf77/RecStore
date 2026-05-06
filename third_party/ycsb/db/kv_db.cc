@@ -1,22 +1,3 @@
-extern "C" {
-#include <jemalloc/jemalloc.h>
-}
-#if defined(__linux__)
-  #include <malloc.h>  // 为了 malloc_usable_size 兜底
-#endif
-
-#ifndef jemallocx
-#define jemallocx(size, flags) jemallocx((size), (flags))
-#endif
-#ifndef jedallocx
-#define jedallocx(ptr, flags)  jesdallocx((ptr), size_t(0), (flags))
-#endif
-#ifndef jemallctl
-#define jemallctl(...)         jemallctl(__VA_ARGS__)
-#endif
-#ifndef jemalloc_usable_size
-#define jemalloc_usable_size(p) jemalloc_usable_size((p))
-#endif
 #include "core/db.h"
 #include "core/db_factory.h"
 #include "utils/properties.h"
@@ -27,16 +8,15 @@ extern "C" {
 #include <cstdint>
 #include <cstring>
 #include <mutex>
-#include <thread>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-// ==== RecStore / HybridKV headers ====
-#include "../../../src/storage/kv_engine/engine_hybridkv.h"
 #include "../../../src/storage/kv_engine/base_kv.h"
+#include "../../../src/storage/kv_engine/engine_factory.h"
+#include "../../../src/storage/kv_engine/engine_selector.h"
 #include "../../../src/memory/shm_file.h"   // PMMmapRegisterCenter
 
 namespace ycsbc {
@@ -121,6 +101,132 @@ constexpr const char *DEF_THREADCOUNT    =  "16";
 constexpr const char *DEF_DB_PATH = "third_party/ycsb/data-store";
 constexpr const char *DEF_SHM_CAP = "268435456";     // 256MB default
 constexpr const char *DEF_SSD_CAP = "0";
+
+static inline bool IsTrue(const std::string& value) {
+  return value == "1" || value == "true" || value == "TRUE" ||
+         value == "yes" || value == "YES";
+}
+
+static inline uint64_t GetU64(const utils::Properties& props,
+                              const char* key,
+                              uint64_t default_value) {
+  try {
+    return std::stoull(props.GetProperty(key, std::to_string(default_value)));
+  } catch (...) {
+    return default_value;
+  }
+}
+
+static inline uint32_t GetU32(const utils::Properties& props,
+                              const char* key,
+                              uint32_t default_value) {
+  try {
+    return static_cast<uint32_t>(
+        std::stoul(props.GetProperty(key, std::to_string(default_value))));
+  } catch (...) {
+    return default_value;
+  }
+}
+
+static inline double GetDouble(const utils::Properties& props,
+                               const char* key,
+                               double default_value) {
+  try {
+    return std::stod(props.GetProperty(key, std::to_string(default_value)));
+  } catch (...) {
+    return default_value;
+  }
+}
+
+static BaseKVConfig BuildKVEngineConfig(const utils::Properties& props,
+                                        const std::string& db_path,
+                                        unsigned thread_count,
+                                        uint32_t value_size_hint) {
+  const uint64_t record_count =
+      GetU64(props, "recordcount", GetU64(props, "kvengine.capacity", 1000000));
+  const uint64_t capacity =
+      GetU64(props, "kvengine.capacity", std::max<uint64_t>(record_count, 1));
+  const uint64_t value_bytes =
+      std::max<uint64_t>(value_size_hint == 0 ? 128 : value_size_hint, 1);
+  const uint64_t default_dram_bytes =
+      GetU64(props, PROP_SHM_CAP, capacity * value_bytes * 2);
+  const uint64_t default_ssd_bytes =
+      GetU64(props, PROP_SSD_CAP, capacity * value_bytes * 2);
+  const std::string index_type = props.GetProperty(
+      "kvengine.index.type", "DRAM_EXTENDIBLE_HASH");
+  const std::string value_type = props.GetProperty(
+      "kvengine.value.type", "DRAM_VALUE_STORE");
+  const std::string dram_allocator = props.GetProperty(
+      "kvengine.value.dram_allocator.type", "PERSIST_LOOP_SLAB");
+  const std::string ssd_allocator = props.GetProperty(
+      "kvengine.value.ssd_allocator.type", "SSD_BUDDY");
+  const std::string io_backend =
+      props.GetProperty("kvengine.ssd.io.type", "IOURING");
+  const uint32_t queue_depth =
+      GetU32(props, "kvengine.ssd.io.queue_depth", 512);
+  const uint64_t ssd_base_offset =
+      GetU64(props, "kvengine.ssd.io.base_offset_bytes", 4096);
+  const uint64_t index_base_offset =
+      GetU64(props, "kvengine.index.io.base_offset_bytes", 0);
+  const std::string value_file = props.GetProperty(
+      "kvengine.ssd.value_file", db_path + "/value_pages.db");
+  const std::string index_file = props.GetProperty(
+      "kvengine.ssd.index_file", db_path + "/index_pages.db");
+
+  BaseKVConfig cfg;
+  cfg.num_threads_ = static_cast<int>(thread_count);
+  cfg.json_config_ = {
+      {"path", db_path},
+      {"capacity", capacity},
+      {"index", {{"type", index_type}}},
+      {"value",
+       {{"type", value_type}, {"default_value_size_hint", value_bytes}}}};
+
+  if (index_type == "SSD" || index_type == "SSD_EXTENDIBLE_HASH") {
+    cfg.json_config_["index"]["io"] =
+        {{"type", io_backend},
+         {"file_path", index_file},
+         {"queue_depth", queue_depth},
+         {"base_offset_bytes", index_base_offset}};
+  }
+
+  if (value_type == "DRAM_VALUE_STORE" || value_type == "TIERED_VALUE_STORE") {
+    cfg.json_config_["value"]["dram_allocator"] =
+        {{"type", dram_allocator},
+         {"capacity_bytes", GetU64(props,
+                                    "kvengine.value.dram_allocator.capacity_bytes",
+                                    default_dram_bytes)}};
+  }
+
+  if (value_type == "SSD_VALUE_STORE" || value_type == "TIERED_VALUE_STORE") {
+    json ssd = {
+        {"type", ssd_allocator},
+        {"capacity_bytes", GetU64(props,
+                                   "kvengine.value.ssd_allocator.capacity_bytes",
+                                   default_ssd_bytes)},
+        {"io",
+         {{"type", io_backend},
+          {"file_path", value_file},
+          {"queue_depth", queue_depth},
+          {"base_offset_bytes", ssd_base_offset}}}};
+    if (ssd_allocator == "SSD_BUDDY") {
+      ssd["min_block_size"] =
+          GetU32(props, "kvengine.value.ssd_allocator.min_block_size", 128);
+      ssd["max_block_size"] =
+          GetU32(props, "kvengine.value.ssd_allocator.max_block_size", 4096);
+    }
+    cfg.json_config_["value"]["ssd_allocator"] = std::move(ssd);
+  }
+
+  if (value_type == "TIERED_VALUE_STORE") {
+    cfg.json_config_["value"]["tiering"] =
+        {{"cache_policy", props.GetProperty("kvengine.value.tiering.cache_policy", "LRU")},
+         {"high_watermark_ratio",
+          GetDouble(props, "kvengine.value.tiering.high_watermark_ratio", 0.85)}};
+  }
+
+  return base::ResolveEngine(std::move(cfg)).cfg;
+}
 } // anonymous namespace
 
 class HybridKVDB : public DB {
@@ -152,7 +258,7 @@ class HybridKVDB : public DB {
 
   static std::mutex            mu_;
   static std::atomic<uint32_t> ref_cnt_;
-  static KVEngineHybrid       *engine_;
+  static BaseKV               *engine_;
 
   static Mode                  mode_;
   static uint32_t              syn_bytes_;        // perf: value size (>0 uses synthetic)
@@ -167,7 +273,7 @@ class HybridKVDB : public DB {
 // static members
 std::mutex            HybridKVDB::mu_;
 std::atomic<uint32_t> HybridKVDB::ref_cnt_{0};
-KVEngineHybrid*       HybridKVDB::engine_ = nullptr;
+BaseKV*              HybridKVDB::engine_ = nullptr;
 HybridKVDB::Mode      HybridKVDB::mode_   = HybridKVDB::Mode::kPerf;
 uint32_t              HybridKVDB::syn_bytes_  = 0;
 uint32_t              HybridKVDB::read_policy_= 0; // none
@@ -183,15 +289,15 @@ void HybridKVDB::Init() {
   const utils::Properties &props = *props_;
 
   const std::string db_path  = props.GetProperty(PROP_DB_PATH, DEF_DB_PATH);
-  const uint64_t    shm_cap  = std::stoull(props.GetProperty(PROP_SHM_CAP, DEF_SHM_CAP));
-  const uint64_t    ssd_cap  = std::stoull(props.GetProperty(PROP_SSD_CAP, DEF_SSD_CAP));
+  const std::string use_dram = props.GetProperty("hybridkv.use_dram", "true");
+  base::PMMmapRegisterCenter::GetConfig().use_dram = IsTrue(use_dram);
 
   unsigned tc = 1;
   try { tc = std::max(1u, (unsigned)std::stoul(props.GetProperty("hybridkv.threadcount",DEF_THREADCOUNT))); } catch (...) { tc = 1; }
   g_tid_limit.store(tc, std::memory_order_relaxed);
-  std::cout<<"threadnum"<<tc<<std::endl;
+  std::cout << "threadnum" << tc << std::endl;
   const std::string force_tid_zero = props.GetProperty(PROP_FORCE_TID_ZERO, "false");
-  const bool ftz = (force_tid_zero == "1" || force_tid_zero == "true" || force_tid_zero == "TRUE");
+  const bool ftz = IsTrue(force_tid_zero);
   g_force_tid_zero.store(ftz, std::memory_order_relaxed);
 
   const std::string m = props.GetProperty(PROP_MODE, "perf");
@@ -203,12 +309,10 @@ void HybridKVDB::Init() {
   const std::string rp = props.GetProperty(PROP_READ_RETURN, (mode_==Mode::kPerf?"none":"parse"));
   read_policy_ = (rp=="none"?0 : rp=="blob"?1 : 2);
 
-  BaseKVConfig cfg;
-  cfg.num_threads_                 = tc;
-  cfg.json_config_["path"]        = db_path;
-  cfg.json_config_["shmcapacity"] = shm_cap;
-  cfg.json_config_["ssdcapacity"] = ssd_cap;
-  engine_ = new KVEngineHybrid(cfg);
+  BaseKVConfig cfg = BuildKVEngineConfig(props, db_path, tc, syn_bytes_);
+  auto resolved = base::ResolveEngine(std::move(cfg));
+  engine_ = base::Factory<BaseKV, const BaseKVConfig&>::NewInstance(
+      resolved.engine, resolved.cfg);
 }
 
 void HybridKVDB::Cleanup() {
@@ -228,10 +332,7 @@ DB::Status HybridKVDB::Read(const std::string &, const std::string &key,
   if (!engine_) return kError;
 
   if (read_policy_ == 0) {
-    // none — do not materialize; stress value layer only
-    engine_->Get(ToKey(key), tl_blob_, ThreadTid());
-    // std::cout<<tl_blob_<<std::endl;
-    return tl_blob_.empty() ? kNotFound : kOK;
+    return engine_->Exists(ToKey(key), ThreadTid()) ? kOK : kNotFound;
   }
 
   engine_->Get(ToKey(key), tl_blob_, ThreadTid());

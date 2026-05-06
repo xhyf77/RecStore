@@ -136,9 +136,15 @@ static void maybe_test_hierkv_selection() {
     "base_kv_config": {
       "path": "/tmp/recstore_data",
       "capacity": 1000,
-      "value_size": 512,
-      "value_type": "DRAM",
-      "index_type": "DRAM"
+      "index": {"type": "DRAM_EXTENDIBLE_HASH"},
+      "value": {
+        "type": "DRAM_VALUE_STORE",
+        "default_value_size_hint": 512,
+        "dram_allocator": {
+          "type": "PERSIST_LOOP_SLAB",
+          "capacity_bytes": 512000
+        }
+      }
     }
   },
   "distributed_client": {

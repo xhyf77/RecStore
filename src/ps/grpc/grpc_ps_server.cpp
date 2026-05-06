@@ -51,6 +51,29 @@ DEFINE_string(config_path,
               RECSTORE_PATH "/recstore_config.json",
               "config file path");
 
+namespace {
+
+void AppendShardSuffixToNestedFilePaths(nlohmann::json& node, int shard_id) {
+  if (node.is_object()) {
+    for (auto& item : node.items()) {
+      if (item.key() == "file_path" && item.value().is_string()) {
+        item.value() =
+            item.value().get<std::string>() + "_" + std::to_string(shard_id);
+        continue;
+      }
+      AppendShardSuffixToNestedFilePaths(item.value(), shard_id);
+    }
+    return;
+  }
+  if (node.is_array()) {
+    for (auto& item : node) {
+      AppendShardSuffixToNestedFilePaths(item, shard_id);
+    }
+  }
+}
+
+} // namespace
+
 class ParameterServiceImpl final
     : public recstoreps::ParameterService::Service {
 public:
@@ -519,6 +542,8 @@ public:
                   shard_config["base_kv_config"]["path"];
               shard_config["base_kv_config"]["path"] =
                   original_path + "_" + std::to_string(shard);
+              AppendShardSuffixToNestedFilePaths(
+                  shard_config["base_kv_config"], shard);
               LOG(INFO) << "Shard " << shard << " using data path: "
                         << shard_config["base_kv_config"]["path"];
             }

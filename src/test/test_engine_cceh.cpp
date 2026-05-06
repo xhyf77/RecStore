@@ -6,7 +6,8 @@
 
 #include "base/json.h"
 #include "memory/shm_file.h"
-#include "storage/kv_engine/engine_cceh.h"
+#include "storage/kv_engine/engine_factory.h"
+#include "storage/kv_engine/engine_selector.h"
 #include "test_io_uring_helper.h"
 
 namespace {
@@ -30,15 +31,32 @@ protected:
     base::PMMmapRegisterCenter::GetConfig().use_dram = true;
     base::PMMmapRegisterCenter::GetConfig().numa_id  = 0;
     config_.num_threads_                             = 16;
-    config_.json_config_                             = {
+    config_.json_config_ = {
         {"path", test_dir_},
         {"capacity", 100000},
-        {"value_size", 128},
-        {"io_backend_type", "IOURING"},
-        {"queue_cnt", 512},
-        {"page_id_offset", 0},
-        {"file_path", test_dir_ + "/cceh.db"}};
-    kv_engine_ = std::make_unique<KVEngineCCEH>(config_);
+        {"index",
+         {{"type", "SSD_EXTENDIBLE_HASH"},
+          {"io",
+           {{"type", "IOURING"},
+            {"file_path", test_dir_ + "/index_pages.db"},
+            {"queue_depth", 512},
+            {"base_offset_bytes", 0}}}}},
+        {"value",
+         {{"type", "SSD_VALUE_STORE"},
+          {"default_value_size_hint", 128},
+          {"ssd_allocator",
+           {{"type", "SSD_BUDDY"},
+            {"capacity_bytes", 12800000},
+            {"min_block_size", 128},
+            {"max_block_size", 65536},
+            {"io",
+             {{"type", "IOURING"},
+              {"file_path", test_dir_ + "/value_pages.db"},
+              {"queue_depth", 512},
+              {"base_offset_bytes", 4096}}}}}}}};
+    auto r = base::ResolveEngine(config_);
+    kv_engine_.reset(base::Factory<BaseKV, const BaseKVConfig&>::NewInstance(
+        r.engine, r.cfg));
   }
 
   void TearDown() override {
@@ -74,7 +92,7 @@ protected:
 
   std::string test_dir_;
   BaseKVConfig config_;
-  std::unique_ptr<KVEngineCCEH> kv_engine_;
+  std::unique_ptr<BaseKV> kv_engine_;
 };
 
 // 基本的Put和Get测试

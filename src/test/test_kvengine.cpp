@@ -19,7 +19,6 @@
 #include "base/json.h"
 #include "memory/shm_file.h"
 
-#include "storage/kv_engine/engine_extendible_hash.h"
 #include "storage/kv_engine/engine_factory.h"
 #include "storage/kv_engine/engine_selector.h"
 
@@ -54,14 +53,12 @@ public:
 
   static bool ShouldRunHeavyScenario(const std::string& idx,
                                      const std::string& val,
-                                     const std::string& mem_mgr) {
-    return true;
-    if (idx == "DRAM" && val == "DRAM")
+                                     const std::string& allocator) {
+    if (idx == "DRAM_EXTENDIBLE_HASH" && val == "DRAM_VALUE_STORE")
       return true;
-    if (mem_mgr != "R2ShmMalloc")
+    if (allocator != "PERSIST_LOOP_SLAB")
       return false;
-    return (idx == "SSD" && val == "DRAM") ||
-           (idx == "DRAM" && val == "HYBRID");
+    return idx == "DRAM_UNORDERED_MAP" || idx == "DRAM_PET_HASH";
   }
 
 protected:
@@ -71,40 +68,23 @@ protected:
     return value;
   }
 
-  static const char*
-  ExpectedEngine(const std::string& idx, const std::string& val) {
-    if (val == "HYBRID")
-      return "KVEngineHybrid";
-    if (idx == "SSD")
-      return "KVEngineCCEH";
-    return "KVEngineExtendibleHash";
-  }
-
-  static const char* AllocatorTypeFromImpl(const std::string& impl) {
-    if (impl == "PersistLoopShmMalloc")
-      return "PERSIST_LOOP_SLAB";
-    if (impl == "R2ShmMalloc")
-      return "R2_SLAB";
-    return "PERSIST_LOOP_SLAB";
-  }
-
   void SetUp() override {
-    const char *idx_c, *val_c, *mm_c;
-    std::tie(idx_c, val_c, mm_c) = GetParam();
+    const char *idx_c, *val_c, *allocator_c;
+    std::tie(idx_c, val_c, allocator_c) = GetParam();
     index_type_                  = idx_c;
     value_type_                  = val_c;
-    mem_mgr_                     = mm_c;
+    allocator_type_              = allocator_c;
 
     const auto* test_info =
         ::testing::UnitTest::GetInstance()->current_test_info();
     if (test_info != nullptr && IsHeavyTestName(test_info->name()) &&
-        !ShouldRunHeavyScenario(index_type_, value_type_, mem_mgr_)) {
+        !ShouldRunHeavyScenario(index_type_, value_type_, allocator_type_)) {
       GTEST_SKIP() << "Skip heavy scenario for (" << index_type_ << ","
-                   << value_type_ << "," << mem_mgr_ << ")";
+                   << value_type_ << "," << allocator_type_ << ")";
     }
 
     test_dir_ = "/tmp/test_kv_engine_cartesian_" + std::to_string(getpid()) +
-                "_" + index_type_ + "_" + value_type_ + "_" + mem_mgr_;
+                "_" + index_type_ + "_" + value_type_ + "_" + allocator_type_;
     std::filesystem::create_directories(test_dir_);
 
     base::PMMmapRegisterCenter::GetConfig().use_dram = true;
@@ -114,47 +94,29 @@ protected:
     const size_t capacity = 1000000;
     const int value_sz    = 128;
 
-    cfg_.json_config_ = {
-        {"path", test_dir_},
-        {"index_type", index_type_},
-        {"value_type", value_type_},
-        {"value_size", value_sz},
-        {"capacity", capacity},
-        {"value_memory_management", mem_mgr_},
-        {"allocator_type", AllocatorTypeFromImpl(mem_mgr_)}};
-
-    // CCEH-backed index paths require explicit IO backend settings.
-    if (index_type_ == "SSD") {
-      cfg_.json_config_["io_backend_type"] = "IOURING";
-      cfg_.json_config_["queue_cnt"]       = 512;
-      cfg_.json_config_["page_id_offset"]  = 0;
-      // Needed when ValueManager instantiates SSD index directly (HYBRID
-      // value).
-      cfg_.json_config_["file_path"] = test_dir_ + "/index_cceh.db";
+    if ((index_type_ == "SSD" || index_type_ == "SSD_EXTENDIBLE_HASH") &&
+        value_type_ != "SSD_VALUE_STORE") {
+      GTEST_SKIP() << "Skip invalid SSD index combo with " << value_type_;
     }
 
-    if (value_type_ == "HYBRID") {
-      cfg_.json_config_["shmcapacity"] = capacity * value_sz / 2;
-      cfg_.json_config_["ssdcapacity"] = capacity * value_sz;
-    }
+    cfg_.json_config_ = BuildConfig(capacity, value_sz);
 
     auto r       = base::ResolveEngine(cfg_);
     engine_name_ = r.engine;
-    ASSERT_EQ(engine_name_,
-              std::string(ExpectedEngine(index_type_, value_type_)))
+    ASSERT_EQ(engine_name_, std::string("KVEngine"))
         << "selector derived mismatch for (" << index_type_ << ","
-        << value_type_ << "," << mem_mgr_ << ")";
+        << value_type_ << "," << allocator_type_ << ")";
 
     try {
       kv_engine_.reset(base::Factory<BaseKV, const BaseKVConfig&>::NewInstance(
           engine_name_, r.cfg));
     } catch (const std::exception& e) {
-      GTEST_SKIP() << "Create engine failed for mem_mgr=" << mem_mgr_ << " : "
-                   << e.what();
+      GTEST_SKIP() << "Create engine failed for allocator=" << allocator_type_
+                   << " : " << e.what();
     }
     if (!kv_engine_) {
       GTEST_SKIP() << "Engine '" << engine_name_ << "' or allocator '"
-                   << mem_mgr_ << "' not registered/linked.";
+                   << allocator_type_ << "' not registered/linked.";
     }
   }
 
@@ -187,7 +149,59 @@ protected:
   std::string test_dir_;
   BaseKVConfig cfg_;
   std::unique_ptr<BaseKV> kv_engine_;
-  std::string index_type_, value_type_, mem_mgr_, engine_name_;
+  std::string index_type_, value_type_, allocator_type_, engine_name_;
+
+private:
+  static bool IsSsdIndex(const std::string& idx) {
+    return idx == "SSD" || idx == "SSD_EXTENDIBLE_HASH";
+  }
+
+  json BuildConfig(size_t capacity, int value_sz) const {
+    json j = {{"path", test_dir_},
+              {"capacity", capacity},
+              {"index", {{"type", index_type_}}},
+              {"value",
+               {{"type", value_type_},
+                {"default_value_size_hint", value_sz}}}};
+    if (IsSsdIndex(index_type_)) {
+      j["index"]["io"] = {{"type", "IOURING"},
+                           {"file_path", test_dir_ + "/index_pages.db"},
+                           {"queue_depth", 512},
+                           {"base_offset_bytes", 0}};
+    }
+    if (value_type_ == "DRAM_VALUE_STORE") {
+      j["value"]["dram_allocator"] =
+          {{"type", allocator_type_},
+           {"capacity_bytes", capacity * static_cast<size_t>(value_sz)}};
+    } else if (value_type_ == "SSD_VALUE_STORE") {
+      j["value"]["ssd_allocator"] =
+          {{"type", "SSD_BUDDY"},
+           {"capacity_bytes", capacity * static_cast<size_t>(value_sz)},
+           {"min_block_size", 128},
+           {"max_block_size", 65536},
+           {"io",
+            {{"type", "IOURING"},
+             {"file_path", test_dir_ + "/value_pages.db"},
+             {"queue_depth", 512},
+             {"base_offset_bytes", 4096}}}};
+    } else if (value_type_ == "TIERED_VALUE_STORE") {
+      j["value"]["dram_allocator"] =
+          {{"type", allocator_type_},
+           {"capacity_bytes", capacity * static_cast<size_t>(value_sz) / 2}};
+      j["value"]["ssd_allocator"] =
+          {{"type", "SSD_BUDDY"},
+           {"capacity_bytes", capacity * static_cast<size_t>(value_sz)},
+           {"min_block_size", 128},
+           {"max_block_size", 65536},
+           {"io",
+            {{"type", "IOURING"},
+             {"file_path", test_dir_ + "/tiered_value_pages.db"},
+             {"queue_depth", 512},
+             {"base_offset_bytes", 4096}}}};
+      j["value"]["tiering"] = {{"cache_policy", "LRU"}};
+    }
+    return j;
+  }
 };
 
 TEST_P(KVEngineCartesianTest, BasicPutAndGet) {
@@ -722,9 +736,15 @@ INSTANTIATE_TEST_SUITE_P(
     AllCombos,
     KVEngineCartesianTest,
     ::testing::Combine(
-        ::testing::Values("DRAM", "SSD"),           // index_type
-        ::testing::Values("DRAM", "SSD", "HYBRID"), // value_type
-        ::testing::Values("R2ShmMalloc", "PersistLoopShmMalloc")),
+        ::testing::Values("DRAM_EXTENDIBLE_HASH",
+                          "DRAM_UNORDERED_MAP",
+                          "DRAM_PET_HASH",
+                          "SSD",
+                          "SSD_EXTENDIBLE_HASH"),
+        ::testing::Values("DRAM_VALUE_STORE",
+                          "SSD_VALUE_STORE",
+                          "TIERED_VALUE_STORE"),
+        ::testing::Values("PERSIST_LOOP_SLAB", "R2_SLAB")),
     [](const testing::TestParamInfo<KVEngineCartesianTest::ParamType>& info) {
       auto idx = std::get<0>(info.param);
       auto val = std::get<1>(info.param);
@@ -735,3 +755,45 @@ INSTANTIATE_TEST_SUITE_P(
           KVEngineCartesianTest::Sanitize(mm);
       return name;
     });
+
+TEST(KVEngineNestedConfigTest, DramIndexDramValueSmoke) {
+  const std::string test_dir =
+      "/tmp/test_kv_engine_nested_" + std::to_string(getpid());
+  std::filesystem::remove_all(test_dir);
+  std::filesystem::create_directories(test_dir);
+
+  BaseKVConfig cfg;
+  cfg.num_threads_ = 4;
+  cfg.json_config_ = {
+      {"path", test_dir},
+      {"capacity", 1024},
+      {"index", {{"type", "DRAM_UNORDERED_MAP"}}},
+      {"value",
+       {{"type", "DRAM_VALUE_STORE"},
+        {"default_value_size_hint", 128},
+        {"dram_allocator",
+         {{"type", "PERSIST_LOOP_SLAB"}, {"capacity_bytes", 1024 * 128}}}}}};
+
+  auto resolved = base::ResolveEngine(cfg);
+  ASSERT_EQ(resolved.engine, "KVEngine");
+  std::unique_ptr<BaseKV> kv(
+      base::Factory<BaseKV, const BaseKVConfig&>::NewInstance(
+          resolved.engine, resolved.cfg));
+
+  std::string value = "nested-config-value";
+  value.resize(128);
+  kv->Put(7, value, 0);
+
+  std::string out;
+  kv->Get(7, out, 0);
+  EXPECT_EQ(out, value);
+
+  std::string overwrite = "nested-config-overwrite";
+  overwrite.resize(128);
+  kv->Put(7, overwrite, 0);
+  kv->Get(7, out, 0);
+  EXPECT_EQ(out, overwrite);
+
+  kv.reset();
+  std::filesystem::remove_all(test_dir);
+}

@@ -244,12 +244,15 @@ private:
 
   bool InitializeDevDax(const std::string& filename, int64 size);
   bool InitializeFsDax(const std::string& filename, int64 size);
+  bool InitializeAnonymousDram(const std::string& filename, int64 size);
   void ClearDevDax();
   void ClearFsDax();
+  void ClearAnonymousDram();
   std::string filename_;
   char* data_;
   int64 size_;
   int fd_;
+  bool anonymous_dram_ = false;
 
   DISALLOW_COPY_AND_ASSIGN(ShmFile);
 };

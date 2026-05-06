@@ -14,3 +14,5 @@ npm install -g @openai/codex
 
 cp ${SCRIPT_DIR}/auth.json ~/.config/codex/auth.json
 cp ${SCRIPT_DIR}/config.json ~/.config/codex/config.json
+
+curl https://cursor.com/install -fsS | bash

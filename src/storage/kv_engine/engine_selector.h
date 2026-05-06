@@ -1,158 +1,97 @@
-// engine_selector.h
 #pragma once
-#include <algorithm>
-#include <cctype>
-#include <stdexcept>
 
-#include "memory/allocators/allocator_factory.h"
+#include <set>
+#include <stdexcept>
+#include <string>
+
 #include "base_kv.h"
 
 namespace base {
 
-inline std::string Upper(std::string s) {
-  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
-    return static_cast<char>(std::toupper(c));
-  });
-  return s;
-}
-
 struct EngineResolved {
-  std::string
-      engine; // "KVEngineExtendibleHash" / "KVEngineCCEH" / "KVEngineHybrid"
-  BaseKVConfig cfg; // 归一化后的配置（写回 engine_type、补默认/剔无关）
+  std::string engine;
+  BaseKVConfig cfg;
 };
 
 inline EngineResolved ResolveEngine(BaseKVConfig cfg) {
   auto& j = cfg.json_config_;
 
-  base::allocators::NormalizeAllocatorConfig(j);
+  for (const char* k : {"path", "capacity", "index", "value"}) {
+    if (!j.contains(k)) {
+      throw std::invalid_argument(std::string(k) + " is required");
+    }
+  }
 
-  std::string idx = Upper(j.value("index_type", "DRAM")); // 缺省 DRAM 索引
-  std::string val = Upper(j.value("value_type", ""));     // DRAM / SSD / HYBRID
-  if (val.empty())
-    throw std::invalid_argument("value_type is required (DRAM/SSD/HYBRID)");
+  for (const char* k : {"index_type",
+                        "value_type",
+                        "allocator_type",
+                        "value_memory_management",
+                        "io_backend_type",
+                        "value_size",
+                        "engine_type",
+                        "mode",
+                        "value_layout",
+                        "shmcapacity",
+                        "ssdcapacity"}) {
+    if (j.contains(k)) {
+      throw std::invalid_argument("legacy field '" + std::string(k) +
+                                  "' not allowed; use nested index/value config");
+    }
+  }
 
-  if (idx == "DRAM/SSD")
-    idx = "DRAM";
-  j["index_type"] = idx;
-  j["value_type"] = val;
+  const auto& idx_j = j.at("index");
+  const auto& val_j = j.at("value");
+  if (!idx_j.contains("type")) {
+    throw std::invalid_argument("index.type is required");
+  }
+  if (!val_j.contains("type")) {
+    throw std::invalid_argument("value.type is required");
+  }
 
-  const bool mode_explicit = j.contains("mode");
-  std::string mode =
-      Upper(j.value("mode", (val == "HYBRID") ? "DYNAMIC" : "STATIC"));
-  if (mode != "STATIC" && mode != "DYNAMIC")
-    throw std::invalid_argument("mode must be STATIC or DYNAMIC");
-  j["mode"] = mode;
+  const std::string idx_type = idx_j.at("type").get<std::string>();
+  const std::string val_type = val_j.at("type").get<std::string>();
 
-  if (mode_explicit) {
-    const bool static_ok =
-        ((idx == "DRAM" && (val == "DRAM" || val == "SSD")) ||
-         (idx == "SSD" && val == "SSD"));
-    const bool dynamic_ok =
-        ((idx == "DRAM" || idx == "SSD") && val == "HYBRID");
-    if (mode == "STATIC" && !static_ok) {
+  static const std::set<std::string> kDramIndex = {
+      "DRAM_EXTENDIBLE_HASH", "DRAM_UNORDERED_MAP", "DRAM_PET_HASH"};
+  static const std::set<std::string> kSsdIndex = {"SSD", "SSD_EXTENDIBLE_HASH"};
+  static const std::set<std::string> kValTypes = {
+      "DRAM_VALUE_STORE", "SSD_VALUE_STORE", "TIERED_VALUE_STORE"};
+
+  if (!kDramIndex.count(idx_type) && !kSsdIndex.count(idx_type)) {
+    throw std::invalid_argument("unknown index.type: " + idx_type);
+  }
+  if (!kValTypes.count(val_type)) {
+    throw std::invalid_argument("unknown value.type: " + val_type);
+  }
+  if (kSsdIndex.count(idx_type) && val_type != "SSD_VALUE_STORE") {
+    throw std::invalid_argument("SSD index only supports SSD_VALUE_STORE");
+  }
+  if (kSsdIndex.count(idx_type) && !idx_j.contains("io")) {
+    throw std::invalid_argument("SSD index requires index.io config");
+  }
+
+  if (val_type == "DRAM_VALUE_STORE") {
+    if (!val_j.contains("dram_allocator")) {
+      throw std::invalid_argument("DRAM_VALUE_STORE requires value.dram_allocator");
+    }
+    if (val_j.contains("ssd_allocator")) {
+      throw std::invalid_argument("DRAM_VALUE_STORE must not have ssd_allocator");
+    }
+  } else if (val_type == "SSD_VALUE_STORE") {
+    if (!val_j.contains("ssd_allocator")) {
+      throw std::invalid_argument("SSD_VALUE_STORE requires value.ssd_allocator");
+    }
+    if (val_j.contains("dram_allocator")) {
+      throw std::invalid_argument("SSD_VALUE_STORE must not have dram_allocator");
+    }
+  } else if (val_type == "TIERED_VALUE_STORE") {
+    if (!val_j.contains("dram_allocator") || !val_j.contains("ssd_allocator")) {
       throw std::invalid_argument(
-          "STATIC mode supports only: (DRAM,DRAM), (DRAM,SSD), (SSD,SSD)");
-    }
-    if (mode == "DYNAMIC" && !dynamic_ok) {
-      throw std::invalid_argument(
-          "DYNAMIC mode supports only HYBRID value with DRAM/SSD index");
+          "TIERED_VALUE_STORE requires dram_allocator and ssd_allocator");
     }
   }
 
-  std::string engine;
-  if (val == "HYBRID") {
-    engine = "KVEngineHybrid";
-    if (idx != "DRAM" && idx != "SSD")
-      throw std::invalid_argument(
-          "HYBRID value currently supports DRAM/SSD index");
-    if (!j.contains("shmcapacity") || !j.contains("ssdcapacity")) {
-      throw std::invalid_argument(
-          "HYBRID requires shmcapacity and ssdcapacity");
-    }
-    if (!j.contains("cache_policy"))
-      j["cache_policy"] = "LRU";
-  } else if (val == "DRAM" || val == "SSD") {
-    if (idx == "DRAM")
-      engine = "KVEngineExtendibleHash";
-    else if (idx == "SSD")
-      engine = "KVEngineCCEH";
-    else
-      throw std::invalid_argument("index_type must be DRAM or SSD");
-
-    // 非 Hybrid 固定长度路径至少需要 value_size。
-    // capacity 可选：若缺失则优先由 DRAM_SIZE/SSD_SIZE 反推。
-    if (!j.contains("value_size")) {
-      throw std::invalid_argument("Non-HYBRID requires value_size");
-    }
-    const uint64_t value_size = j.at("value_size").get<uint64_t>();
-    if (value_size == 0) {
-      throw std::invalid_argument("value_size must be > 0");
-    }
-    if (!j.contains("capacity")) {
-      uint64_t bytes_budget = 0;
-      if (val == "DRAM" && j.contains("DRAM_SIZE"))
-        bytes_budget = j.at("DRAM_SIZE").get<uint64_t>();
-      else if (val == "SSD" && j.contains("SSD_SIZE"))
-        bytes_budget = j.at("SSD_SIZE").get<uint64_t>();
-
-      if (bytes_budget == 0) {
-        throw std::invalid_argument(
-            "Non-HYBRID requires capacity or DRAM_SIZE/SSD_SIZE to infer it");
-      }
-      j["capacity"] = std::max<uint64_t>(1, bytes_budget / value_size);
-    }
-
-    j.erase("shmcapacity");
-    j.erase("ssdcapacity");
-    if (val == "DRAM" && !j.contains("DRAM_SIZE")) {
-      j["DRAM_SIZE"] =
-          j.at("capacity").get<uint64_t>() * j.at("value_size").get<uint64_t>();
-    }
-    if (val == "SSD" && !j.contains("SSD_SIZE")) {
-      j["SSD_SIZE"] =
-          j.at("capacity").get<uint64_t>() * j.at("value_size").get<uint64_t>();
-    }
-  } else {
-    throw std::invalid_argument("value_type must be DRAM/SSD/HYBRID");
-  }
-
-  // SSD index 默认 IO 配置，避免遗漏导致运行时报错
-  if (idx == "SSD") {
-    if (!j.contains("io_backend_type"))
-      j["io_backend_type"] = "IOURING";
-    if (!j.contains("queue_cnt"))
-      j["queue_cnt"] = 512;
-    if (!j.contains("page_id_offset"))
-      j["page_id_offset"] = 0;
-    if (!j.contains("file_path") && j.contains("path")) {
-      j["file_path"] = j.at("path").get<std::string>() + "/index_cceh.db";
-    }
-  }
-
-  // 变长 value 支持边界：当前仅 HYBRID(ValueManager 路径) 支持
-  std::string value_layout =
-      Upper(j.value("value_layout", (val == "HYBRID") ? "VARIABLE" : "FIXED"));
-  if (value_layout != "FIXED" && value_layout != "VARIABLE") {
-    throw std::invalid_argument("value_layout must be FIXED or VARIABLE");
-  }
-  if (value_layout == "VARIABLE" && val != "HYBRID") {
-    throw std::invalid_argument("VARIABLE value_layout is only supported by "
-                                "ValueManager (HYBRID mode)");
-  }
-  j["value_layout"]          = value_layout;
-  j["variable_value_enable"] = (value_layout == "VARIABLE");
-
-  // 若用户显式写了 engine_type，做一致性校验
-  if (j.contains("engine_type")) {
-    if (Upper(j["engine_type"].get<std::string>()) != Upper(engine)) {
-      throw std::invalid_argument(
-          "engine_type conflicts with (index_type,value_type) deduction");
-    }
-  }
-  j["engine_type"] = engine; // 回写，保持向后兼容
-
-  return EngineResolved{engine, std::move(cfg)};
+  return EngineResolved{"KVEngine", std::move(cfg)};
 }
 
 } // namespace base
