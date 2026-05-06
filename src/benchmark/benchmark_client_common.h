@@ -242,7 +242,8 @@ private:
               sample->fillArray(&client_keys[req_i * args_.batch_read_count_]);
           float* values = recv_buffers[req_i];
 
-          if (base::Random::rand32(100) < static_cast<uint32_t>(args_.read_ratio_)) {
+          if (base::Random::rand32(100) <
+              static_cast<uint32_t>(args_.read_ratio_)) {
             // read request
             isPullRequest[req_i] = true;
             running_rpc_ids[req_i] =

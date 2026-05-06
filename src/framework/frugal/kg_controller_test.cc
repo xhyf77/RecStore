@@ -243,9 +243,7 @@ public:
       input_keys_.push_back(IPCTensorFactory::NewSlicedIPCTensor(
           base::SFormat("input_keys_{}", rank), {int(1e6)}, torch::kInt64));
       input_keys_neg_.push_back(IPCTensorFactory::NewSlicedIPCTensor(
-          base::SFormat("input_keys_neg_{}", rank),
-          {int(1e6)},
-          torch::kInt64));
+          base::SFormat("input_keys_neg_{}", rank), {int(1e6)}, torch::kInt64));
 
       if (backgrad_init_ == "cpu") {
         backward_grads_.push_back(IPCTensorFactory::NewSlicedIPCTensor(

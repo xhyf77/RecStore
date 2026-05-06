@@ -34,15 +34,15 @@ private:
 
 } // namespace base::detail
 
-#define RECSTORE_LOG_EVERY_MS(level, interval_ms)                                    \
-  for (bool BASE_LOG_CONCAT(_RECSTORE_LOG_EVERY_MS_once_, __LINE__) = true;          \
-       BASE_LOG_CONCAT(_RECSTORE_LOG_EVERY_MS_once_, __LINE__);                      \
-       BASE_LOG_CONCAT(_RECSTORE_LOG_EVERY_MS_once_, __LINE__) = false)              \
+#define RECSTORE_LOG_EVERY_MS(level, interval_ms)                              \
+  for (bool BASE_LOG_CONCAT(_RECSTORE_LOG_EVERY_MS_once_, __LINE__) = true;    \
+       BASE_LOG_CONCAT(_RECSTORE_LOG_EVERY_MS_once_, __LINE__);                \
+       BASE_LOG_CONCAT(_RECSTORE_LOG_EVERY_MS_once_, __LINE__) = false)        \
     for (static ::base::detail::LogEveryMsState BASE_LOG_CONCAT(               \
-             _RECSTORE_LOG_EVERY_MS_state_, __LINE__);                               \
-         BASE_LOG_CONCAT(_RECSTORE_LOG_EVERY_MS_once_, __LINE__);                    \
-         BASE_LOG_CONCAT(_RECSTORE_LOG_EVERY_MS_once_, __LINE__) = false)            \
-      if (!BASE_LOG_CONCAT(_RECSTORE_LOG_EVERY_MS_state_, __LINE__)                  \
+             _RECSTORE_LOG_EVERY_MS_state_, __LINE__);                         \
+         BASE_LOG_CONCAT(_RECSTORE_LOG_EVERY_MS_once_, __LINE__);              \
+         BASE_LOG_CONCAT(_RECSTORE_LOG_EVERY_MS_once_, __LINE__) = false)      \
+      if (!BASE_LOG_CONCAT(_RECSTORE_LOG_EVERY_MS_state_, __LINE__)            \
                .ShouldLog(interval_ms)) {                                      \
       } else                                                                   \
         LOG(level)
