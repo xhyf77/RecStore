@@ -43,11 +43,11 @@ public:
 private:
   static BaseKVConfig BuildConfig(const BaseKVConfig& config) {
     BaseKVConfig out = config;
-    auto& j = out.json_config_;
+    auto& j          = out.json_config_;
     if (j.contains("index") && j.at("index").contains("io")) {
-      const auto& io = j.at("index").at("io");
+      const auto& io       = j.at("index").at("io");
       j["io_backend_type"] = io.value("type", "IOURING");
-      j["queue_cnt"] = io.value("queue_depth", 512);
+      j["queue_cnt"]       = io.value("queue_depth", 512);
       j["page_id_offset"] =
           io.value("base_offset_bytes", static_cast<uint64_t>(0)) / PAGE_SIZE;
       j["file_path"] = io.at("file_path").get<std::string>();
@@ -58,11 +58,6 @@ private:
   std::unique_ptr<CCEH> impl_;
 };
 
-FACTORY_REGISTER(Index,
-                 SSD,
-                 SsdExtendibleHashIndex,
-                 const BaseKVConfig&);
-FACTORY_REGISTER(Index,
-                 SSD_EXTENDIBLE_HASH,
-                 SsdExtendibleHashIndex,
-                 const BaseKVConfig&);
+FACTORY_REGISTER(Index, SSD, SsdExtendibleHashIndex, const BaseKVConfig&);
+FACTORY_REGISTER(
+    Index, SSD_EXTENDIBLE_HASH, SsdExtendibleHashIndex, const BaseKVConfig&);

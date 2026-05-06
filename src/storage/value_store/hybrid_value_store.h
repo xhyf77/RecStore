@@ -12,8 +12,8 @@ class HybridValueStore : public ValueStore {
 public:
   explicit HybridValueStore(const BaseKVConfig& config)
       : dram_store_(BuildDramConfig(config)), ssd_store_(config) {
-    const auto& v = config.json_config_.at("value");
-    const auto& dram = v.at("dram_allocator");
+    const auto& v        = config.json_config_.at("value");
+    const auto& dram     = v.at("dram_allocator");
     dram_capacity_bytes_ = dram.at("capacity_bytes").get<uint64_t>();
     const auto& tiering =
         v.contains("tiering") ? v.at("tiering") : json::object();
@@ -24,8 +24,8 @@ public:
     if (ShouldUseDram(size)) {
       const uint64_t raw = dram_store_.Alloc(size);
       if (raw != kValueHandleNone) {
-        dram_bytes_reserved_.fetch_add(dram_store_.SlotCapacity(raw),
-                                       std::memory_order_relaxed);
+        dram_bytes_reserved_.fetch_add(
+            dram_store_.SlotCapacity(raw), std::memory_order_relaxed);
         return MakeDramHandle(raw);
       }
     }
@@ -71,7 +71,7 @@ public:
       return;
     }
     const uint64_t raw = DramRawHandle(handle);
-    const size_t cap = dram_store_.SlotCapacity(raw);
+    const size_t cap   = dram_store_.SlotCapacity(raw);
     dram_store_.Free(raw);
     uint64_t cur = dram_bytes_reserved_.load(std::memory_order_relaxed);
     while (cur != 0 &&
@@ -101,42 +101,31 @@ public:
     std::ostringstream os;
     os << "HybridValueStore(dram_reserved="
        << dram_bytes_reserved_.load(std::memory_order_relaxed)
-       << ", dram_capacity=" << dram_capacity_bytes_
-       << ", dram=" << dram_store_.GetInfo()
-       << ", ssd=" << ssd_store_.GetInfo() << ")";
+       << ", dram_capacity=" << dram_capacity_bytes_ << ", dram="
+       << dram_store_.GetInfo() << ", ssd=" << ssd_store_.GetInfo() << ")";
     return os.str();
   }
 
 private:
   static constexpr uint64_t kSsdFlag = 1ULL << 63;
 
-  static bool IsOnSSD(uint64_t handle) {
-    return (handle & kSsdFlag) != 0;
-  }
+  static bool IsOnSSD(uint64_t handle) { return (handle & kSsdFlag) != 0; }
 
-  static uint64_t MakeDramHandle(uint64_t raw) {
-    return raw;
-  }
+  static uint64_t MakeDramHandle(uint64_t raw) { return raw; }
 
-  static uint64_t MakeSsdHandle(uint64_t raw) {
-    return raw | kSsdFlag;
-  }
+  static uint64_t MakeSsdHandle(uint64_t raw) { return raw | kSsdFlag; }
 
-  static uint64_t DramRawHandle(uint64_t handle) {
-    return handle;
-  }
+  static uint64_t DramRawHandle(uint64_t handle) { return handle; }
 
-  static uint64_t SsdRawHandle(uint64_t handle) {
-    return handle & ~kSsdFlag;
-  }
+  static uint64_t SsdRawHandle(uint64_t handle) { return handle & ~kSsdFlag; }
 
   static BaseKVConfig BuildDramConfig(const BaseKVConfig& config) {
     BaseKVConfig out = config;
-    auto& j = out.json_config_;
+    auto& j          = out.json_config_;
     if (!j.contains("value") || !j.at("value").contains("dram_allocator")) {
       return out;
     }
-    json value = j.at("value");
+    json value    = j.at("value");
     value["type"] = "DRAM_VALUE_STORE";
     value.erase("ssd_allocator");
     value.erase("tiering");
@@ -158,11 +147,9 @@ private:
   DramValueStore dram_store_;
   SsdValueStore ssd_store_;
   uint64_t dram_capacity_bytes_ = 0;
-  double high_watermark_ratio_ = 0.85;
+  double high_watermark_ratio_  = 0.85;
   std::atomic<uint64_t> dram_bytes_reserved_{0};
 };
 
-FACTORY_REGISTER(ValueStore,
-                 TIERED_VALUE_STORE,
-                 HybridValueStore,
-                 const BaseKVConfig&);
+FACTORY_REGISTER(
+    ValueStore, TIERED_VALUE_STORE, HybridValueStore, const BaseKVConfig&);

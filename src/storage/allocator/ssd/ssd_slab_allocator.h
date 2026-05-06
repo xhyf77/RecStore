@@ -20,9 +20,9 @@ public:
     if (backend_ == nullptr) {
       throw std::invalid_argument("SsdSlabAllocator backend is null");
     }
-    size_classes_ = size_classes.empty()
-                        ? std::vector<int>{128, 256, 512, 1024, 4096}
-                        : size_classes;
+    size_classes_ =
+        size_classes.empty() ? std::vector<int>{128, 256, 512, 1024, 4096}
+                             : size_classes;
     std::sort(size_classes_.begin(), size_classes_.end());
     const uint64_t per_slab = std::max<uint64_t>(
         PAGE_SIZE, total_capacity_bytes / size_classes_.size());
@@ -30,9 +30,9 @@ public:
     for (int cls : size_classes_) {
       const uint64_t slot_size = static_cast<uint64_t>(cls) + kHeaderSize;
       SlabPool pool;
-      pool.slot_size = slot_size;
+      pool.slot_size        = slot_size;
       pool.base_byte_offset = cursor;
-      pool.capacity_slots = std::max<uint64_t>(1, per_slab / slot_size);
+      pool.capacity_slots   = std::max<uint64_t>(1, per_slab / slot_size);
       slabs_.push_back(std::move(pool));
       cursor += pool.capacity_slots * slot_size;
     }
@@ -40,8 +40,8 @@ public:
 
   uint64_t Alloc(size_t data_size) override {
     const uint16_t slab_idx = SelectSlab(data_size);
-    auto& slab = slabs_.at(slab_idx);
-    uint64_t slot_id = 0;
+    auto& slab              = slabs_.at(slab_idx);
+    uint64_t slot_id        = 0;
     {
       std::lock_guard<std::mutex> lock(slab.free_mu);
       if (!slab.free_list.empty()) {
@@ -82,7 +82,8 @@ public:
     uint64_t slot_id;
     Decode(handle, slab_idx, slot_id);
     const auto& slab = slabs_.at(slab_idx);
-    return ReadBytes(slab.SlotByteOffset(slot_id), slab.slot_size, out_buf, buf_size);
+    return ReadBytes(
+        slab.SlotByteOffset(slot_id), slab.slot_size, out_buf, buf_size);
   }
 
   uint64_t AllocAndWrite(const void* data, size_t data_size) override {
@@ -103,9 +104,9 @@ public:
 
 private:
   struct SlabPool {
-    uint64_t slot_size = 0;
+    uint64_t slot_size        = 0;
     uint64_t base_byte_offset = 0;
-    uint64_t capacity_slots = 0;
+    uint64_t capacity_slots   = 0;
     std::atomic<uint64_t> next_slot{0};
     std::mutex free_mu;
     std::vector<uint64_t> free_list;
@@ -131,7 +132,7 @@ private:
 
   static void Decode(uint64_t handle, uint16_t& slab_idx, uint64_t& slot_id) {
     slab_idx = static_cast<uint16_t>(handle >> 48);
-    slot_id = (handle & 0x0000FFFFFFFFFFFFULL) - 1;
+    slot_id  = (handle & 0x0000FFFFFFFFFFFFULL) - 1;
   }
 
   uint16_t SelectSlab(size_t data_size) const {
@@ -148,11 +149,11 @@ private:
                   const void* data,
                   size_t data_size) {
     std::lock_guard<std::mutex> lock(io_mu_);
-    const PageID_t start = byte_offset / PAGE_SIZE;
+    const PageID_t start    = byte_offset / PAGE_SIZE;
     const uint64_t page_off = byte_offset % PAGE_SIZE;
-    const uint64_t total = page_off + slot_size;
-    const uint64_t pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
-    char* buf = backend_->AllocateBuffer(pages);
+    const uint64_t total    = page_off + slot_size;
+    const uint64_t pages    = (total + PAGE_SIZE - 1) / PAGE_SIZE;
+    char* buf               = backend_->AllocateBuffer(pages);
     backend_->BatchReadPages({{start, buf, pages}});
     const uint32_t n = static_cast<uint32_t>(data_size);
     std::memcpy(buf + page_off, &n, sizeof(n));
@@ -166,11 +167,11 @@ private:
                    void* out_buf,
                    size_t buf_size) {
     std::lock_guard<std::mutex> lock(io_mu_);
-    const PageID_t start = byte_offset / PAGE_SIZE;
+    const PageID_t start    = byte_offset / PAGE_SIZE;
     const uint64_t page_off = byte_offset % PAGE_SIZE;
-    const uint64_t total = page_off + slot_size;
-    const uint64_t pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
-    char* buf = backend_->AllocateBuffer(pages);
+    const uint64_t total    = page_off + slot_size;
+    const uint64_t pages    = (total + PAGE_SIZE - 1) / PAGE_SIZE;
+    char* buf               = backend_->AllocateBuffer(pages);
     backend_->BatchReadPages({{start, buf, pages}});
     uint32_t n = 0;
     std::memcpy(&n, buf + page_off, sizeof(n));

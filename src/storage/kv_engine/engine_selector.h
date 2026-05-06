@@ -22,20 +22,22 @@ inline EngineResolved ResolveEngine(BaseKVConfig cfg) {
     }
   }
 
-  for (const char* k : {"index_type",
-                        "value_type",
-                        "allocator_type",
-                        "value_memory_management",
-                        "io_backend_type",
-                        "value_size",
-                        "engine_type",
-                        "mode",
-                        "value_layout",
-                        "shmcapacity",
-                        "ssdcapacity"}) {
+  for (const char* k :
+       {"index_type",
+        "value_type",
+        "allocator_type",
+        "value_memory_management",
+        "io_backend_type",
+        "value_size",
+        "engine_type",
+        "mode",
+        "value_layout",
+        "shmcapacity",
+        "ssdcapacity"}) {
     if (j.contains(k)) {
-      throw std::invalid_argument("legacy field '" + std::string(k) +
-                                  "' not allowed; use nested index/value config");
+      throw std::invalid_argument(
+          "legacy field '" + std::string(k) +
+          "' not allowed; use nested index/value config");
     }
   }
 
@@ -72,17 +74,21 @@ inline EngineResolved ResolveEngine(BaseKVConfig cfg) {
 
   if (val_type == "DRAM_VALUE_STORE") {
     if (!val_j.contains("dram_allocator")) {
-      throw std::invalid_argument("DRAM_VALUE_STORE requires value.dram_allocator");
+      throw std::invalid_argument(
+          "DRAM_VALUE_STORE requires value.dram_allocator");
     }
     if (val_j.contains("ssd_allocator")) {
-      throw std::invalid_argument("DRAM_VALUE_STORE must not have ssd_allocator");
+      throw std::invalid_argument(
+          "DRAM_VALUE_STORE must not have ssd_allocator");
     }
   } else if (val_type == "SSD_VALUE_STORE") {
     if (!val_j.contains("ssd_allocator")) {
-      throw std::invalid_argument("SSD_VALUE_STORE requires value.ssd_allocator");
+      throw std::invalid_argument(
+          "SSD_VALUE_STORE requires value.ssd_allocator");
     }
     if (val_j.contains("dram_allocator")) {
-      throw std::invalid_argument("SSD_VALUE_STORE must not have dram_allocator");
+      throw std::invalid_argument(
+          "SSD_VALUE_STORE must not have dram_allocator");
     }
   } else if (val_type == "TIERED_VALUE_STORE") {
     if (!val_j.contains("dram_allocator") || !val_j.contains("ssd_allocator")) {

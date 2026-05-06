@@ -51,7 +51,5 @@ private:
   std::unordered_map<Key_t, Value_t> map_;
 };
 
-FACTORY_REGISTER(Index,
-                 DRAM_UNORDERED_MAP,
-                 DramUnorderedMapIndex,
-                 const BaseKVConfig&);
+FACTORY_REGISTER(
+    Index, DRAM_UNORDERED_MAP, DramUnorderedMapIndex, const BaseKVConfig&);

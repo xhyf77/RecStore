@@ -10,8 +10,10 @@
 class DramPetHashIndex : public Index {
 public:
   explicit DramPetHashIndex(const BaseKVConfig& config) : Index(config) {
-    const uint64_t capacity = config.json_config_.at("capacity").get<uint64_t>();
-    const size_t bytes = base::PetHash<Key_t, Value_t, false>::MemorySize(capacity);
+    const uint64_t capacity =
+        config.json_config_.at("capacity").get<uint64_t>();
+    const size_t bytes =
+        base::PetHash<Key_t, Value_t, false>::MemorySize(capacity);
     void* mem = nullptr;
     if (posix_memalign(&mem, 64, bytes) != 0 || mem == nullptr) {
       throw std::bad_alloc();
@@ -31,7 +33,7 @@ public:
   void Get(Key_t key, Value_t& pointer, unsigned tid) override {
     (void)tid;
     auto [value, exists] = impl_->Get(key);
-    pointer = exists ? value : NONE;
+    pointer              = exists ? value : NONE;
   }
 
   void Put(Key_t key, Value_t pointer, unsigned tid) override {
@@ -62,7 +64,4 @@ private:
   base::PetHash<Key_t, Value_t, false>* impl_ = nullptr;
 };
 
-FACTORY_REGISTER(Index,
-                 DRAM_PET_HASH,
-                 DramPetHashIndex,
-                 const BaseKVConfig&);
+FACTORY_REGISTER(Index, DRAM_PET_HASH, DramPetHashIndex, const BaseKVConfig&);

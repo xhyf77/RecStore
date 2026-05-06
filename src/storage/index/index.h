@@ -55,7 +55,7 @@ public:
   }
   virtual void
   BatchGet(base::ConstArray<Key_t> keys, Value_t* pointers, unsigned tid) = 0;
-  virtual bool Delete(Key_t& key) = 0;
+  virtual bool Delete(Key_t& key)                                         = 0;
   virtual double Utilization() { LOG(FATAL) << "not implemented"; }
   virtual size_t Capacity() { LOG(FATAL) << "not implemented"; }
   virtual void BulkLoad(base::ConstArray<uint64_t> keys, const void* value) {

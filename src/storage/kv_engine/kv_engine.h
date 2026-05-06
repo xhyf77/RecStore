@@ -28,11 +28,11 @@ public:
         num_threads_(num_threads) {}
 
   explicit KVEngine(const BaseKVConfig& config) : BaseKV(config) {
-    config_ = config;
-    const auto& j = config.json_config_;
+    config_                      = config;
+    const auto& j                = config.json_config_;
     const std::string index_type = j.at("index").at("type").get<std::string>();
     const std::string value_type = j.at("value").at("type").get<std::string>();
-    using IF = base::Factory<Index, const BaseKVConfig&>;
+    using IF                     = base::Factory<Index, const BaseKVConfig&>;
     using VF = base::Factory<ValueStore, const BaseKVConfig&>;
     index_.reset(IF::NewInstance(index_type, config));
     value_store_.reset(VF::NewInstance(value_type, config));
@@ -107,7 +107,7 @@ public:
       }
       if (const char* ptr = value_store_->DirectPtr(handles[i])) {
         const size_t bytes = value_store_->SlotCapacity(handles[i]);
-        (*values)[i] = base::ConstArray<float>(
+        (*values)[i]       = base::ConstArray<float>(
             reinterpret_cast<float*>(const_cast<char*>(ptr)),
             bytes / sizeof(float));
         continue;
@@ -116,30 +116,31 @@ public:
       const size_t actual = value_store_->Read(
           handles[i], buffers[i].data(), buffers[i].size() * sizeof(float));
       buffers[i].resize(actual / sizeof(float));
-      (*values)[i] = base::ConstArray<float>(buffers[i].data(), buffers[i].size());
+      (*values)[i] =
+          base::ConstArray<float>(buffers[i].data(), buffers[i].size());
     }
   }
 
-  bool ApplySgdUpdateFlat(base::ConstArray<uint64_t> keys,
-                          const float* grads,
-                          int64_t num_rows,
-                          int64_t embedding_dim,
-                          float learning_rate,
-                          uint8_t tag,
-                          unsigned tid) override {
+  bool ApplySgdUpdateFlat(
+      base::ConstArray<uint64_t> keys,
+      const float* grads,
+      int64_t num_rows,
+      int64_t embedding_dim,
+      float learning_rate,
+      uint8_t tag,
+      unsigned tid) override {
     if (grads == nullptr || keys.Size() != static_cast<size_t>(num_rows) ||
         embedding_dim <= 0) {
       return false;
     }
-    const int tag_bits = static_cast<int>(sizeof(tag) * 8);
-    const int shift = static_cast<int>(sizeof(uint64_t) * 8) - tag_bits;
+    const int tag_bits      = static_cast<int>(sizeof(tag) * 8);
+    const int shift         = static_cast<int>(sizeof(uint64_t) * 8) - tag_bits;
     const uint64_t key_mask = ~0ULL >> tag_bits;
     const size_t row_bytes = static_cast<size_t>(embedding_dim) * sizeof(float);
     std::vector<float> row(embedding_dim);
     for (int64_t r = 0; r < num_rows; ++r) {
-      const uint64_t key =
-          (static_cast<uint64_t>(tag) << shift) |
-          (keys[static_cast<size_t>(r)] & key_mask);
+      const uint64_t key = (static_cast<uint64_t>(tag) << shift) |
+                           (keys[static_cast<size_t>(r)] & key_mask);
       std::string current;
       Get(key, current, tid);
       if (current.size() == row_bytes) {
@@ -157,7 +158,7 @@ public:
   }
 
   void BulkLoad(base::ConstArray<uint64_t> keys, const void* value) override {
-    const auto& j = config_.json_config_;
+    const auto& j           = config_.json_config_;
     const size_t value_size = j.at("value").value("default_value_size_hint", 0);
     if (value_size == 0) {
       LOG(FATAL) << "KVEngine::BulkLoad requires value_size hint";
@@ -213,7 +214,7 @@ private:
   BaseKVConfig config_;
   std::unique_ptr<Index> index_;
   std::unique_ptr<ValueStore> value_store_;
-  int num_threads_ = 0;
+  int num_threads_                       = 0;
   static constexpr size_t kLockStripeNum = 4096;
   std::array<std::shared_mutex, kLockStripeNum> key_mutexes_;
 };

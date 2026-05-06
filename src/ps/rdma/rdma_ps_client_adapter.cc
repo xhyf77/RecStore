@@ -32,8 +32,8 @@ int ValueSizeHintFromBaseKvConfig(const json& base_kv_config,
       !base_kv_config["value"].is_object()) {
     return fallback_value_size;
   }
-  return base_kv_config["value"].value("default_value_size_hint",
-                                      fallback_value_size);
+  return base_kv_config["value"].value(
+      "default_value_size_hint", fallback_value_size);
 }
 
 std::vector<std::string> ReadProcessArgv() {
@@ -106,10 +106,11 @@ void RDMAPSClientAdapter::EnsureClientInitialized() {
   FLAGS_num_server_processes = num_shards;
   FLAGS_num_client_processes = 1;
   FLAGS_global_id            = num_shards;
-  FLAGS_value_size = cache_ps_cfg.contains("base_kv_config")
-                         ? ValueSizeHintFromBaseKvConfig(
-                               cache_ps_cfg["base_kv_config"], FLAGS_value_size)
-                         : FLAGS_value_size;
+  FLAGS_value_size =
+      cache_ps_cfg.contains("base_kv_config")
+          ? ValueSizeHintFromBaseKvConfig(
+                cache_ps_cfg["base_kv_config"], FLAGS_value_size)
+          : FLAGS_value_size;
   FLAGS_max_kv_num_per_request =
       dist_cfg.value("max_keys_per_request", FLAGS_max_kv_num_per_request);
   if (const char* mode = std::getenv("RECSTORE_RDMA_TRANSPORT_MODE")) {

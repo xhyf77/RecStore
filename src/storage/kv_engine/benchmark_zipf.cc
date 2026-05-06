@@ -98,14 +98,15 @@ int main(int argc, char* argv[]) {
        {{"type", FLAGS_value_store_type},
         {"default_value_size_hint", FLAGS_value_size}}}};
   if (FLAGS_value_store_type == "DRAM_VALUE_STORE") {
-    config.json_config_["value"]["dram_allocator"] =
-        {{"type", FLAGS_dram_allocator},
-         {"capacity_bytes", kKeySpace * static_cast<uint64_t>(FLAGS_value_size)}};
+    config.json_config_["value"]["dram_allocator"] = {
+        {"type", FLAGS_dram_allocator},
+        {"capacity_bytes",
+         kKeySpace * static_cast<uint64_t>(FLAGS_value_size)}};
   } else {
     LOG(FATAL) << "benchmark_zipf currently supports DRAM_VALUE_STORE only";
   }
   auto resolved = base::ResolveEngine(config);
-  kv = base::Factory<BaseKV, const BaseKVConfig&>::NewInstance(
+  kv            = base::Factory<BaseKV, const BaseKVConfig&>::NewInstance(
       resolved.engine, resolved.cfg);
   for (int i = 0; i < FLAGS_thread_count; i++) {
     th[i] = std::thread(thread_run, i);

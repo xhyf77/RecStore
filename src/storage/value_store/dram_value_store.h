@@ -12,19 +12,19 @@
 class DramValueStore : public ValueStore {
 public:
   explicit DramValueStore(const BaseKVConfig& config) {
-    const auto& j = config.json_config_;
+    const auto& j          = config.json_config_;
     const std::string path = j.at("path").get<std::string>() + "/value";
     if (!j.contains("value") || !j.at("value").contains("dram_allocator")) {
       throw std::invalid_argument(
           "DramValueStore requires value.dram_allocator");
     }
-    const auto& dram = j.at("value").at("dram_allocator");
+    const auto& dram                 = j.at("value").at("dram_allocator");
     const std::string allocator_type = dram.value("type", "PERSIST_LOOP_SLAB");
     const uint64_t capacity_bytes = dram.at("capacity_bytes").get<uint64_t>();
-    using MF = base::
+    using MF                      = base::
         Factory<base::MallocApi, const std::string&, int64, const std::string&>;
-    allocator_.reset(
-        MF::NewInstance(allocator_type, path, static_cast<int64>(capacity_bytes), "DRAM"));
+    allocator_.reset(MF::NewInstance(
+        allocator_type, path, static_cast<int64>(capacity_bytes), "DRAM"));
     if (!allocator_) {
       throw std::runtime_error("failed to create DramValueStore allocator");
     }
@@ -60,8 +60,9 @@ public:
     if (src == nullptr || out_buf == nullptr) {
       return 0;
     }
-    const size_t n =
-        std::min(buf_size, static_cast<size_t>(allocator_->GetMallocSize(DecodeOffset(handle))));
+    const size_t n = std::min(
+        buf_size,
+        static_cast<size_t>(allocator_->GetMallocSize(DecodeOffset(handle))));
     std::memcpy(out_buf, src, n);
     return n;
   }
@@ -106,7 +107,5 @@ private:
   std::unique_ptr<base::MallocApi> allocator_;
 };
 
-FACTORY_REGISTER(ValueStore,
-                 DRAM_VALUE_STORE,
-                 DramValueStore,
-                 const BaseKVConfig&);
+FACTORY_REGISTER(
+    ValueStore, DRAM_VALUE_STORE, DramValueStore, const BaseKVConfig&);

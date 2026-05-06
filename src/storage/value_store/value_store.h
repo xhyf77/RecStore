@@ -20,11 +20,11 @@ public:
 
   virtual ~ValueStore() = default;
 
-  virtual uint64_t Alloc(size_t size) = 0;
-  virtual void Write(uint64_t handle, const void* data, size_t size) = 0;
-  virtual uint64_t AllocAndWrite(const void* data, size_t size) = 0;
+  virtual uint64_t Alloc(size_t size)                                  = 0;
+  virtual void Write(uint64_t handle, const void* data, size_t size)   = 0;
+  virtual uint64_t AllocAndWrite(const void* data, size_t size)        = 0;
   virtual size_t Read(uint64_t handle, void* out_buf, size_t buf_size) = 0;
-  virtual void Free(uint64_t handle) = 0;
+  virtual void Free(uint64_t handle)                                   = 0;
   virtual const char* DirectPtr(uint64_t handle) const { return nullptr; }
   virtual size_t SlotCapacity(uint64_t handle) const = 0;
 
@@ -38,8 +38,8 @@ public:
       }
       const size_t cap = SlotCapacity(handles[i]);
       out_results[i].data.resize(cap);
-      const size_t actual =
-          Read(handles[i], out_results[i].data.data(), out_results[i].data.size());
+      const size_t actual = Read(
+          handles[i], out_results[i].data.data(), out_results[i].data.size());
       out_results[i].data.resize(actual);
     }
   }

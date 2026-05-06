@@ -71,9 +71,9 @@ protected:
   void SetUp() override {
     const char *idx_c, *val_c, *allocator_c;
     std::tie(idx_c, val_c, allocator_c) = GetParam();
-    index_type_                  = idx_c;
-    value_type_                  = val_c;
-    allocator_type_              = allocator_c;
+    index_type_                         = idx_c;
+    value_type_                         = val_c;
+    allocator_type_                     = allocator_c;
 
     const auto* test_info =
         ::testing::UnitTest::GetInstance()->current_test_info();
@@ -161,43 +161,43 @@ private:
               {"capacity", capacity},
               {"index", {{"type", index_type_}}},
               {"value",
-               {{"type", value_type_},
-                {"default_value_size_hint", value_sz}}}};
+               {{"type", value_type_}, {"default_value_size_hint", value_sz}}}};
     if (IsSsdIndex(index_type_)) {
-      j["index"]["io"] = {{"type", "IOURING"},
-                           {"file_path", test_dir_ + "/index_pages.db"},
-                           {"queue_depth", 512},
-                           {"base_offset_bytes", 0}};
+      j["index"]["io"] = {
+          {"type", "IOURING"},
+          {"file_path", test_dir_ + "/index_pages.db"},
+          {"queue_depth", 512},
+          {"base_offset_bytes", 0}};
     }
     if (value_type_ == "DRAM_VALUE_STORE") {
-      j["value"]["dram_allocator"] =
-          {{"type", allocator_type_},
-           {"capacity_bytes", capacity * static_cast<size_t>(value_sz)}};
+      j["value"]["dram_allocator"] = {
+          {"type", allocator_type_},
+          {"capacity_bytes", capacity * static_cast<size_t>(value_sz)}};
     } else if (value_type_ == "SSD_VALUE_STORE") {
-      j["value"]["ssd_allocator"] =
-          {{"type", "SSD_BUDDY"},
-           {"capacity_bytes", capacity * static_cast<size_t>(value_sz)},
-           {"min_block_size", 128},
-           {"max_block_size", 65536},
-           {"io",
-            {{"type", "IOURING"},
-             {"file_path", test_dir_ + "/value_pages.db"},
-             {"queue_depth", 512},
-             {"base_offset_bytes", 4096}}}};
+      j["value"]["ssd_allocator"] = {
+          {"type", "SSD_BUDDY"},
+          {"capacity_bytes", capacity * static_cast<size_t>(value_sz)},
+          {"min_block_size", 128},
+          {"max_block_size", 65536},
+          {"io",
+           {{"type", "IOURING"},
+            {"file_path", test_dir_ + "/value_pages.db"},
+            {"queue_depth", 512},
+            {"base_offset_bytes", 4096}}}};
     } else if (value_type_ == "TIERED_VALUE_STORE") {
-      j["value"]["dram_allocator"] =
-          {{"type", allocator_type_},
-           {"capacity_bytes", capacity * static_cast<size_t>(value_sz) / 2}};
-      j["value"]["ssd_allocator"] =
-          {{"type", "SSD_BUDDY"},
-           {"capacity_bytes", capacity * static_cast<size_t>(value_sz)},
-           {"min_block_size", 128},
-           {"max_block_size", 65536},
-           {"io",
-            {{"type", "IOURING"},
-             {"file_path", test_dir_ + "/tiered_value_pages.db"},
-             {"queue_depth", 512},
-             {"base_offset_bytes", 4096}}}};
+      j["value"]["dram_allocator"] = {
+          {"type", allocator_type_},
+          {"capacity_bytes", capacity * static_cast<size_t>(value_sz) / 2}};
+      j["value"]["ssd_allocator"] = {
+          {"type", "SSD_BUDDY"},
+          {"capacity_bytes", capacity * static_cast<size_t>(value_sz)},
+          {"min_block_size", 128},
+          {"max_block_size", 65536},
+          {"io",
+           {{"type", "IOURING"},
+            {"file_path", test_dir_ + "/tiered_value_pages.db"},
+            {"queue_depth", 512},
+            {"base_offset_bytes", 4096}}}};
       j["value"]["tiering"] = {{"cache_policy", "LRU"}};
     }
     return j;
@@ -741,9 +741,8 @@ INSTANTIATE_TEST_SUITE_P(
                           "DRAM_PET_HASH",
                           "SSD",
                           "SSD_EXTENDIBLE_HASH"),
-        ::testing::Values("DRAM_VALUE_STORE",
-                          "SSD_VALUE_STORE",
-                          "TIERED_VALUE_STORE"),
+        ::testing::Values(
+            "DRAM_VALUE_STORE", "SSD_VALUE_STORE", "TIERED_VALUE_STORE"),
         ::testing::Values("PERSIST_LOOP_SLAB", "R2_SLAB")),
     [](const testing::TestParamInfo<KVEngineCartesianTest::ParamType>& info) {
       auto idx = std::get<0>(info.param);
