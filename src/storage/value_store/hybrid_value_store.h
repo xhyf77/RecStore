@@ -11,7 +11,7 @@
 class HybridValueStore : public ValueStore {
 public:
   explicit HybridValueStore(const BaseKVConfig& config)
-      : dram_store_(BuildDramConfig(config)), ssd_store_(config) {
+      : dram_store_(BuildDramConfig(config)), ssd_store_(BuildSsdConfig(config)) {
     const auto& v = config.json_config_.at("value");
     const auto& dram = v.at("dram_allocator");
     dram_capacity_bytes_ = dram.at("capacity_bytes").get<uint64_t>();
@@ -138,7 +138,27 @@ private:
     }
     json value = j.at("value");
     value["type"] = "DRAM_VALUE_STORE";
+    if (value.at("dram_allocator").contains("path")) {
+      value["path"] = value.at("dram_allocator").at("path");
+    }
     value.erase("ssd_allocator");
+    value.erase("tiering");
+    j["value"] = value;
+    return out;
+  }
+
+  static BaseKVConfig BuildSsdConfig(const BaseKVConfig& config) {
+    BaseKVConfig out = config;
+    auto& j = out.json_config_;
+    if (!j.contains("value") || !j.at("value").contains("ssd_allocator")) {
+      return out;
+    }
+    json value = j.at("value");
+    value["type"] = "SSD_VALUE_STORE";
+    if (value.at("ssd_allocator").contains("path")) {
+      value["path"] = value.at("ssd_allocator").at("path");
+    }
+    value.erase("dram_allocator");
     value.erase("tiering");
     j["value"] = value;
     return out;

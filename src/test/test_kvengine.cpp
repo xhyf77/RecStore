@@ -83,7 +83,7 @@ protected:
                    << value_type_ << "," << allocator_type_ << ")";
     }
 
-    test_dir_ = "/tmp/test_kv_engine_cartesian_" + std::to_string(getpid()) +
+    test_dir_ = "/dev/shm/test_kv_engine_cartesian_" + std::to_string(getpid()) +
                 "_" + index_type_ + "_" + value_type_ + "_" + allocator_type_;
     std::filesystem::create_directories(test_dir_);
 
@@ -157,19 +157,19 @@ private:
   }
 
   json BuildConfig(size_t capacity, int value_sz) const {
-    json j = {{"path", test_dir_},
-              {"capacity", capacity},
+    json j = {{"capacity", capacity},
               {"index", {{"type", index_type_}}},
               {"value",
                {{"type", value_type_},
                 {"default_value_size_hint", value_sz}}}};
     if (IsSsdIndex(index_type_)) {
+      j["index"]["path"] = test_dir_ + "/index_pages.db";
       j["index"]["io"] = {{"type", "IOURING"},
-                           {"file_path", test_dir_ + "/index_pages.db"},
                            {"queue_depth", 512},
                            {"base_offset_bytes", 0}};
     }
     if (value_type_ == "DRAM_VALUE_STORE") {
+      j["value"]["path"] = test_dir_ + "/value";
       j["value"]["dram_allocator"] =
           {{"type", allocator_type_},
            {"capacity_bytes", capacity * static_cast<size_t>(value_sz)}};
@@ -181,21 +181,22 @@ private:
            {"max_block_size", 65536},
            {"io",
             {{"type", "IOURING"},
-             {"file_path", test_dir_ + "/value_pages.db"},
              {"queue_depth", 512},
              {"base_offset_bytes", 4096}}}};
+      j["value"]["path"] = test_dir_ + "/value_pages.db";
     } else if (value_type_ == "TIERED_VALUE_STORE") {
       j["value"]["dram_allocator"] =
           {{"type", allocator_type_},
-           {"capacity_bytes", capacity * static_cast<size_t>(value_sz) / 2}};
+           {"capacity_bytes", capacity * static_cast<size_t>(value_sz) / 2},
+           {"path", test_dir_ + "/dram"}};
       j["value"]["ssd_allocator"] =
           {{"type", "SSD_BUDDY"},
            {"capacity_bytes", capacity * static_cast<size_t>(value_sz)},
            {"min_block_size", 128},
            {"max_block_size", 65536},
+           {"path", test_dir_ + "/tiered_value_pages.db"},
            {"io",
             {{"type", "IOURING"},
-             {"file_path", test_dir_ + "/tiered_value_pages.db"},
              {"queue_depth", 512},
              {"base_offset_bytes", 4096}}}};
       j["value"]["tiering"] = {{"cache_policy", "LRU"}};
@@ -758,18 +759,18 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST(KVEngineNestedConfigTest, DramIndexDramValueSmoke) {
   const std::string test_dir =
-      "/tmp/test_kv_engine_nested_" + std::to_string(getpid());
+      "/dev/shm/test_kv_engine_nested_" + std::to_string(getpid());
   std::filesystem::remove_all(test_dir);
   std::filesystem::create_directories(test_dir);
 
   BaseKVConfig cfg;
   cfg.num_threads_ = 4;
   cfg.json_config_ = {
-      {"path", test_dir},
       {"capacity", 1024},
       {"index", {{"type", "DRAM_UNORDERED_MAP"}}},
       {"value",
        {{"type", "DRAM_VALUE_STORE"},
+        {"path", test_dir + "/value"},
         {"default_value_size_hint", 128},
         {"dram_allocator",
          {{"type", "PERSIST_LOOP_SLAB"}, {"capacity_bytes", 1024 * 128}}}}}};
@@ -796,4 +797,82 @@ TEST(KVEngineNestedConfigTest, DramIndexDramValueSmoke) {
 
   kv.reset();
   std::filesystem::remove_all(test_dir);
+}
+
+TEST(KVEngineResolveEnginePathPolicyTest, DramValueStoreAllowsAnonymousPath) {
+  BaseKVConfig cfg;
+  cfg.json_config_ = {
+      {"capacity", 1024},
+      {"index", {{"type", "DRAM_EXTENDIBLE_HASH"}}},
+      {"value",
+       {{"type", "DRAM_VALUE_STORE"},
+        {"path", ""},
+        {"default_value_size_hint", 128},
+        {"dram_allocator",
+         {{"type", "PERSIST_LOOP_SLAB"}, {"capacity_bytes", 1024 * 128}}}}}};
+
+  EXPECT_NO_THROW({
+    auto resolved = base::ResolveEngine(cfg);
+    EXPECT_EQ(resolved.engine, "KVEngine");
+  });
+}
+
+TEST(KVEngineResolveEnginePathPolicyTest, DramValueStoreRejectsNonDevShmPath) {
+  BaseKVConfig cfg;
+  cfg.json_config_ = {
+      {"capacity", 1024},
+      {"index", {{"type", "DRAM_EXTENDIBLE_HASH"}}},
+      {"value",
+       {{"type", "DRAM_VALUE_STORE"},
+        {"path", "/tmp/kv/value"},
+        {"default_value_size_hint", 128},
+        {"dram_allocator",
+         {{"type", "PERSIST_LOOP_SLAB"}, {"capacity_bytes", 1024 * 128}}}}}};
+
+  EXPECT_THROW(base::ResolveEngine(cfg), std::invalid_argument);
+}
+
+TEST(KVEngineResolveEnginePathPolicyTest, DramValueStoreAcceptsDevShmPath) {
+  BaseKVConfig cfg;
+  cfg.json_config_ = {
+      {"capacity", 1024},
+      {"index", {{"type", "DRAM_EXTENDIBLE_HASH"}}},
+      {"value",
+       {{"type", "DRAM_VALUE_STORE"},
+        {"path", "/dev/shm/kv/value"},
+        {"default_value_size_hint", 128},
+        {"dram_allocator",
+         {{"type", "PERSIST_LOOP_SLAB"}, {"capacity_bytes", 1024 * 128}}}}}};
+
+  EXPECT_NO_THROW({
+    auto resolved = base::ResolveEngine(cfg);
+    EXPECT_EQ(resolved.engine, "KVEngine");
+  });
+}
+
+TEST(KVEngineResolveEnginePathPolicyTest,
+     TieredValueStoreRejectsNonDevShmDramAllocatorPath) {
+  BaseKVConfig cfg;
+  cfg.json_config_ = {
+      {"capacity", 1024},
+      {"index", {{"type", "DRAM_EXTENDIBLE_HASH"}}},
+      {"value",
+       {{"type", "TIERED_VALUE_STORE"},
+        {"default_value_size_hint", 128},
+        {"dram_allocator",
+         {{"type", "PERSIST_LOOP_SLAB"},
+          {"capacity_bytes", 1024 * 64},
+          {"path", "/tmp/kv/dram"}}},
+        {"ssd_allocator",
+         {{"type", "SSD_BUDDY"},
+          {"capacity_bytes", 1024 * 128},
+          {"min_block_size", 128},
+          {"max_block_size", 4096},
+          {"path", "/mnt/nvme5n1_recstore/kv/ssd.db"},
+          {"io",
+           {{"type", "IOURING"},
+            {"queue_depth", 512},
+            {"base_offset_bytes", 4096}}}}}}}};
+
+  EXPECT_THROW(base::ResolveEngine(cfg), std::invalid_argument);
 }

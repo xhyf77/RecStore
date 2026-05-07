@@ -13,12 +13,16 @@ class DramValueStore : public ValueStore {
 public:
   explicit DramValueStore(const BaseKVConfig& config) {
     const auto& j = config.json_config_;
-    const std::string path = j.at("path").get<std::string>() + "/value";
     if (!j.contains("value") || !j.at("value").contains("dram_allocator")) {
       throw std::invalid_argument(
           "DramValueStore requires value.dram_allocator");
     }
-    const auto& dram = j.at("value").at("dram_allocator");
+    const auto& value = j.at("value");
+    if (!value.contains("path") || value.at("path").get<std::string>().empty()) {
+      throw std::invalid_argument("DramValueStore requires non-empty value.path");
+    }
+    const std::string path = value.at("path").get<std::string>();
+    const auto& dram = value.at("dram_allocator");
     const std::string allocator_type = dram.value("type", "PERSIST_LOOP_SLAB");
     const uint64_t capacity_bytes = dram.at("capacity_bytes").get<uint64_t>();
     using MF = base::

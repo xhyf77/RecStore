@@ -196,7 +196,7 @@ private:
     }
     Value_t new_handle = value_store_->AllocAndWrite(data, size);
     if (new_handle == kValueHandleNone) {
-      LOG(ERROR) << "KVEngine value allocation failed, key=" << key
+      LOG(FATAL) << "KVEngine value allocation failed, key=" << key
                  << " size=" << size;
       return;
     }

@@ -22,7 +22,7 @@ protected:
 
     IndexConfig cfg;
     cfg.json_config_         = nlohmann::json::object();
-    cfg.json_config_["path"] = tmp_dir_.string();
+    cfg.json_config_["index"] = {{"path", tmp_dir_.string()}};
 
     index_ = std::make_unique<ExtendibleHashSSD>(cfg);
     ASSERT_NE(index_, nullptr)

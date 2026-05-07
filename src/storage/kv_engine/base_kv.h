@@ -19,11 +19,11 @@ struct BaseKVConfig {
 /*
 KVEngine uses the nested configuration format:
 {
-  "path": "/tmp/recstore",
   "capacity": 1000000,
   "index": {"type": "DRAM_EXTENDIBLE_HASH"},
   "value": {
     "type": "DRAM_VALUE_STORE",
+    "path": "/tmp/recstore/value",
     "default_value_size_hint": 128,
     "dram_allocator": {
       "type": "PERSIST_LOOP_SLAB",
@@ -32,9 +32,10 @@ KVEngine uses the nested configuration format:
   }
 }
 
-ResolveEngine returns "KVEngine" for every valid configuration. Legacy top-level
-fields such as index_type, value_type, allocator_type, value_memory_management,
-io_backend_type, value_size, and engine_type are rejected.
+ResolveEngine returns "KVEngine" for every valid configuration. Legacy fields
+such as top-level path/index_type/value_type and nested file_path are rejected.
+SSD index uses index.path, single-layer value stores use value.path, and TIERED
+value stores use value.dram_allocator.path/value.ssd_allocator.path.
 */
 
 class BaseKV {
