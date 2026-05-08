@@ -130,7 +130,9 @@ using HpsBackend = HugeCTR::DatabaseBackendBase<long long>;
 
 const std::string& EffectiveTableName() {
   static const std::string kRocksDbDefaultTable = "default";
-  return FLAGS_backend == "hps_rocksdb" ? kRocksDbDefaultTable : FLAGS_table_name;
+  return FLAGS_backend == "hps_rocksdb"
+           ? kRocksDbDefaultTable
+           : FLAGS_table_name;
 }
 
 std::unique_ptr<HpsBackend> CreateBackend() {
@@ -146,8 +148,9 @@ std::unique_ptr<HpsBackend> CreateBackend() {
     params.path           = FLAGS_path;
     params.max_batch_size = static_cast<size_t>(FLAGS_batch_size);
     const int rocksdb_threads =
-        FLAGS_hps_rocksdb_thread_num > 0 ? FLAGS_hps_rocksdb_thread_num
-                                         : FLAGS_thread_num;
+        FLAGS_hps_rocksdb_thread_num > 0
+            ? FLAGS_hps_rocksdb_thread_num
+            : FLAGS_thread_num;
     params.num_threads = static_cast<size_t>(std::max(1, rocksdb_threads));
     return std::make_unique<HugeCTR::RocksDBBackend<long long>>(params);
   }
@@ -204,12 +207,13 @@ PhaseStats LoadRecords(HpsBackend* backend, int load_threads) {
                keys.size() < static_cast<size_t>(FLAGS_batch_size)) {
           keys.push_back(static_cast<long long>(key++));
         }
-        backend->insert(EffectiveTableName(),
-                        keys.size(),
-                        keys.data(),
-                        values.data(),
-                        static_cast<uint32_t>(FLAGS_value_size),
-                        static_cast<size_t>(FLAGS_value_size));
+        backend->insert(
+            EffectiveTableName(),
+            keys.size(),
+            keys.data(),
+            values.data(),
+            static_cast<uint32_t>(FLAGS_value_size),
+            static_cast<size_t>(FLAGS_value_size));
         ++local.batches;
         local.key_ops += keys.size();
       }
@@ -237,18 +241,19 @@ void PrepareBackendForLoad(HpsBackend* backend) {
   const long long key = 1;
   std::vector<char> value =
       MakeValues(1, static_cast<size_t>(FLAGS_value_size), 0);
-  backend->insert(EffectiveTableName(),
-                  1,
-                  &key,
-                  value.data(),
-                  static_cast<uint32_t>(FLAGS_value_size),
-                  static_cast<size_t>(FLAGS_value_size));
+  backend->insert(
+      EffectiveTableName(),
+      1,
+      &key,
+      value.data(),
+      static_cast<uint32_t>(FLAGS_value_size),
+      static_cast<size_t>(FLAGS_value_size));
 }
 
 PhaseStats RunTransactions(HpsBackend* backend) {
-  const bool fetch_only  = FLAGS_mode == "fetch";
-  const bool insert_only = FLAGS_mode == "insert";
-  const bool mixed       = FLAGS_mode == "mixed";
+  const bool fetch_only   = FLAGS_mode == "fetch";
+  const bool insert_only  = FLAGS_mode == "insert";
+  const bool mixed        = FLAGS_mode == "mixed";
   const bool fetch_insert = FLAGS_mode == "fetch_insert";
   if (!fetch_only && !insert_only && !mixed && !fetch_insert) {
     throw std::invalid_argument("mode must be fetch|insert|mixed|fetch_insert");
@@ -281,25 +286,28 @@ PhaseStats RunTransactions(HpsBackend* backend) {
         }
         const bool do_fetch =
             fetch_only || fetch_insert ||
-            (mixed && static_cast<int>(key_gen.NextUint(100)) < FLAGS_read_ratio);
+            (mixed &&
+             static_cast<int>(key_gen.NextUint(100)) < FLAGS_read_ratio);
         if (do_fetch) {
           size_t misses = 0;
-          backend->fetch(EffectiveTableName(),
-                         keys.size(),
-                         keys.data(),
-                         out.data(),
-                         static_cast<size_t>(FLAGS_value_size),
-                         [&](size_t) { ++misses; },
-                         std::chrono::nanoseconds::zero());
+          backend->fetch(
+              EffectiveTableName(),
+              keys.size(),
+              keys.data(),
+              out.data(),
+              static_cast<size_t>(FLAGS_value_size),
+              [&](size_t) { ++misses; },
+              std::chrono::nanoseconds::zero());
           local.misses += misses;
         }
         if (insert_only || fetch_insert || (mixed && !do_fetch)) {
-          backend->insert(EffectiveTableName(),
-                          keys.size(),
-                          keys.data(),
-                          values.data(),
-                          static_cast<uint32_t>(FLAGS_value_size),
-                          static_cast<size_t>(FLAGS_value_size));
+          backend->insert(
+              EffectiveTableName(),
+              keys.size(),
+              keys.data(),
+              values.data(),
+              static_cast<uint32_t>(FLAGS_value_size),
+              static_cast<size_t>(FLAGS_value_size));
         }
         ++local.batches;
         local.key_ops += keys.size();
