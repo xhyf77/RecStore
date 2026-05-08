@@ -103,7 +103,7 @@ protected:
 
     auto r       = base::ResolveEngine(cfg_);
     engine_name_ = r.engine;
-    ASSERT_EQ(engine_name_, std::string("KVEngine"))
+    ASSERT_EQ(engine_name_, std::string("KVEngineComposite"))
         << "selector derived mismatch for (" << index_type_ << ","
         << value_type_ << "," << allocator_type_ << ")";
 
@@ -776,7 +776,7 @@ TEST(KVEngineNestedConfigTest, DramIndexDramValueSmoke) {
          {{"type", "PERSIST_LOOP_SLAB"}, {"capacity_bytes", 1024 * 128}}}}}};
 
   auto resolved = base::ResolveEngine(cfg);
-  ASSERT_EQ(resolved.engine, "KVEngine");
+  ASSERT_EQ(resolved.engine, "KVEngineComposite");
   std::unique_ptr<BaseKV> kv(
       base::Factory<BaseKV, const BaseKVConfig&>::NewInstance(
           resolved.engine, resolved.cfg));
@@ -813,7 +813,7 @@ TEST(KVEngineResolveEnginePathPolicyTest, DramValueStoreAllowsAnonymousPath) {
 
   EXPECT_NO_THROW({
     auto resolved = base::ResolveEngine(cfg);
-    EXPECT_EQ(resolved.engine, "KVEngine");
+    EXPECT_EQ(resolved.engine, "KVEngineComposite");
   });
 }
 
@@ -846,7 +846,7 @@ TEST(KVEngineResolveEnginePathPolicyTest, DramValueStoreAcceptsDevShmPath) {
 
   EXPECT_NO_THROW({
     auto resolved = base::ResolveEngine(cfg);
-    EXPECT_EQ(resolved.engine, "KVEngine");
+    EXPECT_EQ(resolved.engine, "KVEngineComposite");
   });
 }
 

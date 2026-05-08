@@ -42,17 +42,18 @@ KVENGINE_ALIASES: dict[str, EngineSpec] = {
     # "dram_map_dram": EngineSpec("DRAM_UNORDERED_MAP", "DRAM_VALUE_STORE"),
     "dram_pet_dram": EngineSpec("DRAM_PET_HASH", "DRAM_VALUE_STORE"),
     "dram_eh_ssd": EngineSpec("DRAM_EXTENDIBLE_HASH", "SSD_VALUE_STORE"),
+    "dram_pet_ssd": EngineSpec("DRAM_PET_HASH", "SSD_VALUE_STORE"),
     "dram_eh_tiered": EngineSpec("DRAM_EXTENDIBLE_HASH", "TIERED_VALUE_STORE"),
     # "ssd_eh_ssd": EngineSpec("SSD_EXTENDIBLE_HASH", "SSD_VALUE_STORE"),
     # Run specific engine implementations directly.
     "KVEngineExtendibleHash": EngineSpec(
-        "None",
-        "None",
+        "DRAM_EXTENDIBLE_HASH",
+        "DRAM_VALUE_STORE",
         "KVEngineExtendibleHash",
     ),
     "KVEngineCCEH": EngineSpec(
-        "None",
-        "None",
+        "SSD_EXTENDIBLE_HASH",
+        "SSD_VALUE_STORE",
         "KVEngineCCEH",
     ),
 }
@@ -106,7 +107,7 @@ def parse_args() -> argparse.Namespace:
         help="Run one or more distributions in one command.",
     )
     parser.add_argument("--zipfian-alpha", type=float, default=0.9)
-    parser.add_argument("--record-count", type=int, default=100_000)
+    parser.add_argument("--record-count", type=int, default=10*1_000_000)
     parser.add_argument(
         "--operation-count",
         type=int,
@@ -118,13 +119,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--load-threads", type=int, default=0)
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--value-size", type=int, default=128)
-    parser.add_argument("--read-mode", choices=["exists", "get"], default="exists")
+    parser.add_argument("--read-mode", choices=["exists", "get"], default="get")
     parser.add_argument("--dram-allocator", default="PERSIST_LOOP_SLAB")
     parser.add_argument("--ssd-io-backend", default="IOURING")
     parser.add_argument("--ssd-queue-depth", type=int, default=512)
     parser.add_argument("--dram-capacity-bytes", type=int, default=0)
     parser.add_argument("--ssd-capacity-bytes", type=int, default=0)
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True, default="../../results/ycsb_kvengine")
     parser.add_argument("--keep-data", action="store_true")
     parser.add_argument("--skip-load", action="store_true")
     parser.add_argument("--skip-run", action="store_true")

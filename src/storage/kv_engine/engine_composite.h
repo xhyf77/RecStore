@@ -17,17 +17,17 @@
 #include "storage/value_store/hybrid_value_store.h"
 #include "storage/value_store/ssd_value_store.h"
 
-class KVEngine : public BaseKV {
+class KVEngineComposite : public BaseKV {
 public:
-  KVEngine(std::unique_ptr<Index> index,
-           std::unique_ptr<ValueStore> value_store,
-           int num_threads = 0)
+  KVEngineComposite(std::unique_ptr<Index> index,
+                    std::unique_ptr<ValueStore> value_store,
+                    int num_threads = 0)
       : BaseKV(BaseKVConfig{}),
         index_(std::move(index)),
         value_store_(std::move(value_store)),
         num_threads_(num_threads) {}
 
-  explicit KVEngine(const BaseKVConfig& config) : BaseKV(config) {
+  explicit KVEngineComposite(const BaseKVConfig& config) : BaseKV(config) {
     config_ = config;
     const auto& j = config.json_config_;
     const std::string index_type = j.at("index").at("type").get<std::string>();
@@ -218,4 +218,4 @@ private:
   std::array<std::shared_mutex, kLockStripeNum> key_mutexes_;
 };
 
-FACTORY_REGISTER(BaseKV, KVEngine, KVEngine, const BaseKVConfig&);
+FACTORY_REGISTER(BaseKV, KVEngineComposite, KVEngineComposite, const BaseKVConfig&);

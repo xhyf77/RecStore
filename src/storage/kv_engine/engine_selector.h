@@ -172,7 +172,7 @@ inline EngineResolved ResolveEngine(BaseKVConfig cfg) {
     }
   }
 
-  return EngineResolved{"KVEngine", std::move(cfg)};
+  return EngineResolved{"KVEngineComposite", std::move(cfg)};
 }
 
 } // namespace base
