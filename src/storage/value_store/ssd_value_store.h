@@ -91,6 +91,19 @@ public:
     return allocator_->SlotCapacity(handle);
   }
 
+  void BatchWrite(const std::vector<uint64_t>& handles,
+                  const std::vector<WriteSpec>& specs) override {
+    if (handles.size() != specs.size()) {
+      throw std::invalid_argument("SsdValueStore::BatchWrite size mismatch");
+    }
+    for (size_t i = 0; i < handles.size(); ++i) {
+      if (handles[i] == kValueHandleNone) {
+        continue;
+      }
+      allocator_->Write(handles[i], specs[i].data, specs[i].size);
+    }
+  }
+
   void BatchRead(const std::vector<uint64_t>& handles,
                  std::vector<ReadResult>& out_results) override {
     out_results.resize(handles.size());

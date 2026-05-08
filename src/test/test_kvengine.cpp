@@ -328,6 +328,88 @@ TEST_P(KVEngineCartesianTest, BatchGetMixedKeys) {
   EXPECT_EQ(batch_values[5].Size(), 0); // key 6 doesn't exist
 }
 
+TEST_P(KVEngineCartesianTest, BatchPutMixedOverwriteAndRealloc) {
+  const std::vector<uint64_t> keys = {7001, 7002, 7003, 7004};
+  std::vector<std::vector<float>> initial_values(keys.size(),
+                                                 std::vector<float>(16, 1.0f));
+  std::vector<base::ConstArray<float>> initial_slices;
+  initial_slices.reserve(keys.size());
+  for (size_t i = 0; i < keys.size(); ++i) {
+    for (size_t j = 0; j < initial_values[i].size(); ++j) {
+      initial_values[i][j] = static_cast<float>(i * 10 + j);
+    }
+    initial_slices.emplace_back(initial_values[i].data(),
+                                static_cast<int>(initial_values[i].size()));
+  }
+  kv_engine_->BatchPut(base::ConstArray<uint64_t>(keys.data(), keys.size()),
+                       &initial_slices,
+                       0);
+
+  std::vector<std::vector<float>> updated_values(keys.size());
+  updated_values[0].resize(16); // overwrite path
+  updated_values[1].resize(48); // realloc path
+  updated_values[2].resize(16); // overwrite path
+  updated_values[3].resize(64); // realloc path
+  for (size_t i = 0; i < updated_values.size(); ++i) {
+    for (size_t j = 0; j < updated_values[i].size(); ++j) {
+      updated_values[i][j] = static_cast<float>(1000 + i * 100 + j);
+    }
+  }
+  std::vector<base::ConstArray<float>> updated_slices;
+  updated_slices.reserve(keys.size());
+  for (size_t i = 0; i < updated_values.size(); ++i) {
+    updated_slices.emplace_back(updated_values[i].data(),
+                                static_cast<int>(updated_values[i].size()));
+  }
+  kv_engine_->BatchPut(base::ConstArray<uint64_t>(keys.data(), keys.size()),
+                       &updated_slices,
+                       0);
+
+  std::vector<base::ConstArray<float>> out_values;
+  kv_engine_->BatchGet(base::ConstArray<uint64_t>(keys.data(), keys.size()),
+                       &out_values,
+                       0);
+  ASSERT_EQ(out_values.size(), keys.size());
+  for (size_t i = 0; i < keys.size(); ++i) {
+    ASSERT_EQ(out_values[i].Size(), static_cast<int>(updated_values[i].size()));
+    for (int j = 0; j < out_values[i].Size(); ++j) {
+      EXPECT_FLOAT_EQ(out_values[i][j], updated_values[i][j])
+          << "key=" << keys[i] << " idx=" << j;
+    }
+  }
+}
+
+TEST_P(KVEngineCartesianTest, BatchGetRepeatedKeysKeepsConsistentValues) {
+  std::vector<uint64_t> put_keys = {8101, 8102};
+  std::vector<std::vector<float>> put_values_data = {
+      std::vector<float>(32, 0.0f), std::vector<float>(32, 0.0f)};
+  for (int i = 0; i < 32; ++i) {
+    put_values_data[0][i] = static_cast<float>(i + 1);
+    put_values_data[1][i] = static_cast<float>(200 + i);
+  }
+  std::vector<base::ConstArray<float>> put_values = {
+      base::ConstArray<float>(put_values_data[0].data(), put_values_data[0].size()),
+      base::ConstArray<float>(put_values_data[1].data(), put_values_data[1].size())};
+  kv_engine_->BatchPut(
+      base::ConstArray<uint64_t>(put_keys.data(), put_keys.size()), &put_values, 0);
+
+  std::vector<uint64_t> get_keys = {8102, 8101, 8102, 8101, 8101};
+  std::vector<base::ConstArray<float>> out_values;
+  kv_engine_->BatchGet(
+      base::ConstArray<uint64_t>(get_keys.data(), get_keys.size()), &out_values, 0);
+  ASSERT_EQ(out_values.size(), get_keys.size());
+
+  for (size_t i = 0; i < get_keys.size(); ++i) {
+    const auto& expected =
+        (get_keys[i] == 8101) ? put_values_data[0] : put_values_data[1];
+    ASSERT_EQ(out_values[i].Size(), static_cast<int>(expected.size()));
+    for (int j = 0; j < out_values[i].Size(); ++j) {
+      EXPECT_FLOAT_EQ(out_values[i][j], expected[j])
+          << "key=" << get_keys[i] << " idx=" << j;
+    }
+  }
+}
+
 TEST_P(KVEngineCartesianTest, BoundaryValues) {
   uint64_t key1           = 1;
   std::string empty_value = CreateFixedLengthValue("");

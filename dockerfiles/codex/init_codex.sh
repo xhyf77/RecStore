@@ -27,4 +27,10 @@ ln -sfn /app/RecStore/dockerfiles/codex/.hapi ~/.hapi
 
 npm install -g @twsxtd/hapi --registry=https://registry.npmjs.org
 
-HAPI_LISTEN_HOST=10.0.2.196 hapi hub --relay
+# HAPI_LISTEN_HOST=10.0.2.196 hapi hub --relay
+
+
+git config --global user.name "Minhui Xie"
+git config --global user.email "645214784@qq.com"
+
+cp -r /app/RecStore/dockerfiles/codex/.claude ~/.claude

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 
 #include "base/factory.h"
 #include "storage/value_store/dram_value_store.h"
@@ -95,6 +96,39 @@ public:
       return ssd_store_.SlotCapacity(SsdRawHandle(handle));
     }
     return dram_store_.SlotCapacity(DramRawHandle(handle));
+  }
+
+  void BatchWrite(const std::vector<uint64_t>& handles,
+                  const std::vector<WriteSpec>& specs) override {
+    if (handles.size() != specs.size()) {
+      throw std::invalid_argument("HybridValueStore::BatchWrite size mismatch");
+    }
+    std::vector<uint64_t> dram_handles;
+    std::vector<WriteSpec> dram_specs;
+    std::vector<uint64_t> ssd_handles;
+    std::vector<WriteSpec> ssd_specs;
+    dram_handles.reserve(handles.size());
+    dram_specs.reserve(handles.size());
+    ssd_handles.reserve(handles.size());
+    ssd_specs.reserve(handles.size());
+    for (size_t i = 0; i < handles.size(); ++i) {
+      if (handles[i] == kValueHandleNone) {
+        continue;
+      }
+      if (IsOnSSD(handles[i])) {
+        ssd_handles.push_back(SsdRawHandle(handles[i]));
+        ssd_specs.push_back(specs[i]);
+      } else {
+        dram_handles.push_back(DramRawHandle(handles[i]));
+        dram_specs.push_back(specs[i]);
+      }
+    }
+    if (!dram_handles.empty()) {
+      dram_store_.BatchWrite(dram_handles, dram_specs);
+    }
+    if (!ssd_handles.empty()) {
+      ssd_store_.BatchWrite(ssd_handles, ssd_specs);
+    }
   }
 
   std::string GetInfo() const override {

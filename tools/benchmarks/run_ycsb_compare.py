@@ -17,6 +17,7 @@ ENGINE_LABELS = {
     "dram_eh_dram": "DRAM_EH+DRAM",
     "dram_map_dram": "DRAM_MAP+DRAM",
     "dram_pet_dram": "DRAM_PET+DRAM",
+    "dram_pet_ssd": "DRAM_PET+SSD",
     "dram_eh_ssd": "DRAM_EH+SSD",
     "dram_eh_tiered": "DRAM_EH+TIERED",
     "ssd_eh_ssd": "SSD_EH+SSD",
