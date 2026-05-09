@@ -69,6 +69,25 @@ void AppendShardSuffixIfPresent(
       config_node[key].get<std::string>() + "_" + std::to_string(shard_id);
 }
 
+void AppendShardSuffixToNestedFilePaths(nlohmann::json& node, int shard_id) {
+  if (node.is_object()) {
+    for (auto& item : node.items()) {
+      if (item.key() == "file_path" && item.value().is_string()) {
+        item.value() =
+            item.value().get<std::string>() + "_" + std::to_string(shard_id);
+        continue;
+      }
+      AppendShardSuffixToNestedFilePaths(item.value(), shard_id);
+    }
+    return;
+  }
+  if (node.is_array()) {
+    for (auto& item : node) {
+      AppendShardSuffixToNestedFilePaths(item, shard_id);
+    }
+  }
+}
+
 bool ExtractPayloadBytes(
     const brpc::Controller* cntl,
     const std::string& proto_bytes,
@@ -725,7 +744,8 @@ public:
               shard_config["base_kv_config"].is_object()) {
             auto& base_kv_config = shard_config["base_kv_config"];
             AppendShardSuffixIfPresent(base_kv_config, "path", shard);
-            AppendShardSuffixIfPresent(base_kv_config, "file_path", shard);
+            AppendShardSuffixIfPresent(base_kv_config, "rocksdb_path", shard);
+            AppendShardSuffixToNestedFilePaths(base_kv_config, shard);
             LOG(INFO) << "bRPC shard " << shard
                       << " using base_kv_config: " << base_kv_config.dump();
           }
