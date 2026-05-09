@@ -38,11 +38,6 @@ private:
   std::unique_ptr<ExtendibleHash> impl_;
 };
 
-FACTORY_REGISTER(Index,
-                 DRAM,
-                 DramExtendibleHashIndex,
-                 const BaseKVConfig&);
-FACTORY_REGISTER(Index,
-                 DRAM_EXTENDIBLE_HASH,
-                 DramExtendibleHashIndex,
-                 const BaseKVConfig&);
+FACTORY_REGISTER(Index, DRAM, DramExtendibleHashIndex, const BaseKVConfig&);
+FACTORY_REGISTER(
+    Index, DRAM_EXTENDIBLE_HASH, DramExtendibleHashIndex, const BaseKVConfig&);

@@ -93,16 +93,17 @@ bool ShmFile::InitializeDevDax(const std::string& filename, int64 size) {
 
 bool ShmFile::InitializeAnonymousDram(const std::string& filename, int64 size) {
   Clear();
-  data_ = reinterpret_cast<char*>(mmap(nullptr,
-                                       size,
-                                       PROT_READ | PROT_WRITE,
-                                       MAP_PRIVATE | MAP_ANONYMOUS,
-                                       -1,
-                                       0));
+  data_ = reinterpret_cast<char*>(mmap(
+      nullptr,
+      size,
+      PROT_READ | PROT_WRITE,
+      MAP_PRIVATE | MAP_ANONYMOUS,
+      -1,
+      0));
   CHECK_NE(data_, MAP_FAILED) << "anonymous DRAM mmap failed";
-  filename_ = filename;
-  size_ = size;
-  fd_ = -1;
+  filename_       = filename;
+  size_           = size;
+  fd_             = -1;
   anonymous_dram_ = true;
   LOG(INFO) << "ShmFile, anonymous DRAM mmap, filename:" << filename
             << ", size:" << size;
@@ -147,9 +148,9 @@ void ShmFile::ClearAnonymousDram() {
     LOG(INFO) << "ummap anonymous DRAM: " << filename_ << ", size: " << size_;
     munmap(data_, size_);
     filename_.clear();
-    data_ = NULL;
-    size_ = 0;
-    fd_ = -1;
+    data_           = NULL;
+    size_           = 0;
+    fd_             = -1;
     anonymous_dram_ = false;
   }
 }

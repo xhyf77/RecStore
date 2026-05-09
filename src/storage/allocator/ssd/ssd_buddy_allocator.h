@@ -44,7 +44,7 @@ public:
       return;
     }
     uint32_t data_size = 0;
-    uint32_t level = 0;
+    uint32_t level     = 0;
     ReadHeader(block_addr, data_size, level);
     std::lock_guard<std::mutex> lock(mu_);
     FreeAtLevel(block_addr, static_cast<int>(level));
@@ -58,13 +58,13 @@ public:
   size_t Read(uint64_t block_addr, void* out_buf, size_t buf_size) override {
     std::lock_guard<std::mutex> lock(io_mu_);
     uint32_t data_size = 0;
-    uint32_t level = 0;
+    uint32_t level     = 0;
     ReadHeaderUnlocked(block_addr, data_size, level);
     const uint64_t block_size = static_cast<uint64_t>(min_block_size_) << level;
-    const PageID_t start = BlockByteOffset(block_addr) / PAGE_SIZE;
-    const uint64_t page_off = BlockByteOffset(block_addr) % PAGE_SIZE;
+    const PageID_t start      = BlockByteOffset(block_addr) / PAGE_SIZE;
+    const uint64_t page_off   = BlockByteOffset(block_addr) % PAGE_SIZE;
     const uint64_t pages = (page_off + block_size + PAGE_SIZE - 1) / PAGE_SIZE;
-    char* buf = backend_->AllocateBuffer(pages);
+    char* buf            = backend_->AllocateBuffer(pages);
     backend_->BatchReadPages({{start, buf, pages}});
     const size_t actual = std::min(buf_size, static_cast<size_t>(data_size));
     std::memcpy(out_buf, buf + page_off + kHeaderSize, actual);
@@ -86,7 +86,7 @@ public:
     }
     std::lock_guard<std::mutex> lock(io_mu_);
     uint32_t data_size = 0;
-    uint32_t level = 0;
+    uint32_t level     = 0;
     const_cast<SsdBuddyAllocator*>(this)->ReadHeaderUnlocked(
         block_addr, data_size, level);
     return (static_cast<uint64_t>(min_block_size_) << level) - kHeaderSize;
@@ -125,7 +125,7 @@ private:
   void FreeAtLevel(uint64_t block, int level) {
     while (level + 1 < num_levels_) {
       const uint64_t buddy = block ^ (uint64_t{1} << level);
-      auto it = free_lists_[level].find(buddy);
+      auto it              = free_lists_[level].find(buddy);
       if (it == free_lists_[level].end()) {
         break;
       }
@@ -140,17 +140,15 @@ private:
     return base_byte_offset_ + block_addr * min_block_size_;
   }
 
-  void WriteWithLevel(uint64_t block_addr,
-                      int level,
-                      const void* data,
-                      size_t data_size) {
+  void WriteWithLevel(
+      uint64_t block_addr, int level, const void* data, size_t data_size) {
     std::lock_guard<std::mutex> lock(io_mu_);
     const uint64_t block_size = static_cast<uint64_t>(min_block_size_) << level;
     const uint64_t byte_offset = BlockByteOffset(block_addr);
-    const PageID_t start = byte_offset / PAGE_SIZE;
-    const uint64_t page_off = byte_offset % PAGE_SIZE;
+    const PageID_t start       = byte_offset / PAGE_SIZE;
+    const uint64_t page_off    = byte_offset % PAGE_SIZE;
     const uint64_t pages = (page_off + block_size + PAGE_SIZE - 1) / PAGE_SIZE;
-    char* buf = backend_->AllocateBuffer(pages);
+    char* buf            = backend_->AllocateBuffer(pages);
     backend_->BatchReadPages({{start, buf, pages}});
     const uint32_t n = static_cast<uint32_t>(data_size);
     const uint32_t l = static_cast<uint32_t>(level);
@@ -166,13 +164,12 @@ private:
     ReadHeaderUnlocked(block_addr, data_size, level);
   }
 
-  void ReadHeaderUnlocked(uint64_t block_addr,
-                          uint32_t& data_size,
-                          uint32_t& level) {
+  void ReadHeaderUnlocked(
+      uint64_t block_addr, uint32_t& data_size, uint32_t& level) {
     const uint64_t byte_offset = BlockByteOffset(block_addr);
-    const PageID_t start = byte_offset / PAGE_SIZE;
-    const uint64_t page_off = byte_offset % PAGE_SIZE;
-    char* buf = backend_->AllocateBuffer();
+    const PageID_t start       = byte_offset / PAGE_SIZE;
+    const uint64_t page_off    = byte_offset % PAGE_SIZE;
+    char* buf                  = backend_->AllocateBuffer();
     backend_->ReadPage(start, buf);
     std::memcpy(&data_size, buf + page_off, sizeof(data_size));
     std::memcpy(&level, buf + page_off + sizeof(data_size), sizeof(level));
@@ -189,11 +186,12 @@ private:
   std::vector<std::unordered_set<uint64_t>> free_lists_;
 };
 
-FACTORY_REGISTER(SsdBlockAllocator,
-                 SSD_BUDDY,
-                 SsdBuddyAllocator,
-                 IOBackend*,
-                 int,
-                 int,
-                 uint64_t,
-                 uint64_t);
+FACTORY_REGISTER(
+    SsdBlockAllocator,
+    SSD_BUDDY,
+    SsdBuddyAllocator,
+    IOBackend*,
+    int,
+    int,
+    uint64_t,
+    uint64_t);
