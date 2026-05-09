@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-BENCHMARK_BIN = ROOT / "build/bin/hps_backend_benchmark"
+BENCHMARK_BIN = ROOT / "build/bin/backend_benchmark"
 
 
 @dataclass(frozen=True)
@@ -24,8 +24,11 @@ BACKEND_ALIASES: dict[str, BackendSpec] = {
     "hps_hash_map": BackendSpec("hps_hash_map", "", ""),
     "hps_rocksdb": BackendSpec("hps_rocksdb", "", ""),
     "dram_eh_dram": BackendSpec("recstore", "DRAM_EXTENDIBLE_HASH", "DRAM_VALUE_STORE"),
+    "dram_eh_ssd": BackendSpec("recstore", "DRAM_EXTENDIBLE_HASH", "SSD_VALUE_STORE"),
+    "dram_eh_tiered": BackendSpec("recstore", "DRAM_EXTENDIBLE_HASH", "TIERED_VALUE_STORE"),
     "dram_map_dram": BackendSpec("recstore", "DRAM_UNORDERED_MAP", "DRAM_VALUE_STORE"),
     "dram_pet_dram": BackendSpec("recstore", "DRAM_PET_HASH", "DRAM_VALUE_STORE"),
+    "dram_pet_ssd": BackendSpec("recstore", "DRAM_PET_HASH", "SSD_VALUE_STORE"),
 }
 
 SUMMARY_FIELDS = [
@@ -66,12 +69,31 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         default=["hps_hash_map", "hps_rocksdb", "dram_eh_dram", "dram_map_dram", "dram_pet_dram"],
     )
-    parser.add_argument("--mode", choices=["fetch", "insert", "mixed"], default="fetch")
+    parser.add_argument("--mode", choices=["fetch", "insert", "mixed", "fetch_insert"], default="fetch")
     parser.add_argument("--read-ratio", type=int, default=100)
     parser.add_argument("--record-count", type=int, default=1_000_000)
     parser.add_argument("--runtime-seconds", type=int, default=5)
     parser.add_argument("--threads", type=int, default=16)
     parser.add_argument("--load-threads", type=int, default=0)
+    parser.add_argument(
+        "--hps-rocksdb-load-threads",
+        type=int,
+        default=1,
+        help=(
+            "Load thread count used only for hps_rocksdb when --load-threads is 0. "
+            "HugeCTR RocksDB can crash on large concurrent insert loads; fetch "
+            "transactions still use --threads."
+        ),
+    )
+    parser.add_argument(
+        "--hps-rocksdb-db-threads",
+        type=int,
+        default=1,
+        help=(
+            "RocksDB internal thread count used only for hps_rocksdb. "
+            "0 passes --threads through to RocksDB."
+        ),
+    )
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--value-size", type=int, default=512)
     parser.add_argument("--distribution", choices=["uniform", "zipfian"], default="uniform")
@@ -79,6 +101,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--dram-allocator", default="PERSIST_LOOP_SLAB")
     parser.add_argument("--dram-capacity-bytes", type=int, default=0)
+    parser.add_argument("--ssd-io-backend", default="IOURING")
+    parser.add_argument("--ssd-queue-depth", type=int, default=512)
+    parser.add_argument("--ssd-capacity-bytes", type=int, default=0)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--keep-data", action="store_true")
     parser.add_argument("--extra-arg", action="append", default=[])
@@ -94,7 +119,7 @@ def ensure_build(build_jobs: int) -> None:
             "--build",
             "build",
             "--target",
-            "hps_backend_benchmark",
+            "backend_benchmark",
             "--",
             f"-j{build_jobs}",
         ],
@@ -112,6 +137,12 @@ def gflag(name: str, value: object) -> str:
 
 
 def command_for(alias: str, spec: BackendSpec, data_path: Path, args: argparse.Namespace) -> list[str]:
+    load_threads = args.load_threads
+    if alias == "hps_rocksdb" and load_threads == 0:
+        load_threads = args.hps_rocksdb_load_threads
+    ssd_io_backend = getattr(args, "ssd_io_backend", "IOURING")
+    ssd_queue_depth = getattr(args, "ssd_queue_depth", 512)
+    ssd_capacity_bytes = getattr(args, "ssd_capacity_bytes", 0)
     cmd = [
         str(BENCHMARK_BIN),
         gflag("backend", spec.backend),
@@ -121,19 +152,25 @@ def command_for(alias: str, spec: BackendSpec, data_path: Path, args: argparse.N
         gflag("record_count", args.record_count),
         gflag("running_seconds", args.runtime_seconds),
         gflag("thread_num", args.threads),
-        gflag("load_thread_num", args.load_threads),
+        gflag("load_thread_num", load_threads),
         gflag("batch_size", args.batch_size),
         gflag("value_size", args.value_size),
         gflag("distribution", args.distribution),
         gflag("zipfian_alpha", args.zipfian_alpha),
         gflag("dram_allocator", args.dram_allocator),
+        gflag("ssd_io_backend", ssd_io_backend),
+        gflag("ssd_queue_depth", ssd_queue_depth),
     ]
     if spec.index_type:
         cmd.append(gflag("index_type", spec.index_type))
     if spec.value_store_type:
         cmd.append(gflag("value_store_type", spec.value_store_type))
+    if alias == "hps_rocksdb":
+        cmd.append(gflag("hps_rocksdb_thread_num", args.hps_rocksdb_db_threads))
     if args.dram_capacity_bytes:
         cmd.append(gflag("dram_capacity_bytes", args.dram_capacity_bytes))
+    if ssd_capacity_bytes:
+        cmd.append(gflag("ssd_capacity_bytes", ssd_capacity_bytes))
     cmd.extend(args.extra_arg)
     return cmd
 
@@ -150,7 +187,7 @@ def parse_result_line(line: str) -> dict[str, str]:
 def extract_results(output: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for line in output.splitlines():
-        if line.startswith("HPS_BACKEND_RESULT "):
+        if line.startswith("BACKEND_BENCHMARK_RESULT "):
             rows.append(parse_result_line(line))
     return rows
 
