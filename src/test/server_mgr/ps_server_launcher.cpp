@@ -676,8 +676,7 @@ std::filesystem::path PSServerLauncher::PrepareConfigForLaunch() {
     if (path.empty() || path.rfind("/dev/shm", 0) == 0) {
       return;
     }
-    value_cfg["path"] =
-        "/dev/shm/recstore_test_" + TimestampNow() + "/value";
+    value_cfg["path"] = "/dev/shm/recstore_test_" + TimestampNow() + "/value";
   };
 
   if (config["cache_ps"].contains("base_kv_config")) {

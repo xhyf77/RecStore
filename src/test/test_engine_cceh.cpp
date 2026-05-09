@@ -31,28 +31,28 @@ protected:
     base::PMMmapRegisterCenter::GetConfig().use_dram = true;
     base::PMMmapRegisterCenter::GetConfig().numa_id  = 0;
     config_.num_threads_                             = 16;
-    config_.json_config_ = {
-                {"capacity", 100000},
+    config_.json_config_                             = {
+        {"capacity", 100000},
         {"index",
-         {{"type", "SSD_EXTENDIBLE_HASH"},
-          {"path", test_dir_ + "/index_pages.db"},
-          {"io",
-           {{"type", "IOURING"},
-            {"queue_depth", 512},
-            {"base_offset_bytes", 0}}}}},
+                                     {{"type", "SSD_EXTENDIBLE_HASH"},
+                                      {"path", test_dir_ + "/index_pages.db"},
+                                      {"io",
+                                       {{"type", "IOURING"},
+                                        {"queue_depth", 512},
+                                        {"base_offset_bytes", 0}}}}},
         {"value",
-         {{"type", "SSD_VALUE_STORE"},
-          {"path", test_dir_ + "/value_pages.db"},
-          {"default_value_size_hint", 128},
-          {"ssd_allocator",
-           {{"type", "SSD_BUDDY"},
-            {"capacity_bytes", 12800000},
-            {"min_block_size", 128},
-            {"max_block_size", 65536},
-            {"io",
-             {{"type", "IOURING"},
-              {"queue_depth", 512},
-              {"base_offset_bytes", 4096}}}}}}}};
+                                     {{"type", "SSD_VALUE_STORE"},
+                                      {"path", test_dir_ + "/value_pages.db"},
+                                      {"default_value_size_hint", 128},
+                                      {"ssd_allocator",
+                                       {{"type", "SSD_BUDDY"},
+                                        {"capacity_bytes", 12800000},
+                                        {"min_block_size", 128},
+                                        {"max_block_size", 65536},
+                                        {"io",
+                                         {{"type", "IOURING"},
+                                          {"queue_depth", 512},
+                                          {"base_offset_bytes", 4096}}}}}}}};
     auto r = base::ResolveEngine(config_);
     kv_engine_.reset(base::Factory<BaseKV, const BaseKVConfig&>::NewInstance(
         r.engine, r.cfg));

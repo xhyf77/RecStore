@@ -466,9 +466,8 @@ int LocalShmPSClient::UpdateParameterFlat(
   if (known_dim_it != table_embedding_dims_.end() &&
       known_dim_it->second != embedding_dim) {
     LOG(ERROR) << "LocalShmPSClient::UpdateParameterFlat embedding_dim mismatch"
-               << " table_name=" << table_name
-               << " expected=" << known_dim_it->second
-               << " actual=" << embedding_dim;
+               << " table_name=" << table_name << " expected="
+               << known_dim_it->second << " actual=" << embedding_dim;
     return -1;
   }
   const int slot = AcquireSlot();

@@ -20,9 +20,9 @@ public:
     if (backend_ == nullptr) {
       throw std::invalid_argument("SsdSlabAllocator backend is null");
     }
-    size_classes_ = size_classes.empty()
-                        ? std::vector<int>{128, 256, 512, 1024, 4096}
-                        : size_classes;
+    size_classes_ =
+        size_classes.empty() ? std::vector<int>{128, 256, 512, 1024, 4096}
+                             : size_classes;
     std::sort(size_classes_.begin(), size_classes_.end());
 
     const uint64_t total_blocks = total_capacity_bytes / kBlockSize;
@@ -32,10 +32,11 @@ public:
     }
 
     for (int cls : size_classes_) {
-      auto pool = std::make_unique<SlabPool>();
+      auto pool       = std::make_unique<SlabPool>();
       pool->slot_size = static_cast<uint64_t>(cls) + kHeaderSize;
       if (pool->slot_size == 0 || kBlockSize < pool->slot_size) {
-        throw std::invalid_argument("SsdSlabAllocator invalid slot size vs block");
+        throw std::invalid_argument(
+            "SsdSlabAllocator invalid slot size vs block");
       }
       pool->slots_per_block = kBlockSize / pool->slot_size;
       slabs_.push_back(std::move(pool));
@@ -44,13 +45,13 @@ public:
 
   uint64_t Alloc(size_t data_size) override {
     const uint16_t slab_idx = SelectSlab(data_size);
-    auto& slab = *slabs_.at(slab_idx);
+    auto& slab              = *slabs_.at(slab_idx);
 
     for (;;) {
       std::unique_lock<std::mutex> slab_lock(slab.mu);
       while (!slab.partial_blocks.empty()) {
         const uint64_t block_idx = slab.partial_blocks.back();
-        Block& b = slab.blocks.at(block_idx);
+        Block& b                 = slab.blocks.at(block_idx);
         if (b.tombstone) {
           RemoveFromPartial(slab, block_idx);
           continue;
@@ -88,9 +89,9 @@ public:
       uint64_t block_idx = 0;
       Block nb;
       nb.byte_offset = byte_off;
-      nb.cursor = 0;
-      nb.used_count = 0;
-      nb.tombstone = false;
+      nb.cursor      = 0;
+      nb.used_count  = 0;
+      nb.tombstone   = false;
 
       if (!slab.tombstone_indices.empty()) {
         block_idx = slab.tombstone_indices.back();
@@ -101,10 +102,10 @@ public:
         slab.blocks.push_back(std::move(nb));
       }
 
-      Block& b = slab.blocks[block_idx];
+      Block& b                     = slab.blocks[block_idx];
       const uint64_t slot_in_block = 0;
-      b.cursor = 1;
-      b.used_count = 1;
+      b.cursor                     = 1;
+      b.used_count                 = 1;
       UpdatePartialAfterAlloc(slab, block_idx, b);
       const uint64_t local_id =
           block_idx * slab.slots_per_block + slot_in_block;
@@ -116,8 +117,8 @@ public:
     uint16_t slab_idx;
     uint64_t local_slot_id;
     Decode(handle, slab_idx, local_slot_id);
-    auto& slab = *slabs_.at(slab_idx);
-    const uint64_t block_idx = local_slot_id / slab.slots_per_block;
+    auto& slab                   = *slabs_.at(slab_idx);
+    const uint64_t block_idx     = local_slot_id / slab.slots_per_block;
     const uint64_t slot_in_block = local_slot_id % slab.slots_per_block;
 
     std::unique_lock<std::mutex> slab_lock(slab.mu);
@@ -133,8 +134,8 @@ public:
     UpdatePartialAfterFree(slab, block_idx, b);
 
     if (b.used_count == 0) {
-      const uint64_t off = b.byte_offset;
-      slab.blocks[block_idx] = Block{};
+      const uint64_t off               = b.byte_offset;
+      slab.blocks[block_idx]           = Block{};
       slab.blocks[block_idx].tombstone = true;
       RemoveFromPartial(slab, block_idx);
       slab.tombstone_indices.push_back(block_idx);
@@ -160,7 +161,7 @@ public:
     uint16_t slab_idx;
     uint64_t local_slot_id;
     Decode(handle, slab_idx, local_slot_id);
-    const auto& slab = *slabs_.at(slab_idx);
+    const auto& slab        = *slabs_.at(slab_idx);
     const uint64_t byte_off = ResolveSlotByteOffset(slab_idx, local_slot_id);
     return ReadBytes(byte_off, slab.slot_size, out_buf, buf_size);
   }
@@ -186,7 +187,7 @@ public:
 
 private:
   struct ThreadLocalBuffer {
-    char* ptr = nullptr;
+    char* ptr      = nullptr;
     uint64_t pages = 0;
   };
 
@@ -196,7 +197,7 @@ private:
       if (tls.ptr != nullptr) {
         backend_->FreeBuffer(tls.ptr);
       }
-      tls.ptr = backend_->AllocateBuffer(pages);
+      tls.ptr   = backend_->AllocateBuffer(pages);
       tls.pages = pages;
     }
     return tls.ptr;
@@ -204,14 +205,14 @@ private:
 
   struct Block {
     uint64_t byte_offset = 0;
-    uint64_t cursor = 0;
-    uint64_t used_count = 0;
+    uint64_t cursor      = 0;
+    uint64_t used_count  = 0;
     std::vector<uint64_t> free_in_block;
     bool tombstone = false;
   };
 
   struct SlabPool {
-    uint64_t slot_size = 0;
+    uint64_t slot_size       = 0;
     uint64_t slots_per_block = 0;
     std::vector<Block> blocks;
     std::vector<uint64_t> tombstone_indices;
@@ -228,20 +229,19 @@ private:
     v.erase(std::remove(v.begin(), v.end(), block_idx), v.end());
   }
 
-  static void AddToPartialIfSpace(SlabPool& slab,
-                                   uint64_t block_idx,
-                                   const Block& b) {
+  static void
+  AddToPartialIfSpace(SlabPool& slab, uint64_t block_idx, const Block& b) {
     if (HasSpace(b, slab)) {
-      if (std::find(slab.partial_blocks.begin(), slab.partial_blocks.end(),
+      if (std::find(slab.partial_blocks.begin(),
+                    slab.partial_blocks.end(),
                     block_idx) == slab.partial_blocks.end()) {
         slab.partial_blocks.push_back(block_idx);
       }
     }
   }
 
-  void UpdatePartialAfterAlloc(SlabPool& slab,
-                               uint64_t block_idx,
-                               const Block& b) {
+  void
+  UpdatePartialAfterAlloc(SlabPool& slab, uint64_t block_idx, const Block& b) {
     if (HasSpace(b, slab)) {
       AddToPartialIfSpace(slab, block_idx, b);
     } else {
@@ -249,17 +249,16 @@ private:
     }
   }
 
-  void UpdatePartialAfterFree(SlabPool& slab,
-                              uint64_t block_idx,
-                              const Block& b) {
+  void
+  UpdatePartialAfterFree(SlabPool& slab, uint64_t block_idx, const Block& b) {
     AddToPartialIfSpace(slab, block_idx, b);
   }
 
-  uint64_t ResolveSlotByteOffset(uint16_t slab_idx,
-                                 uint64_t local_slot_id) const {
+  uint64_t
+  ResolveSlotByteOffset(uint16_t slab_idx, uint64_t local_slot_id) const {
     auto& slab = *slabs_.at(slab_idx);
     std::lock_guard<std::mutex> lock(slab.mu);
-    const uint64_t block_idx = local_slot_id / slab.slots_per_block;
+    const uint64_t block_idx     = local_slot_id / slab.slots_per_block;
     const uint64_t slot_in_block = local_slot_id % slab.slots_per_block;
     if (block_idx >= slab.blocks.size()) {
       return 0;
@@ -276,10 +275,9 @@ private:
            ((local_slot_id + 1) & 0x0000FFFFFFFFFFFFULL);
   }
 
-  static void Decode(uint64_t handle,
-                     uint16_t& slab_idx,
-                     uint64_t& local_slot_id) {
-    slab_idx = static_cast<uint16_t>(handle >> 48);
+  static void
+  Decode(uint64_t handle, uint16_t& slab_idx, uint64_t& local_slot_id) {
+    slab_idx      = static_cast<uint16_t>(handle >> 48);
     local_slot_id = (handle & 0x0000FFFFFFFFFFFFULL) - 1;
   }
 
@@ -296,11 +294,11 @@ private:
                   uint64_t slot_size,
                   const void* data,
                   size_t data_size) {
-    const PageID_t start = byte_offset / PAGE_SIZE;
+    const PageID_t start    = byte_offset / PAGE_SIZE;
     const uint64_t page_off = byte_offset % PAGE_SIZE;
-    const uint64_t total = page_off + slot_size;
-    const uint64_t pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
-    char* buf = AcquireThreadBuffer(pages);
+    const uint64_t total    = page_off + slot_size;
+    const uint64_t pages    = (total + PAGE_SIZE - 1) / PAGE_SIZE;
+    char* buf               = AcquireThreadBuffer(pages);
     backend_->BatchReadPages({{start, buf, pages}});
     const uint32_t n = static_cast<uint32_t>(data_size);
     std::memcpy(buf + page_off, &n, sizeof(n));
@@ -312,11 +310,11 @@ private:
                    uint64_t slot_size,
                    void* out_buf,
                    size_t buf_size) {
-    const PageID_t start = byte_offset / PAGE_SIZE;
+    const PageID_t start    = byte_offset / PAGE_SIZE;
     const uint64_t page_off = byte_offset % PAGE_SIZE;
-    const uint64_t total = page_off + slot_size;
-    const uint64_t pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
-    char* buf = AcquireThreadBuffer(pages);
+    const uint64_t total    = page_off + slot_size;
+    const uint64_t pages    = (total + PAGE_SIZE - 1) / PAGE_SIZE;
+    char* buf               = AcquireThreadBuffer(pages);
     backend_->BatchReadPages({{start, buf, pages}});
     uint32_t n = 0;
     std::memcpy(&n, buf + page_off, sizeof(n));

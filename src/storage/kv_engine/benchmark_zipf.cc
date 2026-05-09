@@ -91,7 +91,7 @@ int main(int argc, char* argv[]) {
   base::Init(&argc, &argv);
   BaseKVConfig config;
   config.json_config_ = {
-            {"capacity", kKeySpace},
+      {"capacity", kKeySpace},
       {"index", {{"type", FLAGS_index_type}}},
       {"value",
        {{"type", FLAGS_value_store_type},

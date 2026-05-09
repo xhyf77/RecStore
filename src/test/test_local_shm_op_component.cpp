@@ -43,8 +43,7 @@ protected:
   json MakeLocalShmConfig(const std::string& region_name) {
     static std::atomic<uint64_t> storage_counter{0};
     const std::string storage_path =
-        "/dev/shm/recstore_lshm_comp_" +
-        std::to_string(::getpid()) + "_" +
+        "/dev/shm/recstore_lshm_comp_" + std::to_string(::getpid()) + "_" +
         std::to_string(storage_counter.fetch_add(1, std::memory_order_relaxed));
     cleanup_paths_.push_back(storage_path);
     cleanup_region_names_.push_back(region_name);

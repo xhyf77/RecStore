@@ -26,7 +26,7 @@ protected:
     // 创建配置
     config_.num_threads_ = 16;
     config_.json_config_ = {
-                {"capacity", 1000000},
+        {"capacity", 1000000},
         {"index", {{"type", "DRAM_EXTENDIBLE_HASH"}}},
         {"value",
          {{"type", "DRAM_VALUE_STORE"},

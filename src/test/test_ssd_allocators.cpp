@@ -25,7 +25,8 @@ public:
 
   void init() override {}
 
-  void* GetPage(coroutine<void>::push_type&, uint64_t, PageID_t page_id) override {
+  void*
+  GetPage(coroutine<void>::push_type&, uint64_t, PageID_t page_id) override {
     auto* page = new char[PAGE_SIZE];
     ReadPageSync(page_id, page);
     return page;
@@ -64,7 +65,10 @@ public:
   void PollCompletion() override {}
 
 protected:
-  void ReadPageAsync(coroutine<void>::push_type&, uint64_t, PageID_t page_id, char* buffer) override {
+  void ReadPageAsync(coroutine<void>::push_type&,
+                     uint64_t,
+                     PageID_t page_id,
+                     char* buffer) override {
     ReadPageSync(page_id, buffer);
   }
 
@@ -77,7 +81,10 @@ protected:
     std::memcpy(buffer, it->second.data(), PAGE_SIZE);
   }
 
-  void WritePageAsync(coroutine<void>::push_type&, uint64_t, PageID_t page_id, char* buffer) override {
+  void WritePageAsync(coroutine<void>::push_type&,
+                      uint64_t,
+                      PageID_t page_id,
+                      char* buffer) override {
     WritePageSync(page_id, buffer);
   }
 
@@ -100,7 +107,8 @@ private:
 };
 
 int BuddyLevelForRequest(size_t data_size, int min_block_size, int num_levels) {
-  const uint64_t needed = static_cast<uint64_t>(data_size) + SsdBuddyAllocator::kHeaderSize;
+  const uint64_t needed =
+      static_cast<uint64_t>(data_size) + SsdBuddyAllocator::kHeaderSize;
   for (int level = 0; level < num_levels; ++level) {
     if ((static_cast<uint64_t>(min_block_size) << level) >= needed) {
       return level;
@@ -113,23 +121,24 @@ size_t ExpectedBuddyAllocCount(size_t data_size,
                                int min_block_size,
                                int num_levels,
                                uint64_t capacity_bytes) {
-  const uint64_t total_min_blocks = capacity_bytes / static_cast<uint64_t>(min_block_size);
+  const uint64_t total_min_blocks =
+      capacity_bytes / static_cast<uint64_t>(min_block_size);
   const uint64_t top_block_units = uint64_t{1} << (num_levels - 1);
-  size_t top_blocks = 0;
+  size_t top_blocks              = 0;
   for (uint64_t block = 1; block + top_block_units <= total_min_blocks;
        block += top_block_units) {
     ++top_blocks;
   }
-  const int request_level = BuddyLevelForRequest(data_size, min_block_size, num_levels);
+  const int request_level =
+      BuddyLevelForRequest(data_size, min_block_size, num_levels);
   const size_t split_factor = size_t{1} << (num_levels - 1 - request_level);
   return top_blocks * split_factor;
 }
 
-size_t ExpectedSlabAllocCountByGlobalPool(uint64_t total_capacity_bytes,
-                                          uint64_t block_size,
-                                          uint64_t slot_size) {
-  return static_cast<size_t>((total_capacity_bytes / block_size) *
-                             (block_size / slot_size));
+size_t ExpectedSlabAllocCountByGlobalPool(
+    uint64_t total_capacity_bytes, uint64_t block_size, uint64_t slot_size) {
+  return static_cast<size_t>(
+      (total_capacity_bytes / block_size) * (block_size / slot_size));
 }
 
 class DummyBlockAllocator : public SsdBlockAllocator {
@@ -140,8 +149,9 @@ public:
   }
   void Free(uint64_t) override {}
   void Write(uint64_t handle, const void* data, size_t data_size) override {
-    storage_[handle] = std::vector<char>(static_cast<const char*>(data),
-                                         static_cast<const char*>(data) + data_size);
+    storage_[handle] =
+        std::vector<char>(static_cast<const char*>(data),
+                          static_cast<const char*>(data) + data_size);
   }
   size_t Read(uint64_t handle, void* out_buf, size_t buf_size) override {
     const auto it = storage_.find(handle);
@@ -197,14 +207,15 @@ TEST(SsdBlockAllocatorTest, BatchHelpersRoundTrip) {
 
 TEST(SsdBuddyAllocatorTest, AllocWriteReadAndReuse) {
   InMemoryIOBackend backend;
-  SsdBuddyAllocator alloc(&backend,
-                          /*min_block_size=*/128,
-                          /*num_levels=*/5,
-                          /*capacity_bytes=*/128 * 32,
-                          /*base_byte_offset=*/0);
+  SsdBuddyAllocator alloc(
+      &backend,
+      /*min_block_size=*/128,
+      /*num_levels=*/5,
+      /*capacity_bytes=*/128 * 32,
+      /*base_byte_offset=*/0);
 
   const std::string data = "buddy-allocator-payload";
-  const uint64_t h1 = alloc.AllocAndWrite(data.data(), data.size());
+  const uint64_t h1      = alloc.AllocAndWrite(data.data(), data.size());
   ASSERT_NE(h1, SsdBlockAllocator::kInvalidHandle);
   EXPECT_GE(alloc.SlotCapacity(h1), data.size());
 
@@ -221,21 +232,23 @@ TEST(SsdBuddyAllocatorTest, AllocWriteReadAndReuse) {
 
 TEST(SsdBuddyAllocatorTest, OversizedValueThrows) {
   InMemoryIOBackend backend;
-  SsdBuddyAllocator alloc(&backend,
-                          /*min_block_size=*/64,
-                          /*num_levels=*/3,
-                          /*capacity_bytes=*/64 * 16,
-                          /*base_byte_offset=*/0);
+  SsdBuddyAllocator alloc(
+      &backend,
+      /*min_block_size=*/64,
+      /*num_levels=*/3,
+      /*capacity_bytes=*/64 * 16,
+      /*base_byte_offset=*/0);
   EXPECT_THROW((void)alloc.Alloc(1024), std::invalid_argument);
 }
 
 TEST(SsdBuddyAllocatorTest, CapacityExhaustionAndReuseAfterFree) {
   InMemoryIOBackend backend;
-  SsdBuddyAllocator alloc(&backend,
-                          /*min_block_size=*/64,
-                          /*num_levels=*/2,
-                          /*capacity_bytes=*/64 * 4,
-                          /*base_byte_offset=*/0);
+  SsdBuddyAllocator alloc(
+      &backend,
+      /*min_block_size=*/64,
+      /*num_levels=*/2,
+      /*capacity_bytes=*/64 * 4,
+      /*base_byte_offset=*/0);
   std::vector<uint64_t> handles;
   while (true) {
     const uint64_t handle = alloc.Alloc(16);
@@ -252,20 +265,21 @@ TEST(SsdBuddyAllocatorTest, CapacityExhaustionAndReuseAfterFree) {
 }
 
 TEST(SsdBuddyAllocatorTest, AllocatableCapacityMatchesExpected) {
-  constexpr int kMinBlockSize = 64;
-  constexpr int kNumLevels = 4;
+  constexpr int kMinBlockSize       = 64;
+  constexpr int kNumLevels          = 4;
   constexpr uint64_t kCapacityBytes = kMinBlockSize * 64;
-  constexpr size_t kRequestBytes = 48;
+  constexpr size_t kRequestBytes    = 48;
 
   InMemoryIOBackend backend;
-  SsdBuddyAllocator alloc(&backend,
-                          /*min_block_size=*/kMinBlockSize,
-                          /*num_levels=*/kNumLevels,
-                          /*capacity_bytes=*/kCapacityBytes,
-                          /*base_byte_offset=*/0);
+  SsdBuddyAllocator alloc(
+      &backend,
+      /*min_block_size=*/kMinBlockSize,
+      /*num_levels=*/kNumLevels,
+      /*capacity_bytes=*/kCapacityBytes,
+      /*base_byte_offset=*/0);
 
-  const size_t expected =
-      ExpectedBuddyAllocCount(kRequestBytes, kMinBlockSize, kNumLevels, kCapacityBytes);
+  const size_t expected = ExpectedBuddyAllocCount(
+      kRequestBytes, kMinBlockSize, kNumLevels, kCapacityBytes);
   ASSERT_GT(expected, 0U);
 
   size_t actual = 0;
@@ -276,20 +290,22 @@ TEST(SsdBuddyAllocatorTest, AllocatableCapacityMatchesExpected) {
 }
 
 TEST(SsdBuddyAllocatorTest, OneGiBWith128BAllocHasExpectedUsableCapacity) {
-  constexpr uint64_t kOneGiB = 1ULL << 30;
+  constexpr uint64_t kOneGiB  = 1ULL << 30;
   constexpr int kMinBlockSize = 128;
-  constexpr int kNumLevels = 6; // min=128, max=4096 => 128,256,512,1024,2048,4096
+  constexpr int kNumLevels =
+      6; // min=128, max=4096 => 128,256,512,1024,2048,4096
   constexpr size_t kRequestBytes = 128;
 
   InMemoryIOBackend backend;
-  SsdBuddyAllocator alloc(&backend,
-                          /*min_block_size=*/kMinBlockSize,
-                          /*num_levels=*/kNumLevels,
-                          /*capacity_bytes=*/kOneGiB,
-                          /*base_byte_offset=*/0);
+  SsdBuddyAllocator alloc(
+      &backend,
+      /*min_block_size=*/kMinBlockSize,
+      /*num_levels=*/kNumLevels,
+      /*capacity_bytes=*/kOneGiB,
+      /*base_byte_offset=*/0);
 
-  const size_t expected_alloc_count =
-      ExpectedBuddyAllocCount(kRequestBytes, kMinBlockSize, kNumLevels, kOneGiB);
+  const size_t expected_alloc_count = ExpectedBuddyAllocCount(
+      kRequestBytes, kMinBlockSize, kNumLevels, kOneGiB);
   ASSERT_EQ(expected_alloc_count, 4194288U);
 
   size_t actual_alloc_count = 0;
@@ -304,12 +320,13 @@ TEST(SsdBuddyAllocatorTest, OneGiBWith128BAllocHasExpectedUsableCapacity) {
 
 TEST(SsdSlabAllocatorTest, AllocWriteReadAndReuse) {
   InMemoryIOBackend backend;
-  SsdSlabAllocator alloc(&backend,
-                         /*size_classes=*/{64, 128},
-                         /*total_capacity_bytes=*/SsdSlabAllocator::kBlockSize,
-                         /*base_byte_offset=*/0);
+  SsdSlabAllocator alloc(
+      &backend,
+      /*size_classes=*/{64, 128},
+      /*total_capacity_bytes=*/SsdSlabAllocator::kBlockSize,
+      /*base_byte_offset=*/0);
   const std::string data = "slab-data";
-  const uint64_t h1 = alloc.AllocAndWrite(data.data(), data.size());
+  const uint64_t h1      = alloc.AllocAndWrite(data.data(), data.size());
   ASSERT_NE(h1, SsdBlockAllocator::kInvalidHandle);
   EXPECT_GE(alloc.SlotCapacity(h1), data.size());
 
@@ -326,10 +343,11 @@ TEST(SsdSlabAllocatorTest, AllocWriteReadAndReuse) {
 
 TEST(SsdSlabAllocatorTest, WriteLargerThanSlotThrows) {
   InMemoryIOBackend backend;
-  SsdSlabAllocator alloc(&backend,
-                         /*size_classes=*/{64},
-                         /*total_capacity_bytes=*/SsdSlabAllocator::kBlockSize,
-                         /*base_byte_offset=*/0);
+  SsdSlabAllocator alloc(
+      &backend,
+      /*size_classes=*/{64},
+      /*total_capacity_bytes=*/SsdSlabAllocator::kBlockSize,
+      /*base_byte_offset=*/0);
   const uint64_t handle = alloc.Alloc(32);
   ASSERT_NE(handle, SsdBlockAllocator::kInvalidHandle);
   std::array<char, 80> oversized{};
@@ -339,10 +357,11 @@ TEST(SsdSlabAllocatorTest, WriteLargerThanSlotThrows) {
 
 TEST(SsdSlabAllocatorTest, CapacityExhaustionAndReuseAfterFree) {
   InMemoryIOBackend backend;
-  SsdSlabAllocator alloc(&backend,
-                         /*size_classes=*/{4096},
-                         /*total_capacity_bytes=*/SsdSlabAllocator::kBlockSize,
-                         /*base_byte_offset=*/0);
+  SsdSlabAllocator alloc(
+      &backend,
+      /*size_classes=*/{4096},
+      /*total_capacity_bytes=*/SsdSlabAllocator::kBlockSize,
+      /*base_byte_offset=*/0);
   std::vector<uint64_t> handles;
   while (true) {
     const uint64_t handle = alloc.Alloc(2048);
@@ -359,16 +378,17 @@ TEST(SsdSlabAllocatorTest, CapacityExhaustionAndReuseAfterFree) {
 }
 
 TEST(SsdSlabAllocatorTest, OneGiBWith4KiBAllocSingleClassEfficiency) {
-  constexpr uint64_t kOneGiB = 1ULL << 30;
+  constexpr uint64_t kOneGiB     = 1ULL << 30;
   constexpr size_t kRequestBytes = 4096;
-  constexpr int kClass = 4096;
-  constexpr uint64_t kSlotSize = static_cast<uint64_t>(kClass) + 4; // header
+  constexpr int kClass           = 4096;
+  constexpr uint64_t kSlotSize   = static_cast<uint64_t>(kClass) + 4; // header
 
   InMemoryIOBackend backend;
-  SsdSlabAllocator alloc(&backend,
-                         /*size_classes=*/{kClass},
-                         /*total_capacity_bytes=*/kOneGiB,
-                         /*base_byte_offset=*/0);
+  SsdSlabAllocator alloc(
+      &backend,
+      /*size_classes=*/{kClass},
+      /*total_capacity_bytes=*/kOneGiB,
+      /*base_byte_offset=*/0);
 
   const size_t expected_count = ExpectedSlabAllocCountByGlobalPool(
       kOneGiB, SsdSlabAllocator::kBlockSize, kSlotSize);
@@ -386,18 +406,20 @@ TEST(SsdSlabAllocatorTest, OneGiBWith4KiBAllocSingleClassEfficiency) {
 
 // With the global block pool, whichever slab class allocates first can consume
 // all currently free global blocks.
-TEST(SsdSlabAllocatorTest, OneGiBWith4KiBAllocDefaultClassesGlobalPoolEfficiency) {
-  constexpr uint64_t kOneGiB = 1ULL << 30;
-  constexpr size_t kRequestBytes = 4096;
-  constexpr int kClass = 4096;
-  constexpr uint64_t kSlotSize = static_cast<uint64_t>(kClass) + 4;
+TEST(SsdSlabAllocatorTest,
+     OneGiBWith4KiBAllocDefaultClassesGlobalPoolEfficiency) {
+  constexpr uint64_t kOneGiB             = 1ULL << 30;
+  constexpr size_t kRequestBytes         = 4096;
+  constexpr int kClass                   = 4096;
+  constexpr uint64_t kSlotSize           = static_cast<uint64_t>(kClass) + 4;
   const std::vector<int> kDefaultClasses = {128, 256, 512, 1024, 4096};
 
   InMemoryIOBackend backend;
-  SsdSlabAllocator alloc(&backend,
-                         /*size_classes=*/kDefaultClasses,
-                         /*total_capacity_bytes=*/kOneGiB,
-                         /*base_byte_offset=*/0);
+  SsdSlabAllocator alloc(
+      &backend,
+      /*size_classes=*/kDefaultClasses,
+      /*total_capacity_bytes=*/kOneGiB,
+      /*base_byte_offset=*/0);
 
   const size_t expected_count = ExpectedSlabAllocCountByGlobalPool(
       kOneGiB, SsdSlabAllocator::kBlockSize, kSlotSize);
@@ -416,10 +438,11 @@ TEST(SsdSlabAllocatorTest, OneGiBWith4KiBAllocDefaultClassesGlobalPoolEfficiency
 TEST(SsdSlabAllocatorTest, GlobalPoolReleaseAcrossSlabs) {
   InMemoryIOBackend backend;
   constexpr uint64_t cap = 2 * SsdSlabAllocator::kBlockSize;
-  SsdSlabAllocator alloc(&backend,
-                         /*size_classes=*/{4096, 8192},
-                         /*total_capacity_bytes=*/cap,
-                         /*base_byte_offset=*/0);
+  SsdSlabAllocator alloc(
+      &backend,
+      /*size_classes=*/{4096, 8192},
+      /*total_capacity_bytes=*/cap,
+      /*base_byte_offset=*/0);
 
   const uint64_t slot_small = static_cast<uint64_t>(4096) + 4;
   const size_t slots_per_block =
@@ -446,10 +469,11 @@ TEST(SsdSlabAllocatorTest, GlobalPoolReleaseAcrossSlabs) {
 TEST(SsdSlabAllocatorTest, TombstoneReuseKeepsHandlesStable) {
   InMemoryIOBackend backend;
   constexpr uint64_t cap = 2 * SsdSlabAllocator::kBlockSize;
-  SsdSlabAllocator alloc(&backend,
-                         /*size_classes=*/{4096},
-                         /*total_capacity_bytes=*/cap,
-                         /*base_byte_offset=*/0);
+  SsdSlabAllocator alloc(
+      &backend,
+      /*size_classes=*/{4096},
+      /*total_capacity_bytes=*/cap,
+      /*base_byte_offset=*/0);
 
   const uint64_t slot_small = static_cast<uint64_t>(4096) + 4;
   const size_t slots_per_block =
@@ -484,10 +508,11 @@ TEST(SsdSlabAllocatorTest, TombstoneReuseKeepsHandlesStable) {
 TEST(SsdSlabAllocatorTest, AllocSpansMultipleBlocks) {
   InMemoryIOBackend backend;
   constexpr uint64_t cap = 2 * SsdSlabAllocator::kBlockSize;
-  SsdSlabAllocator alloc(&backend,
-                         /*size_classes=*/{4096},
-                         /*total_capacity_bytes=*/cap,
-                         /*base_byte_offset=*/0);
+  SsdSlabAllocator alloc(
+      &backend,
+      /*size_classes=*/{4096},
+      /*total_capacity_bytes=*/cap,
+      /*base_byte_offset=*/0);
 
   const uint64_t slot_small = static_cast<uint64_t>(4096) + 4;
   const size_t slots_per_block =
