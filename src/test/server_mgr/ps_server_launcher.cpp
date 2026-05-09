@@ -461,8 +461,7 @@ std::optional<int> PSServerLauncher::ParseReadyShard(const std::string& line) {
 }
 
 std::string PSServerLauncher::FormatRecentLogsForErrorForTest(
-    const std::vector<std::string>& logs,
-    size_t max_lines) {
+    const std::vector<std::string>& logs, size_t max_lines) {
   if (logs.empty() || max_lines == 0) {
     return "";
   }
@@ -792,17 +791,15 @@ bool PSServerLauncher::WaitUntilReady() {
         last_error_ +=
             " with exit code " + std::to_string(WEXITSTATUS(child_status));
       } else if (WIFSIGNALED(child_status)) {
-        last_error_ +=
-            " from signal " + std::to_string(WTERMSIG(child_status));
+        last_error_ += " from signal " + std::to_string(WTERMSIG(child_status));
       }
       last_error_ += FormatRecentLogsForError();
       return false;
     }
 
     if (!IsProcessAlive()) {
-      last_error_ =
-          "ps_server exited before reaching ready state" +
-          FormatRecentLogsForError();
+      last_error_ = "ps_server exited before reaching ready state" +
+                    FormatRecentLogsForError();
       return false;
     }
 

@@ -30,8 +30,7 @@ TEST(PSServerLauncherUnitTest, FormatsRecentLogsForError) {
       "[STDERR] no Factory instance",
       "[STDERR] aborting"};
 
-  auto message =
-      PSServerLauncher::FormatRecentLogsForErrorForTest(logs, 2);
+  auto message = PSServerLauncher::FormatRecentLogsForErrorForTest(logs, 2);
 
   EXPECT_NE(message.find("Recent ps_server output:"), std::string::npos);
   EXPECT_EQ(message.find("Starting PS Server"), std::string::npos);

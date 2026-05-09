@@ -62,8 +62,7 @@ public:
   static std::vector<int> FindAvailablePorts(size_t count);
   static std::optional<int> ParseReadyShard(const std::string& line);
   static std::string FormatRecentLogsForErrorForTest(
-      const std::vector<std::string>& logs,
-      size_t max_lines);
+      const std::vector<std::string>& logs, size_t max_lines);
 
   bool Start();
   void Stop();
