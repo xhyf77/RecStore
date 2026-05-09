@@ -185,6 +185,23 @@ public:
   static constexpr uint64_t kBlockSize = 1ULL << 26;
 
 private:
+  struct ThreadLocalBuffer {
+    char* ptr = nullptr;
+    uint64_t pages = 0;
+  };
+
+  char* AcquireThreadBuffer(uint64_t pages) {
+    static thread_local ThreadLocalBuffer tls;
+    if (tls.ptr == nullptr || tls.pages < pages) {
+      if (tls.ptr != nullptr) {
+        backend_->FreeBuffer(tls.ptr);
+      }
+      tls.ptr = backend_->AllocateBuffer(pages);
+      tls.pages = pages;
+    }
+    return tls.ptr;
+  }
+
   struct Block {
     uint64_t byte_offset = 0;
     uint64_t cursor = 0;
@@ -279,42 +296,37 @@ private:
                   uint64_t slot_size,
                   const void* data,
                   size_t data_size) {
-    std::lock_guard<std::mutex> lock(io_mu_);
     const PageID_t start = byte_offset / PAGE_SIZE;
     const uint64_t page_off = byte_offset % PAGE_SIZE;
     const uint64_t total = page_off + slot_size;
     const uint64_t pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
-    char* buf = backend_->AllocateBuffer(pages);
+    char* buf = AcquireThreadBuffer(pages);
     backend_->BatchReadPages({{start, buf, pages}});
     const uint32_t n = static_cast<uint32_t>(data_size);
     std::memcpy(buf + page_off, &n, sizeof(n));
     std::memcpy(buf + page_off + kHeaderSize, data, data_size);
     backend_->BatchWritePages({{start, buf, pages}});
-    backend_->FreeBuffer(buf);
   }
 
   size_t ReadBytes(uint64_t byte_offset,
                    uint64_t slot_size,
                    void* out_buf,
                    size_t buf_size) {
-    std::lock_guard<std::mutex> lock(io_mu_);
     const PageID_t start = byte_offset / PAGE_SIZE;
     const uint64_t page_off = byte_offset % PAGE_SIZE;
     const uint64_t total = page_off + slot_size;
     const uint64_t pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
-    char* buf = backend_->AllocateBuffer(pages);
+    char* buf = AcquireThreadBuffer(pages);
     backend_->BatchReadPages({{start, buf, pages}});
     uint32_t n = 0;
     std::memcpy(&n, buf + page_off, sizeof(n));
     const size_t actual = std::min(buf_size, static_cast<size_t>(n));
     std::memcpy(out_buf, buf + page_off + kHeaderSize, actual);
-    backend_->FreeBuffer(buf);
     return actual;
   }
 
   static constexpr uint64_t kHeaderSize = 4;
   IOBackend* backend_;
-  std::mutex io_mu_;
   std::vector<int> size_classes_;
   std::vector<std::unique_ptr<SlabPool>> slabs_;
 

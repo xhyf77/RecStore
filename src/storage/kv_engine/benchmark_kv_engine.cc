@@ -21,7 +21,6 @@
 #include "storage/kv_engine/base_kv.h"
 #include "storage/kv_engine/engine_cceh.h"
 #include "storage/kv_engine/engine_extendible_hash.h"
-#include "storage/kv_engine/kv_engine.h"
 #include "storage/kv_engine/engine_selector.h"
 
 DEFINE_string(dram_path,
