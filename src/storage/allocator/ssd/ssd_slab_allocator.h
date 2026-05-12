@@ -1,0 +1,341 @@
+#pragma once
+
+#include <algorithm>
+#include <cstring>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <vector>
+
+#include "storage/allocator/ssd/ssd_block_allocator.h"
+#include "storage/io_backend/io_backend.h"
+
+class SsdSlabAllocator : public SsdBlockAllocator {
+public:
+  SsdSlabAllocator(IOBackend* backend,
+                   const std::vector<int>& size_classes,
+                   uint64_t total_capacity_bytes,
+                   uint64_t base_byte_offset)
+      : backend_(backend) {
+    if (backend_ == nullptr) {
+      throw std::invalid_argument("SsdSlabAllocator backend is null");
+    }
+    size_classes_ =
+        size_classes.empty() ? std::vector<int>{128, 256, 512, 1024, 4096}
+                             : size_classes;
+    std::sort(size_classes_.begin(), size_classes_.end());
+
+    const uint64_t total_blocks = total_capacity_bytes / kBlockSize;
+    global_free_blocks_.reserve(total_blocks);
+    for (uint64_t i = 0; i < total_blocks; ++i) {
+      global_free_blocks_.push_back(base_byte_offset + i * kBlockSize);
+    }
+
+    for (int cls : size_classes_) {
+      auto pool       = std::make_unique<SlabPool>();
+      pool->slot_size = static_cast<uint64_t>(cls) + kHeaderSize;
+      if (pool->slot_size == 0 || kBlockSize < pool->slot_size) {
+        throw std::invalid_argument(
+            "SsdSlabAllocator invalid slot size vs block");
+      }
+      pool->slots_per_block = kBlockSize / pool->slot_size;
+      slabs_.push_back(std::move(pool));
+    }
+  }
+
+  uint64_t Alloc(size_t data_size) override {
+    const uint16_t slab_idx = SelectSlab(data_size);
+    auto& slab              = *slabs_.at(slab_idx);
+
+    for (;;) {
+      std::unique_lock<std::mutex> slab_lock(slab.mu);
+      while (!slab.partial_blocks.empty()) {
+        const uint64_t block_idx = slab.partial_blocks.back();
+        Block& b                 = slab.blocks.at(block_idx);
+        if (b.tombstone) {
+          RemoveFromPartial(slab, block_idx);
+          continue;
+        }
+        if (!HasSpace(b, slab)) {
+          RemoveFromPartial(slab, block_idx);
+          continue;
+        }
+        uint64_t slot_in_block = 0;
+        if (!b.free_in_block.empty()) {
+          slot_in_block = b.free_in_block.back();
+          b.free_in_block.pop_back();
+        } else {
+          slot_in_block = b.cursor;
+          b.cursor++;
+        }
+        b.used_count++;
+        UpdatePartialAfterAlloc(slab, block_idx, b);
+        const uint64_t local_id =
+            block_idx * slab.slots_per_block + slot_in_block;
+        return Encode(slab_idx, local_id);
+      }
+
+      slab_lock.unlock();
+
+      std::unique_lock<std::mutex> g_lock(global_mu_);
+      if (global_free_blocks_.empty()) {
+        return kInvalidHandle;
+      }
+      const uint64_t byte_off = global_free_blocks_.back();
+      global_free_blocks_.pop_back();
+      g_lock.unlock();
+
+      slab_lock.lock();
+      uint64_t block_idx = 0;
+      Block nb;
+      nb.byte_offset = byte_off;
+      nb.cursor      = 0;
+      nb.used_count  = 0;
+      nb.tombstone   = false;
+
+      if (!slab.tombstone_indices.empty()) {
+        block_idx = slab.tombstone_indices.back();
+        slab.tombstone_indices.pop_back();
+        slab.blocks[block_idx] = std::move(nb);
+      } else {
+        block_idx = slab.blocks.size();
+        slab.blocks.push_back(std::move(nb));
+      }
+
+      Block& b                     = slab.blocks[block_idx];
+      const uint64_t slot_in_block = 0;
+      b.cursor                     = 1;
+      b.used_count                 = 1;
+      UpdatePartialAfterAlloc(slab, block_idx, b);
+      const uint64_t local_id =
+          block_idx * slab.slots_per_block + slot_in_block;
+      return Encode(slab_idx, local_id);
+    }
+  }
+
+  void Free(uint64_t handle) override {
+    uint16_t slab_idx;
+    uint64_t local_slot_id;
+    Decode(handle, slab_idx, local_slot_id);
+    auto& slab                   = *slabs_.at(slab_idx);
+    const uint64_t block_idx     = local_slot_id / slab.slots_per_block;
+    const uint64_t slot_in_block = local_slot_id % slab.slots_per_block;
+
+    std::unique_lock<std::mutex> slab_lock(slab.mu);
+    if (block_idx >= slab.blocks.size()) {
+      return;
+    }
+    Block& b = slab.blocks[block_idx];
+    if (b.tombstone) {
+      return;
+    }
+    b.used_count--;
+    b.free_in_block.push_back(slot_in_block);
+    UpdatePartialAfterFree(slab, block_idx, b);
+
+    if (b.used_count == 0) {
+      const uint64_t off               = b.byte_offset;
+      slab.blocks[block_idx]           = Block{};
+      slab.blocks[block_idx].tombstone = true;
+      RemoveFromPartial(slab, block_idx);
+      slab.tombstone_indices.push_back(block_idx);
+      slab_lock.unlock();
+      std::lock_guard<std::mutex> g_lock(global_mu_);
+      global_free_blocks_.push_back(off);
+    }
+  }
+
+  void Write(uint64_t handle, const void* data, size_t data_size) override {
+    uint16_t slab_idx;
+    uint64_t local_slot_id;
+    Decode(handle, slab_idx, local_slot_id);
+    const auto& slab = *slabs_.at(slab_idx);
+    if (data_size + kHeaderSize > slab.slot_size) {
+      throw std::invalid_argument("SsdSlabAllocator write exceeds slot size");
+    }
+    const uint64_t byte_off = ResolveSlotByteOffset(slab_idx, local_slot_id);
+    WriteBytes(byte_off, slab.slot_size, data, data_size);
+  }
+
+  size_t Read(uint64_t handle, void* out_buf, size_t buf_size) override {
+    uint16_t slab_idx;
+    uint64_t local_slot_id;
+    Decode(handle, slab_idx, local_slot_id);
+    const auto& slab        = *slabs_.at(slab_idx);
+    const uint64_t byte_off = ResolveSlotByteOffset(slab_idx, local_slot_id);
+    return ReadBytes(byte_off, slab.slot_size, out_buf, buf_size);
+  }
+
+  uint64_t AllocAndWrite(const void* data, size_t data_size) override {
+    const uint64_t handle = Alloc(data_size);
+    if (handle != kInvalidHandle) {
+      Write(handle, data, data_size);
+    }
+    return handle;
+  }
+
+  size_t SlotCapacity(uint64_t handle) const override {
+    uint16_t slab_idx;
+    uint64_t local_slot_id;
+    Decode(handle, slab_idx, local_slot_id);
+    (void)local_slot_id;
+    return slabs_.at(slab_idx)->slot_size - kHeaderSize;
+  }
+
+  /// For unit tests: physical chunk size when carving the backing store.
+  static constexpr uint64_t kBlockSize = 1ULL << 26;
+
+private:
+  struct ThreadLocalBuffer {
+    char* ptr      = nullptr;
+    uint64_t pages = 0;
+  };
+
+  char* AcquireThreadBuffer(uint64_t pages) {
+    static thread_local ThreadLocalBuffer tls;
+    if (tls.ptr == nullptr || tls.pages < pages) {
+      if (tls.ptr != nullptr) {
+        backend_->FreeBuffer(tls.ptr);
+      }
+      tls.ptr   = backend_->AllocateBuffer(pages);
+      tls.pages = pages;
+    }
+    return tls.ptr;
+  }
+
+  struct Block {
+    uint64_t byte_offset = 0;
+    uint64_t cursor      = 0;
+    uint64_t used_count  = 0;
+    std::vector<uint64_t> free_in_block;
+    bool tombstone = false;
+  };
+
+  struct SlabPool {
+    uint64_t slot_size       = 0;
+    uint64_t slots_per_block = 0;
+    std::vector<Block> blocks;
+    std::vector<uint64_t> tombstone_indices;
+    std::vector<uint64_t> partial_blocks;
+    mutable std::mutex mu;
+  };
+
+  static bool HasSpace(const Block& b, const SlabPool& slab) {
+    return !b.free_in_block.empty() || b.cursor < slab.slots_per_block;
+  }
+
+  static void RemoveFromPartial(SlabPool& slab, uint64_t block_idx) {
+    auto& v = slab.partial_blocks;
+    v.erase(std::remove(v.begin(), v.end(), block_idx), v.end());
+  }
+
+  static void
+  AddToPartialIfSpace(SlabPool& slab, uint64_t block_idx, const Block& b) {
+    if (HasSpace(b, slab)) {
+      if (std::find(slab.partial_blocks.begin(),
+                    slab.partial_blocks.end(),
+                    block_idx) == slab.partial_blocks.end()) {
+        slab.partial_blocks.push_back(block_idx);
+      }
+    }
+  }
+
+  void
+  UpdatePartialAfterAlloc(SlabPool& slab, uint64_t block_idx, const Block& b) {
+    if (HasSpace(b, slab)) {
+      AddToPartialIfSpace(slab, block_idx, b);
+    } else {
+      RemoveFromPartial(slab, block_idx);
+    }
+  }
+
+  void
+  UpdatePartialAfterFree(SlabPool& slab, uint64_t block_idx, const Block& b) {
+    AddToPartialIfSpace(slab, block_idx, b);
+  }
+
+  uint64_t
+  ResolveSlotByteOffset(uint16_t slab_idx, uint64_t local_slot_id) const {
+    auto& slab = *slabs_.at(slab_idx);
+    std::lock_guard<std::mutex> lock(slab.mu);
+    const uint64_t block_idx     = local_slot_id / slab.slots_per_block;
+    const uint64_t slot_in_block = local_slot_id % slab.slots_per_block;
+    if (block_idx >= slab.blocks.size()) {
+      return 0;
+    }
+    const Block& b = slab.blocks[block_idx];
+    if (b.tombstone) {
+      return 0;
+    }
+    return b.byte_offset + slot_in_block * slab.slot_size;
+  }
+
+  static uint64_t Encode(uint16_t slab_idx, uint64_t local_slot_id) {
+    return (static_cast<uint64_t>(slab_idx) << 48) |
+           ((local_slot_id + 1) & 0x0000FFFFFFFFFFFFULL);
+  }
+
+  static void
+  Decode(uint64_t handle, uint16_t& slab_idx, uint64_t& local_slot_id) {
+    slab_idx      = static_cast<uint16_t>(handle >> 48);
+    local_slot_id = (handle & 0x0000FFFFFFFFFFFFULL) - 1;
+  }
+
+  uint16_t SelectSlab(size_t data_size) const {
+    for (uint16_t i = 0; i < size_classes_.size(); ++i) {
+      if (data_size <= static_cast<size_t>(size_classes_[i])) {
+        return i;
+      }
+    }
+    throw std::invalid_argument("SsdSlabAllocator value too large");
+  }
+
+  void WriteBytes(uint64_t byte_offset,
+                  uint64_t slot_size,
+                  const void* data,
+                  size_t data_size) {
+    const PageID_t start    = byte_offset / PAGE_SIZE;
+    const uint64_t page_off = byte_offset % PAGE_SIZE;
+    const uint64_t total    = page_off + slot_size;
+    const uint64_t pages    = (total + PAGE_SIZE - 1) / PAGE_SIZE;
+    char* buf               = AcquireThreadBuffer(pages);
+    backend_->BatchReadPages({{start, buf, pages}});
+    const uint32_t n = static_cast<uint32_t>(data_size);
+    std::memcpy(buf + page_off, &n, sizeof(n));
+    std::memcpy(buf + page_off + kHeaderSize, data, data_size);
+    backend_->BatchWritePages({{start, buf, pages}});
+  }
+
+  size_t ReadBytes(uint64_t byte_offset,
+                   uint64_t slot_size,
+                   void* out_buf,
+                   size_t buf_size) {
+    const PageID_t start    = byte_offset / PAGE_SIZE;
+    const uint64_t page_off = byte_offset % PAGE_SIZE;
+    const uint64_t total    = page_off + slot_size;
+    const uint64_t pages    = (total + PAGE_SIZE - 1) / PAGE_SIZE;
+    char* buf               = AcquireThreadBuffer(pages);
+    backend_->BatchReadPages({{start, buf, pages}});
+    uint32_t n = 0;
+    std::memcpy(&n, buf + page_off, sizeof(n));
+    const size_t actual = std::min(buf_size, static_cast<size_t>(n));
+    std::memcpy(out_buf, buf + page_off + kHeaderSize, actual);
+    return actual;
+  }
+
+  static constexpr uint64_t kHeaderSize = 4;
+  IOBackend* backend_;
+  std::vector<int> size_classes_;
+  std::vector<std::unique_ptr<SlabPool>> slabs_;
+
+  std::vector<uint64_t> global_free_blocks_;
+  std::mutex global_mu_;
+};
+
+FACTORY_REGISTER(SsdBlockAllocator,
+                 SSD_SLAB,
+                 SsdSlabAllocator,
+                 IOBackend*,
+                 const std::vector<int>&,
+                 uint64_t,
+                 uint64_t);

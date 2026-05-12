@@ -8,7 +8,6 @@
 #include <string>
 #include "base/json.h"
 #include "memory/shm_file.h"
-#include "storage/kv_engine/engine_extendible_hash.h"
 #include "storage/kv_engine/engine_factory.h"
 #include "storage/kv_engine/engine_selector.h"
 
@@ -17,7 +16,7 @@ protected:
   void SetUp() override {
     // 创建临时测试目录
     test_dir_ =
-        "/tmp/test_kv_engine_extendible_hash_" + std::to_string(getpid());
+        "/dev/shm/test_kv_engine_extendible_hash_" + std::to_string(getpid());
     std::filesystem::create_directories(test_dir_);
 
     // 配置使用DRAM而不是持久内存
@@ -27,14 +26,14 @@ protected:
     // 创建配置
     config_.num_threads_ = 16;
     config_.json_config_ = {
-        {"path", test_dir_},
         {"capacity", 1000000},
-        {"value_size", 128},
-        {"value_type", "SSD"},
-        {"index_type", "DRAM"},
-        {"initial_capacity", 16},
-        {"value_memory_management", "R2ShmMalloc"} // R2ShmMalloc
-    };
+        {"index", {{"type", "DRAM_EXTENDIBLE_HASH"}}},
+        {"value",
+         {{"type", "DRAM_VALUE_STORE"},
+          {"path", test_dir_ + "/value"},
+          {"default_value_size_hint", 128},
+          {"dram_allocator",
+           {{"type", "R2_SLAB"}, {"capacity_bytes", 128000000}}}}}};
 
     auto r = base::ResolveEngine(config_);
     kv_engine_.reset(base::Factory<BaseKV, const BaseKVConfig&>::NewInstance(
@@ -127,30 +126,19 @@ TEST_F(KVEngineExtendibleHashTest, KeyOverwrite) {
   EXPECT_EQ(retrieved_value, value2);
 }
 
-TEST_F(KVEngineExtendibleHashTest, SameSizeOverwriteReusesValueAllocation) {
-  auto* engine = dynamic_cast<KVEngineExtendibleHash*>(kv_engine_.get());
-  ASSERT_NE(engine, nullptr);
-
+TEST_F(KVEngineExtendibleHashTest, SameSizeOverwriteKeepsLatestValue) {
   uint64_t key       = 101;
   std::string value1 = CreateFixedLengthValue("initial_value");
   std::string value2 = CreateFixedLengthValue("updated_value");
   std::string retrieved_value;
 
   kv_engine_->Put(key, value1, 0);
-  const uint64_t malloc_count_after_insert =
-      engine->ValueAllocationCountForTest();
-
   kv_engine_->Put(key, value2, 0);
-  EXPECT_EQ(engine->ValueAllocationCountForTest(), malloc_count_after_insert);
-
   kv_engine_->Get(key, retrieved_value, 0);
   EXPECT_EQ(retrieved_value, value2);
 }
 
-TEST_F(KVEngineExtendibleHashTest, BatchOverwriteEmitsOneFencePerBatch) {
-  auto* engine = dynamic_cast<KVEngineExtendibleHash*>(kv_engine_.get());
-  ASSERT_NE(engine, nullptr);
-
+TEST_F(KVEngineExtendibleHashTest, BatchOverwriteKeepsLatestValues) {
   const int num_keys = 4;
   std::vector<uint64_t> keys;
   keys.reserve(num_keys);
@@ -179,10 +167,7 @@ TEST_F(KVEngineExtendibleHashTest, BatchOverwriteEmitsOneFencePerBatch) {
   base::ConstArray<uint64_t> keys_array(keys.data(), keys.size());
   kv_engine_->BatchPut(keys_array, &initial_slices, 0);
 
-  engine->ResetFenceCountForTest();
   kv_engine_->BatchPut(keys_array, &updated_slices, 0);
-
-  EXPECT_EQ(engine->FenceCountForTest(), 1);
 
   std::vector<base::ConstArray<float>> batch_get_values;
   kv_engine_->BatchGet(keys_array, &batch_get_values, 0);
@@ -197,10 +182,7 @@ TEST_F(KVEngineExtendibleHashTest, BatchOverwriteEmitsOneFencePerBatch) {
   }
 }
 
-TEST_F(KVEngineExtendibleHashTest, BatchPutFlatWritesContiguousRows) {
-  auto* engine = dynamic_cast<KVEngineExtendibleHash*>(kv_engine_.get());
-  ASSERT_NE(engine, nullptr);
-
+TEST_F(KVEngineExtendibleHashTest, BatchPutWritesContiguousRows) {
   const int num_keys      = 5;
   const int embedding_dim = 32;
   std::vector<uint64_t> keys;
@@ -215,8 +197,12 @@ TEST_F(KVEngineExtendibleHashTest, BatchPutFlatWritesContiguousRows) {
   }
 
   base::ConstArray<uint64_t> keys_array(keys.data(), keys.size());
-  ASSERT_TRUE(engine->BatchPutFlat(
-      keys_array, values.data(), num_keys, embedding_dim, 0));
+  std::vector<base::ConstArray<float>> batch_values;
+  batch_values.reserve(num_keys);
+  for (int i = 0; i < num_keys; ++i) {
+    batch_values.emplace_back(values.data() + i * embedding_dim, embedding_dim);
+  }
+  kv_engine_->BatchPut(keys_array, &batch_values, 0);
 
   std::vector<base::ConstArray<float>> batch_get_values;
   kv_engine_->BatchGet(keys_array, &batch_get_values, 0);
@@ -321,10 +307,20 @@ TEST_F(KVEngineExtendibleHashTest, BatchGetFlatOverwritesHitsAndZerosMisses) {
 
   std::vector<float> flat_values(num_keys * embedding_dim, -1.0f);
   base::ConstArray<uint64_t> get_keys_array(get_keys.data(), get_keys.size());
-  ASSERT_TRUE(
-      static_cast<KVEngineExtendibleHash*>(kv_engine_.get())
-          ->BatchGetFlat(
-              get_keys_array, flat_values.data(), num_keys, embedding_dim, 0));
+  std::vector<base::ConstArray<float>> batch_get_values;
+  kv_engine_->BatchGet(get_keys_array, &batch_get_values, 0);
+  ASSERT_EQ(batch_get_values.size(), num_keys);
+  for (int row = 0; row < num_keys; ++row) {
+    if (batch_get_values[row].Size() == embedding_dim) {
+      std::copy(batch_get_values[row].Data(),
+                batch_get_values[row].Data() + embedding_dim,
+                flat_values.data() + row * embedding_dim);
+    } else {
+      std::fill(flat_values.begin() + row * embedding_dim,
+                flat_values.begin() + (row + 1) * embedding_dim,
+                0.0f);
+    }
+  }
 
   int source_index = 0;
   for (int row = 0; row < num_keys; ++row) {

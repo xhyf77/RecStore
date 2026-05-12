@@ -130,5 +130,3 @@ private:
   bool InsertOnly(Key_t& key, Value_t value);
   Value_t FindAnyway(Key_t&);
 };
-
-FACTORY_REGISTER(Index, DRAM, ExtendibleHash, const BaseKVConfig&);

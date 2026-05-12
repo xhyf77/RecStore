@@ -91,14 +91,30 @@ bool ShmFile::InitializeDevDax(const std::string& filename, int64 size) {
   return true;
 }
 
+bool ShmFile::InitializeAnonymousDram(const std::string& filename, int64 size) {
+  Clear();
+  data_ = reinterpret_cast<char*>(mmap(
+      nullptr,
+      size,
+      PROT_READ | PROT_WRITE,
+      MAP_PRIVATE | MAP_ANONYMOUS,
+      -1,
+      0));
+  CHECK_NE(data_, MAP_FAILED) << "anonymous DRAM mmap failed";
+  filename_       = filename;
+  size_           = size;
+  fd_             = -1;
+  anonymous_dram_ = true;
+  LOG(INFO) << "ShmFile, anonymous DRAM mmap, filename:" << filename
+            << ", size:" << size;
+  return true;
+}
+
 bool ShmFile::Initialize(const std::string& filename, int64 size) {
   LOG(INFO) << "[ShmFile::Initialize] type_=" << type_
             << ", filename=" << filename << ", size=" << size;
-  std::error_code ec;
-  if (!fs::exists("/dev/dax0.0", ec) && type_ == "DRAM") {
-    LOG(INFO) << "[ShmFile::Initialize] /dev/dax0.0 not found; override type_ "
-                 "DRAM -> SSD";
-    type_ = "SSD";
+  if (type_ == "DRAM" && PMMmapRegisterCenter::GetConfig().use_dram) {
+    return InitializeAnonymousDram(filename, size);
   }
 #ifdef __linux__
   void* bt[20];
@@ -127,6 +143,18 @@ bool ShmFile::Initialize(const std::string& filename, int64 size) {
 
 void ShmFile::ClearDevDax() {}
 
+void ShmFile::ClearAnonymousDram() {
+  if (anonymous_dram_ && data_ != NULL) {
+    LOG(INFO) << "ummap anonymous DRAM: " << filename_ << ", size: " << size_;
+    munmap(data_, size_);
+    filename_.clear();
+    data_           = NULL;
+    size_           = 0;
+    fd_             = -1;
+    anonymous_dram_ = false;
+  }
+}
+
 void ShmFile::ClearFsDax() {
   if (fd_ >= 0) {
     LOG(INFO) << "ummap shm file: " << filename_ << ", size: " << size_
@@ -140,6 +168,10 @@ void ShmFile::ClearFsDax() {
   }
 }
 void ShmFile::Clear() {
+  if (anonymous_dram_) {
+    ClearAnonymousDram();
+    return;
+  }
   std::error_code ec;
   if (fs::exists("/dev/dax0.0", ec)) {
     ClearDevDax();

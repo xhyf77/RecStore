@@ -120,7 +120,7 @@ step_folly() {
     rm -rf _build
     mkdir -p _build
     cd _build
-    CFLAGS='-fPIC' CXXFLAGS='-fPIC -Wl,-lrt' cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INCLUDE_PATH=${PROJECT_PATH}/third_party/glog/glog-install-fPIC/usr/local/include -DCMAKE_LIBRARY_PATH=${PROJECT_PATH}/third_party/glog/glog-install-fPIC/usr/local/lib ${CMAKE_REQUIRE}
+    CFLAGS='-fPIC' CXXFLAGS='-fPIC -Wl,-lrt' cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INCLUDE_PATH=${PROJECT_PATH}/third_party/glog/glog-install-fPIC/usr/local/include -DCMAKE_LIBRARY_PATH=${PROJECT_PATH}/third_party/glog/glog-install-fPIC/usr/local/lib -DLIBURING_INCLUDE_DIR=${PROJECT_PATH}/third_party/liburing/src/include -DLIBURING_LIBRARY=${PROJECT_PATH}/third_party/liburing/src/liburing.a ${CMAKE_REQUIRE}
     make ${MAKE_OPTS}
     make ${MAKE_OPTS} DESTDIR=${PROJECT_PATH}/third_party/folly/folly-install-fPIC install
 }

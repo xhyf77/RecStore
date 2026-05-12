@@ -11,6 +11,8 @@
 
 #include <iostream>
 #include <string>
+#include <chrono>
+#include <atomic>
 
 #include "db.h"
 #include "core_workload.h"
@@ -39,6 +41,37 @@ inline int ClientThread(ycsbc::DB *db, ycsbc::CoreWorkload *wl, const int num_op
       } else {
         wl->DoTransaction(*db);
       }
+      ops++;
+    }
+
+    if (cleanup_db) {
+      db->Cleanup();
+    }
+
+    latch->CountDown();
+    return ops;
+  } catch (const utils::Exception &e) {
+    std::cerr << "Caught exception: " << e.what() << std::endl;
+    exit(1);
+  }
+}
+
+inline int ClientThreadForDuration(ycsbc::DB *db, ycsbc::CoreWorkload *wl,
+                                   std::chrono::steady_clock::time_point deadline,
+                                   bool init_db, bool cleanup_db,
+                                   utils::CountDownLatch *latch,
+                                   utils::RateLimiter *rlim) {
+  try {
+    if (init_db) {
+      db->Init();
+    }
+
+    int ops = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (rlim) {
+        rlim->Consume(1);
+      }
+      wl->DoTransaction(*db);
       ops++;
     }
 

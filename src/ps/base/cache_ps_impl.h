@@ -14,7 +14,6 @@
 #include "base/timer.h"
 #include "parameters.h"
 #include "storage/kv_engine/base_kv.h"
-#include "storage/kv_engine/engine_extendible_hash.h"
 #include "storage/kv_engine/engine_factory.h"
 #include "storage/kv_engine/engine_selector.h"
 #include "optimizer/optimizer.h"
@@ -95,18 +94,6 @@ public:
       return;
     }
     base::ConstArray<uint64_t> key_array(keys, key_count);
-    if (auto* extendible_hash =
-            dynamic_cast<KVEngineExtendibleHash*>(base_kv_.get());
-        extendible_hash != nullptr) {
-      const bool ok = extendible_hash->BatchPutFlat(
-          key_array, values, key_count, embedding_dim, tid);
-      if (ok) {
-        return;
-      }
-      LOG(ERROR) << "PutDenseParameterBatch direct path failed, fallback to "
-                    "generic BatchPut";
-    }
-
     std::vector<base::ConstArray<float>> value_slices;
     value_slices.reserve(static_cast<std::size_t>(key_count));
     for (int i = 0; i < key_count; ++i) {
@@ -247,17 +234,6 @@ public:
       LOG(ERROR) << "GetParameterFlat keys size mismatch " << keys.Size()
                  << " vs " << num_rows;
       return false;
-    }
-
-    if (auto* extendible_hash =
-            dynamic_cast<KVEngineExtendibleHash*>(base_kv_.get());
-        extendible_hash != nullptr) {
-      const auto direct_start = std::chrono::steady_clock::now();
-      const bool ok           = extendible_hash->BatchGetFlat(
-          keys, values, num_rows, embedding_dim, tid);
-      recstore::ReportLocalShmStageMetric(
-          "cache_ps_get_direct_us", recstore::LocalShmElapsedUs(direct_start));
-      return ok;
     }
 
     const auto batch_get_start = std::chrono::steady_clock::now();

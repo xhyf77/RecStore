@@ -52,7 +52,11 @@ def get_env_config() -> Dict[str, Any]:
                 rc = json.load(f)
                 cache_ps = rc.get("cache_ps", {})
                 config["storage_backend_type"] = "RecStore_PS"
-                config["storage_value_type"] = cache_ps.get("base_kv_config", {}).get("value_type", "Unknown")
+                config["storage_value_type"] = (
+                    cache_ps.get("base_kv_config", {})
+                    .get("value", {})
+                    .get("type", "Unknown")
+                )
         except Exception as e:
             config["storage_backend_error"] = str(e)
     else:

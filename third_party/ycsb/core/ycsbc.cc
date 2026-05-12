@@ -180,7 +180,10 @@ int main(const int argc, const char *argv[]) {
     // rate file path for dynamic rate limiting, format "time_stamp_sec new_ops_per_second" per line
     std::string rate_file = props.GetProperty("limit.file", "");
 
-    const int total_ops = stoi(props[ycsbc::CoreWorkload::OPERATION_COUNT_PROPERTY]);
+    const int runtime_seconds = std::stoi(props.GetProperty("runtime.seconds", "0"));
+    const int total_ops = runtime_seconds > 0
+                              ? 0
+                              : stoi(props[ycsbc::CoreWorkload::OPERATION_COUNT_PROPERTY]);
 
     ycsbc::utils::CountDownLatch latch(num_threads);
     ycsbc::utils::Timer<double> timer;
@@ -193,19 +196,30 @@ int main(const int argc, const char *argv[]) {
     }
     std::vector<std::future<int>> client_threads;
     std::vector<ycsbc::utils::RateLimiter *> rate_limiters;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(runtime_seconds);
     for (int i = 0; i < num_threads; ++i) {
-      int thread_ops = total_ops / num_threads;
-      if (i < total_ops % num_threads) {
-        thread_ops++;
-      }
       ycsbc::utils::RateLimiter *rlim = nullptr;
       if (ops_limit > 0 || rate_file != "") {
         int64_t per_thread_ops = ops_limit / num_threads;
         rlim = new ycsbc::utils::RateLimiter(per_thread_ops, per_thread_ops);
       }
       rate_limiters.push_back(rlim);
-      client_threads.emplace_back(std::async(std::launch::async, ycsbc::ClientThread, dbs[i], &wl,
-                                             thread_ops, false, !do_load, true, &latch, rlim));
+      if (runtime_seconds > 0) {
+        client_threads.emplace_back(std::async(std::launch::async,
+                                               ycsbc::ClientThreadForDuration,
+                                               dbs[i], &wl, deadline,
+                                               !do_load, true, &latch, rlim));
+      } else {
+        int thread_ops = total_ops / num_threads;
+        if (i < total_ops % num_threads) {
+          thread_ops++;
+        }
+        client_threads.emplace_back(std::async(std::launch::async,
+                                               ycsbc::ClientThread, dbs[i], &wl,
+                                               thread_ops, false, !do_load, true,
+                                               &latch, rlim));
+      }
     }
 
     std::future<void> rlim_future;
