@@ -148,6 +148,7 @@ jobs:
           PULLED_IMAGE="${TEST_IMAGE}"
 
           docker run -d --name "${TEST_CONTAINER}" --network host \
+            --security-opt seccomp=unconfined \
             -v "${GITHUB_WORKSPACE}:/workspace" \
             "${PULLED_IMAGE}" \
             bash -lc 'tail -f /dev/null'

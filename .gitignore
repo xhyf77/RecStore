@@ -1,3 +1,4 @@
+*.INFO
 *.ERROR
 *.WARNING
 *.code-workspace
@@ -33,3 +34,13 @@ third_party/protobuf-install/
 third_party/libtorch/
 results/
 plan
+
+.worktrees/
+.cache/
+
+.claude/
+docs/superpowers/
+
+rpc_data/
+Testing/
+
