@@ -380,6 +380,58 @@ class TestTorchRecConfig(unittest.TestCase):
 
             self.assertEqual(rc, 0)
 
+    def test_cli_loads_base_config_from_resolver(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            resolver_config = Path(tmpdir) / "recstore_config.json"
+            resolver_config.write_text(
+                json.dumps(
+                    {
+                        "client": {"host": "127.0.0.1", "port": 15123, "shard": 0},
+                        "cache_ps": {"servers": []},
+                        "distributed_client": {"servers": []},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class _FakeRunner:
+                def run(self, repo_root, cfg):
+                    Path(cfg.recstore_main_csv).parent.mkdir(parents=True, exist_ok=True)
+                    Path(cfg.recstore_main_csv).write_text(
+                        "step_total_ms,input_pack_ms,embed_lookup_local_ms,embed_pool_local_ms,output_unpack_ms,dense_fwd_ms,backward_ms,optimizer_ms,sparse_update_ms,emb_stage_ms\n"
+                        "1.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,1.0\n",
+                        encoding="utf-8",
+                    )
+                    return {"backend": "recstore", "rows": []}
+
+            missing_repo_root = Path(tmpdir) / "missing-repo-root"
+            with mock.patch.object(
+                cli, "resolve_recstore_config_path", return_value=resolver_config
+            ), mock.patch.object(
+                cli, "repo_root_from_this_file", return_value=missing_repo_root
+            ), mock.patch.object(
+                cli, "build_runner", return_value=_FakeRunner()
+            ), mock.patch.object(
+                cli, "make_runtime_dir", return_value=(Path(tmpdir), resolver_config)
+            ), mock.patch.object(
+                cli, "analyze_embupdate", return_value="ok"
+            ):
+                rc = cli.main(
+                    [
+                        "--backend",
+                        "recstore",
+                        "--steps",
+                        "1",
+                        "--no-start-server",
+                        "--output-root",
+                        tmpdir,
+                        "--run-id",
+                        "resolver-config",
+                    ]
+                )
+
+            self.assertEqual(rc, 0)
+
     def test_cli_recstore_runtime_dir_skips_make_runtime_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)

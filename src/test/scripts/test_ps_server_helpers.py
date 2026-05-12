@@ -1,11 +1,33 @@
 import os
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+import recstore_config_path
 import ps_server_helpers
 
 
 class TestPSServerHelpers(unittest.TestCase):
+    def test_find_config_file_prefers_default_docker_path_from_nested_cwd(self):
+        with tempfile.TemporaryDirectory() as default_tmp, tempfile.TemporaryDirectory() as cwd_tmp:
+            default_config = Path(default_tmp) / "recstore_config.json"
+            nested = Path(cwd_tmp) / "a" / "b"
+            nested.mkdir(parents=True)
+            default_config.write_text("{}", encoding="utf-8")
+
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+                recstore_config_path,
+                "DEFAULT_RECSTORE_CONFIG_PATH",
+                default_config,
+            ), mock.patch.object(ps_server_helpers.os, "getcwd", return_value=str(nested)):
+                self.assertEqual(ps_server_helpers.find_config_file(), str(default_config))
+
     def test_get_rdma_skip_reason_when_infiniband_dir_missing(self):
         with mock.patch.object(ps_server_helpers.os.path, "isdir", return_value=False):
             reason = ps_server_helpers.get_rdma_skip_reason()

@@ -20,6 +20,7 @@ if TEST_SCRIPTS_PATH not in sys.path:
 
 from ps_server_runner import ps_server_context
 from ps_server_helpers import should_skip_server_start, get_server_config
+from recstore_config_path import resolve_recstore_config_path
 
 TEST_MODULE_PATH = os.path.join(os.path.dirname(__file__), 'test_ebc_precision.py')
 MP_TEST_MODULE_PATH = os.path.join(os.path.dirname(__file__), 'test_ebc_precision_multiprocess.py')
@@ -29,10 +30,7 @@ _test_result = None
 
 
 def _resolve_repo_config_path():
-    config_path = os.path.join(REPO_ROOT, 'recstore_config.json')
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"recstore_config.json not found at {config_path}")
-    return config_path
+    return str(resolve_recstore_config_path())
 
 
 def _resolve_ps_endpoint(config_path=None):

@@ -40,8 +40,11 @@ from tqdm import tqdm
 
 from torch.profiler import profile, record_function, ProfilerActivity
 
-RECSTORE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../src'))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..'))
+RECSTORE_PATH = os.path.join(REPO_ROOT, 'src')
 DLRM_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 if RECSTORE_PATH not in sys.path:
     sys.path.insert(0, RECSTORE_PATH)
 if DLRM_PATH not in sys.path:
@@ -79,9 +82,10 @@ def report_latency(name: str, ms_value: float):
     device_str = "GPU" if torch.cuda.is_available() else "CPU"
     
     import json
-    config_path = os.path.join(os.path.dirname(__file__), '../../../recstore_config.json')
+    from recstore_config_path import resolve_recstore_config_path
+
     try:
-        with open(config_path, 'r') as f:
+        with open(resolve_recstore_config_path(), 'r') as f:
             config = json.load(f)
             value_type = (
                 config.get('cache_ps', {})

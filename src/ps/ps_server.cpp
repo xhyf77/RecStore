@@ -13,6 +13,7 @@
 #include "base/json.h"
 #include "ps/base/base_ps_server.h"
 #include "recstore_config.h"
+#include "src/base/config.h"
 
 #ifdef ENABLE_PERF_REPORT
 #  include <chrono>
@@ -70,11 +71,25 @@ int main(int argc, char** argv) {
 
   std::string cfg_path = FLAGS_config_path;
   {
-    std::ifstream test(cfg_path);
-    if (!test.good()) {
+    if (!cfg_path.empty()) {
+      std::ifstream test(cfg_path);
+      if (!test.good()) {
+        cfg_path.clear();
+      }
+    }
+    if (cfg_path.empty() && !FLAGS_brpc_config_path.empty()) {
       std::ifstream test_b(FLAGS_brpc_config_path);
-      if (test_b.good())
+      if (test_b.good()) {
         cfg_path = FLAGS_brpc_config_path;
+      }
+    }
+    if (cfg_path.empty()) {
+      try {
+        cfg_path = base::ResolveRecStoreConfigPath().string();
+      } catch (const std::exception& e) {
+        LOG(ERROR) << e.what();
+        return 1;
+      }
     }
   }
 

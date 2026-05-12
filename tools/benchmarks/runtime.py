@@ -5,9 +5,11 @@ from pathlib import Path
 
 from .common import DEFAULT_OUTPUT_ROOT, REPO_ROOT
 
+from recstore_config_path import resolve_recstore_config_path
+
 
 def build_remote_recstore_runtime(run_slug: str, *, path_name: str, output_root: Path = DEFAULT_OUTPUT_ROOT) -> Path:
-    base_cfg = json.loads((REPO_ROOT / 'recstore_config.json').read_text(encoding='utf-8'))
+    base_cfg = json.loads(resolve_recstore_config_path().read_text(encoding='utf-8'))
     runtime_dir = output_root / 'runtime' / run_slug
     runtime_dir.mkdir(parents=True, exist_ok=True)
     cfg = json.loads(json.dumps(base_cfg))

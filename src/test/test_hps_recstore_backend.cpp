@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include "storage/external/hps/hps_recstore.h"
+#include "test_io_uring_helper.h"
 
 namespace {
 
@@ -68,7 +69,7 @@ void AssertInsertFetchAndMiss(
 } // namespace
 
 TEST(HpsRecStoreBackendTest, InsertFetchAndMissCallback) {
-  const std::string path = "/tmp/test_hps_recstore_backend_" +
+  const std::string path = "/dev/shm/test_hps_recstore_backend_" +
                            std::to_string(static_cast<long long>(getpid()));
   std::filesystem::remove_all(path);
 
@@ -79,6 +80,10 @@ TEST(HpsRecStoreBackendTest, InsertFetchAndMissCallback) {
 }
 
 TEST(HpsRecStoreBackendTest, SsdValueStoreInsertFetchAndMissCallback) {
+  std::string reason;
+  if (!test_utils::CanUseIoUring(&reason))
+    GTEST_SKIP() << reason;
+
   const std::string path = "/tmp/test_hps_recstore_backend_ssd_" +
                            std::to_string(static_cast<long long>(getpid()));
   std::filesystem::remove_all(path);

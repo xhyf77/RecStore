@@ -5,10 +5,12 @@
 #include <stdexcept>
 #include <string>
 
+#include "recstore_config.h"
+
 namespace base {
 
 inline constexpr const char* kDefaultRecStoreConfigPath =
-    "/app/RecStore/recstore_config.json";
+    RECSTORE_PATH "/recstore_config.json";
 inline constexpr const char* kRecStoreConfigFilename = "recstore_config.json";
 
 namespace detail {
@@ -21,10 +23,6 @@ inline bool ConfigFileExists(const std::filesystem::path& path) {
 inline std::optional<std::filesystem::path>
 FindRecStoreConfigPath(const std::filesystem::path& default_path,
                        std::filesystem::path start_dir) {
-  if (ConfigFileExists(default_path)) {
-    return default_path;
-  }
-
   std::error_code ec;
   if (!start_dir.is_absolute()) {
     start_dir = std::filesystem::absolute(start_dir, ec);
@@ -44,6 +42,10 @@ FindRecStoreConfigPath(const std::filesystem::path& default_path,
       break;
     }
     start_dir = parent;
+  }
+
+  if (ConfigFileExists(default_path)) {
+    return default_path;
   }
 
   return std::nullopt;

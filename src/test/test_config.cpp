@@ -17,7 +17,10 @@ public:
     std::filesystem::current_path(path);
   }
 
-  ~ScopedCurrentPath() { std::filesystem::current_path(old_path_); }
+  ~ScopedCurrentPath() noexcept {
+    std::error_code ec;
+    std::filesystem::current_path(old_path_, ec);
+  }
 
 private:
   std::filesystem::path old_path_;
@@ -56,8 +59,8 @@ void Touch(const std::filesystem::path& path) {
 
 namespace base {
 
-TEST(ConfigPathTest, PrefersDefaultPathBeforeSearchingUpward) {
-  ScopedTempDir root(MakeTempRoot() / "prefers_default");
+TEST(ConfigPathTest, PrefersSearchPathBeforeDefaultPath) {
+  ScopedTempDir root(MakeTempRoot() / "prefers_search_path");
 
   const auto default_path = root.path() / "default" / "recstore_config.json";
   const auto nested_path  = root.path() / "repo" / "a" / "b";
@@ -70,7 +73,7 @@ TEST(ConfigPathTest, PrefersDefaultPathBeforeSearchingUpward) {
 
   ASSERT_TRUE(found.has_value());
   EXPECT_EQ(std::filesystem::weakly_canonical(*found),
-            std::filesystem::weakly_canonical(default_path));
+            std::filesystem::weakly_canonical(repo_config));
 }
 
 TEST(ConfigPathTest, SearchesFromCurrentDirectoryUpward) {

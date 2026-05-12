@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -35,12 +36,11 @@
 #include "ps/rdma/rdma_transport_mode.h"
 #include "petps_magic.h"
 #include "recstore_config.h"
+#include "src/base/config.h"
 #include "third_party/Mayfly-main/include/DSM.h"
 #include "third_party/json/single_include/nlohmann/json.hpp"
 
-DEFINE_string(config_path,
-              RECSTORE_PATH "/recstore_config.json",
-              "config file path");
+DEFINE_string(config_path, "", "config file path");
 
 DEFINE_double(warmup_ratio,
               0.8,
@@ -967,9 +967,12 @@ int main(int argc, char* argv[]) {
   global_socket_id = FLAGS_numa_id;
   LOG(INFO) << "set NUMA ID = " << FLAGS_numa_id;
 
-  std::ifstream config_file(FLAGS_config_path);
+  const std::string config_path = FLAGS_config_path.empty()
+                                      ? base::ResolveRecStoreConfigPath().string()
+                                      : FLAGS_config_path;
+  std::ifstream config_file(config_path);
   if (!config_file.is_open()) {
-    LOG(FATAL) << "Cannot open config file: " << FLAGS_config_path;
+    LOG(FATAL) << "Cannot open config file: " << config_path;
   }
   nlohmann::json config;
   config_file >> config;
