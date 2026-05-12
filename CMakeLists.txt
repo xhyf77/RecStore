@@ -222,6 +222,7 @@ set(Torch_DIR "${PROJECT_SOURCE_DIR}/third_party/libtorch/libtorch/share/cmake/T
 set(RECSTORE_FOLLY_INSTALL_DIR
     "${PROJECT_SOURCE_DIR}/third_party/folly/folly-install-fPIC/usr/local/lib/cmake/folly")
 set(RECSTORE_FOLLY_BUILD_DIR "${PROJECT_SOURCE_DIR}/third_party/folly/_build")
+set(RECSTORE_FOLLY_BUILD_LIBRARY "${RECSTORE_FOLLY_BUILD_DIR}/libfolly.a")
 set(folly_DIR "${RECSTORE_FOLLY_INSTALL_DIR}")
 set(FOLLY_ROOT_DIR "${folly_DIR}")
 
@@ -232,6 +233,24 @@ if(EXISTS "${RECSTORE_FOLLY_INSTALL_DIR}/folly-config.cmake")
   if(TARGET Folly::folly)
     set_target_properties(Folly::folly PROPERTIES MAP_IMPORTED_CONFIG_DEBUG Release)
   endif()
+elseif(EXISTS "${RECSTORE_FOLLY_BUILD_LIBRARY}")
+  find_package(Threads REQUIRED)
+  find_package(Boost 1.51.0 REQUIRED COMPONENTS
+    context
+    filesystem
+    program_options
+    regex
+    system
+    thread
+  )
+  add_library(Folly::folly STATIC IMPORTED)
+  set_target_properties(Folly::folly PROPERTIES
+    IMPORTED_LOCATION "${RECSTORE_FOLLY_BUILD_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES
+      "${PROJECT_SOURCE_DIR}/third_party/folly;${RECSTORE_FOLLY_BUILD_DIR};${PROJECT_SOURCE_DIR}/third_party/liburing/src/include"
+    INTERFACE_LINK_LIBRARIES
+      "fmt::fmt;Threads::Threads;Boost::context;Boost::filesystem;Boost::program_options;Boost::regex;Boost::system;Boost::thread;/usr/lib/x86_64-linux-gnu/libdouble-conversion.so;/usr/lib/x86_64-linux-gnu/libgflags.so.2.2.2;${PROJECT_SOURCE_DIR}/third_party/glog/glog-install-fPIC/usr/local/lib/libglog.so;/usr/lib/x86_64-linux-gnu/libevent.so;/usr/lib/x86_64-linux-gnu/libz.so;/usr/lib/x86_64-linux-gnu/libssl.so;/usr/lib/x86_64-linux-gnu/libcrypto.so;/usr/lib/x86_64-linux-gnu/libbz2.so;/usr/lib/x86_64-linux-gnu/liblzma.so;/usr/lib/x86_64-linux-gnu/liblz4.so;/usr/lib/x86_64-linux-gnu/libzstd.so;/usr/lib/x86_64-linux-gnu/libsnappy.so;/usr/local/lib/libdwarf.a;/usr/lib/x86_64-linux-gnu/libiberty.a;/usr/lib/x86_64-linux-gnu/libaio.so;${PROJECT_SOURCE_DIR}/third_party/liburing/src/liburing.a;dl;/usr/lib/x86_64-linux-gnu/libunwind.so"
+  )
 else()
   add_library(Folly::folly INTERFACE IMPORTED)
   target_include_directories(Folly::folly INTERFACE
