@@ -7,6 +7,7 @@ import signal
 import subprocess
 import threading
 import argparse
+import re
 from pathlib import Path
 from datetime import datetime
 from contextlib import contextmanager
@@ -108,16 +109,22 @@ class PSServerRunner:
                 
                 if "listening on" in line:
                     try:
-                        if "Server shard" in line:
-                            shard_id = int(line.split("shard")[1].split()[0])
-                        elif "Server listening on" in line:
-                            shard_id = 0 # Default to shard 0 for single server mode
-                        else:
+                        shard_ids = [
+                            int(m.group(1))
+                            for m in re.finditer(
+                                r"(?:bRPC\s+)?Server shard\s+(\d+)\s+listening on",
+                                line,
+                            )
+                        ]
+                        if not shard_ids and "Server listening on" in line:
+                            shard_ids = [0]
+                        if not shard_ids:
                             continue
-                            
-                        self.shard_ready.add(shard_id)
-                        self._log(f"✓ Detected shard {shard_id} ready")
-                        
+
+                        for shard_id in shard_ids:
+                            self.shard_ready.add(shard_id)
+                            self._log(f"✓ Detected shard {shard_id} ready")
+
                         if len(self.shard_ready) >= self.num_shards:
                             self._log(f"✓ All {self.num_shards} shards ready")
                             self.ready_event.set()

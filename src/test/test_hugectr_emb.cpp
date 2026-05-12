@@ -134,11 +134,17 @@ static void maybe_test_hierkv_selection() {
     "num_shards": 1,
     "servers": [{"host": "127.0.0.1", "port": 15123, "shard": 0}],
     "base_kv_config": {
-      "path": "/tmp/recstore_data",
       "capacity": 1000,
-      "value_size": 512,
-      "value_type": "DRAM",
-      "index_type": "DRAM"
+      "index": {"type": "DRAM_EXTENDIBLE_HASH"},
+      "value": {
+        "type": "DRAM_VALUE_STORE",
+        "path": "/tmp/recstore_data/value",
+        "default_value_size_hint": 512,
+        "dram_allocator": {
+          "type": "PERSIST_LOOP_SLAB",
+          "capacity_bytes": 512000
+        }
+      }
     }
   },
   "distributed_client": {

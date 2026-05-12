@@ -11,8 +11,13 @@
 #include "base/init.h"
 #include "base/zipf.h"
 #include "storage/kv_engine/base_kv.h"
+#include "storage/kv_engine/engine_factory.h"
+#include "storage/kv_engine/engine_selector.h"
 
-DEFINE_string(db, "", "");
+DEFINE_string(db, "recstore_zipf", "path suffix");
+DEFINE_string(index_type, "DRAM_EXTENDIBLE_HASH", "index.type");
+DEFINE_string(value_store_type, "DRAM_VALUE_STORE", "value.type");
+DEFINE_string(dram_allocator, "PERSIST_LOOP_SLAB", "value.dram_allocator.type");
 DEFINE_int32(value_size, 32 * 4, "");
 DEFINE_int32(read_ratio, 50, "");
 DEFINE_int32(thread_count, 1, "");
@@ -85,10 +90,24 @@ void thread_run(int id) {
 int main(int argc, char* argv[]) {
   base::Init(&argc, &argv);
   BaseKVConfig config;
-  config.json_config_["capacity"]   = kKeySpace;
-  config.json_config_["value_size"] = FLAGS_value_size;
-  kv =
-      base::Factory<BaseKV, const BaseKVConfig&>::NewInstance(FLAGS_db, config);
+  config.json_config_ = {
+      {"capacity", kKeySpace},
+      {"index", {{"type", FLAGS_index_type}}},
+      {"value",
+       {{"type", FLAGS_value_store_type},
+        {"path", "/tmp/" + FLAGS_db + "/value"},
+        {"default_value_size_hint", FLAGS_value_size}}}};
+  if (FLAGS_value_store_type == "DRAM_VALUE_STORE") {
+    config.json_config_["value"]["dram_allocator"] = {
+        {"type", FLAGS_dram_allocator},
+        {"capacity_bytes",
+         kKeySpace * static_cast<uint64_t>(FLAGS_value_size)}};
+  } else {
+    LOG(FATAL) << "benchmark_zipf currently supports DRAM_VALUE_STORE only";
+  }
+  auto resolved = base::ResolveEngine(config);
+  kv            = base::Factory<BaseKV, const BaseKVConfig&>::NewInstance(
+      resolved.engine, resolved.cfg);
   for (int i = 0; i < FLAGS_thread_count; i++) {
     th[i] = std::thread(thread_run, i);
   }

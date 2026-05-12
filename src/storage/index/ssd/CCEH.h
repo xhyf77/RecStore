@@ -137,5 +137,3 @@ private:
 
   Value_t FindAnyway(const Key_t&);
 };
-
-FACTORY_REGISTER(Index, SSD, CCEH, const BaseKVConfig&);

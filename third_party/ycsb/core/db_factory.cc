@@ -30,7 +30,11 @@ DB *DBFactory::CreateDB(utils::Properties *props, Measurements *measurements) {
   if (registry.find(db_name) != registry.end()) {
     DB *new_db = (*registry[db_name])();
     new_db->SetProps(props);
-    db = new DBWrapper(new_db, measurements);
+    if (props->GetProperty("measurementtype", "") == "none") {
+      db = new_db;
+    } else {
+      db = new DBWrapper(new_db, measurements);
+    }
   }
   return db;
 }

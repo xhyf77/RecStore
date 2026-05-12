@@ -24,6 +24,19 @@ namespace recstore {
 namespace {
 constexpr float kRdmaUpdateLearningRate = 0.01f;
 
+int ValueSizeHintFromBaseKvConfig(const json& base_kv_config,
+                                  int fallback_value_size) {
+  if (!base_kv_config.is_object()) {
+    return fallback_value_size;
+  }
+  if (!base_kv_config.contains("value") ||
+      !base_kv_config["value"].is_object()) {
+    return fallback_value_size;
+  }
+  return base_kv_config["value"].value(
+      "default_value_size_hint", fallback_value_size);
+}
+
 std::vector<std::string> ReadProcessArgv() {
   std::ifstream cmdline("/proc/self/cmdline", std::ios::binary);
   std::vector<std::string> argv;
@@ -92,7 +105,8 @@ void RDMAPSClientAdapter::EnsureClientInitialized() {
   FLAGS_global_id            = num_shards;
   FLAGS_value_size =
       cache_ps_cfg.contains("base_kv_config")
-          ? cache_ps_cfg["base_kv_config"].value("value_size", FLAGS_value_size)
+          ? ValueSizeHintFromBaseKvConfig(
+                cache_ps_cfg["base_kv_config"], FLAGS_value_size)
           : FLAGS_value_size;
   FLAGS_max_kv_num_per_request =
       dist_cfg.value("max_keys_per_request", FLAGS_max_kv_num_per_request);

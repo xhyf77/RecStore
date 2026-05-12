@@ -69,6 +69,13 @@ void BasicMeasurements::Reset() {
   std::fill(std::begin(latency_max_), std::end(latency_max_), 0);
 }
 
+class NoopMeasurements : public Measurements {
+ public:
+  void Report(Operation, uint64_t) override {}
+  std::string GetStatusMsg() override { return "0 operations"; }
+  void Reset() override {}
+};
+
 #ifdef HDRMEASUREMENT
 HdrHistogramMeasurements::HdrHistogramMeasurements() {
   for (int op = 0; op < MAXOPTYPE; op++) {
@@ -120,6 +127,8 @@ Measurements *CreateMeasurements(utils::Properties *props) {
   Measurements *measurements;
   if (name == "basic") {
     measurements = new BasicMeasurements();
+  } else if (name == "none") {
+    measurements = new NoopMeasurements();
 #ifdef HDRMEASUREMENT
   } else if (name == "hdrhistogram") {
     measurements = new HdrHistogramMeasurements();

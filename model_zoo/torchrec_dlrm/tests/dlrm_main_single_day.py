@@ -83,7 +83,12 @@ def report_latency(name: str, ms_value: float):
     try:
         with open(config_path, 'r') as f:
             config = json.load(f)
-            value_type = config.get('cache_ps', {}).get('base_kv_config', {}).get('value_type', 'DRAM')
+            value_type = (
+                config.get('cache_ps', {})
+                .get('base_kv_config', {})
+                .get('value', {})
+                .get('type', 'DRAM_VALUE_STORE')
+            )
             storage_str = value_type
     except (FileNotFoundError, json.JSONDecodeError, KeyError):
         storage_str = "DRAM" 

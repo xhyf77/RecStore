@@ -27,10 +27,16 @@ def build_remote_recstore_runtime(run_slug: str, *, path_name: str, output_root:
         ],
     }
     cfg['client'] = {'host': '10.0.2.68', 'port': 15123, 'shard': 0}
-    cfg['cache_ps']['base_kv_config']['value_memory_management'] = 'PersistLoopShmMalloc'
-    cfg['cache_ps']['base_kv_config']['index_type'] = 'DRAM'
-    cfg['cache_ps']['base_kv_config']['capacity'] = 10400000
-    cfg['cache_ps']['base_kv_config']['path'] = f'/tmp/{path_name}'
+    base_kv = cfg['cache_ps']['base_kv_config']
+    base_kv['capacity'] = 10400000
+    base_kv['index'] = {'type': 'DRAM_EXTENDIBLE_HASH'}
+    value = base_kv.setdefault('value', {})
+    value['type'] = 'DRAM_VALUE_STORE'
+    value['path'] = f'/tmp/{path_name}/value'
+    value['dram_allocator'] = {
+        'type': 'PERSIST_LOOP_SLAB',
+        'capacity_bytes': 10400000 * int(value.get('default_value_size_hint', 512)),
+    }
     config_path = runtime_dir / 'recstore_config.json'
     config_path.write_text(json.dumps(cfg, indent=2), encoding='utf-8')
     return config_path

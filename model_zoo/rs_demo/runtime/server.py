@@ -67,6 +67,15 @@ def choose_available_ports(host: str, preferred0: int, preferred1: int) -> tuple
     return p0, p1
 
 
+def normalize_allocator_type(allocator: str) -> str:
+    allocator_upper = allocator.upper()
+    if allocator_upper in {"PERSISTLOOPSHMMALLOC", "PERSIST_LOOP_SHM_MALLOC", "PERSIST_LOOP_SLAB"}:
+        return "PERSIST_LOOP_SLAB"
+    if allocator_upper in {"R2SHMMALLOC", "R2_SHM_MALLOC", "R2_SLAB"}:
+        return "R2_SLAB"
+    return allocator
+
+
 def wait_server_ready(
     proc: subprocess.Popen,
     host: str,
@@ -140,18 +149,28 @@ def build_runtime_config(
         }
 
     base_kv = cfg["cache_ps"].setdefault("base_kv_config", {})
-    base_kv["value_memory_management"] = allocator
-    base_kv["path"] = resolve_kv_data_path(
+    kv_data_path = resolve_kv_data_path(
         output_root=output_root,
         run_id=run_id,
         path_suffix=path_suffix,
         allocator=allocator,
     )
-    base_kv["index_type"] = "DRAM"
     if kv_capacity is not None:
         base_kv["capacity"] = int(kv_capacity)
+    capacity = int(base_kv.get("capacity", kv_capacity or 1_000_000))
+    value = base_kv.setdefault("value", {})
+    value["path"] = f"{kv_data_path}/value"
     if value_size_bytes is not None:
-        base_kv["value_size"] = int(value_size_bytes)
+        value["default_value_size_hint"] = int(value_size_bytes)
+    value_size_hint = int(value.get("default_value_size_hint", value_size_bytes or 512))
+    base_kv["index"] = {"type": "DRAM_EXTENDIBLE_HASH"}
+    value["type"] = "DRAM_VALUE_STORE"
+    dram_allocator = value.setdefault("dram_allocator", {})
+    dram_allocator["type"] = normalize_allocator_type(allocator)
+    dram_allocator["capacity_bytes"] = max(
+        int(dram_allocator.get("capacity_bytes", 0)),
+        capacity * value_size_hint,
+    )
     return cfg
 
 
