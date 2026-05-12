@@ -838,9 +838,10 @@ FACTORY_REGISTER(BaseParameterServer, BRPCParameterServer, BRPCParameterServer);
 int main(int argc, char** argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-  const std::string config_path = FLAGS_brpc_config_path.empty()
-                                      ? base::ResolveRecStoreConfigPath().string()
-                                      : FLAGS_brpc_config_path;
+  const std::string config_path =
+      FLAGS_brpc_config_path.empty()
+          ? base::ResolveRecStoreConfigPath().string()
+          : FLAGS_brpc_config_path;
   std::ifstream config_file(config_path);
   if (!config_file.is_open()) {
     throw std::runtime_error("Cannot open config file: " + config_path);

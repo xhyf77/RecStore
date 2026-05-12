@@ -56,8 +56,8 @@ struct ScopedConfigOverride {
       : temp_dir_(std::filesystem::temp_directory_path() /
                   ("recstore_hugectr_test_" +
                    std::to_string(static_cast<long long>(getpid())))),
-        old_path_(std::filesystem::current_path()), path_(temp_dir_ /
-                                                          "recstore_config.json") {
+        old_path_(std::filesystem::current_path()),
+        path_(temp_dir_ / "recstore_config.json") {
     std::filesystem::create_directories(temp_dir_);
     std::filesystem::current_path(temp_dir_);
     std::ifstream input(path_);

@@ -967,9 +967,10 @@ int main(int argc, char* argv[]) {
   global_socket_id = FLAGS_numa_id;
   LOG(INFO) << "set NUMA ID = " << FLAGS_numa_id;
 
-  const std::string config_path = FLAGS_config_path.empty()
-                                      ? base::ResolveRecStoreConfigPath().string()
-                                      : FLAGS_config_path;
+  const std::string config_path =
+      FLAGS_config_path.empty()
+          ? base::ResolveRecStoreConfigPath().string()
+          : FLAGS_config_path;
   std::ifstream config_file(config_path);
   if (!config_file.is_open()) {
     LOG(FATAL) << "Cannot open config file: " << config_path;

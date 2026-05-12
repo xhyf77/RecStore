@@ -660,9 +660,10 @@ FACTORY_REGISTER(BaseParameterServer, GRPCParameterServer, GRPCParameterServer);
 int main(int argc, char** argv) {
   base::Init(&argc, &argv);
   xmh::Reporter::StartReportThread(2000);
-  const std::string config_path = FLAGS_config_path.empty()
-                                      ? base::ResolveRecStoreConfigPath().string()
-                                      : FLAGS_config_path;
+  const std::string config_path =
+      FLAGS_config_path.empty()
+          ? base::ResolveRecStoreConfigPath().string()
+          : FLAGS_config_path;
   std::ifstream config_file(config_path);
   if (!config_file.is_open()) {
     throw std::runtime_error("Cannot open config file: " + config_path);
