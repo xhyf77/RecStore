@@ -21,6 +21,7 @@
 
 #include "storage/kv_engine/engine_factory.h"
 #include "storage/kv_engine/engine_selector.h"
+#include "test_io_uring_helper.h"
 
 class KVEngineCartesianTest
     : public ::testing::TestWithParam<
@@ -100,6 +101,13 @@ protected:
       GTEST_SKIP() << "Skip invalid SSD index combo with " << value_type_;
     }
 
+    if (NeedsIoUring(index_type_, value_type_)) {
+      std::string reason;
+      if (!test_utils::CanUseIoUring(&reason)) {
+        GTEST_SKIP() << reason;
+      }
+    }
+
     cfg_.json_config_ = BuildConfig(capacity, value_sz);
 
     auto r       = base::ResolveEngine(cfg_);
@@ -155,6 +163,11 @@ protected:
 private:
   static bool IsSsdIndex(const std::string& idx) {
     return idx == "SSD" || idx == "SSD_EXTENDIBLE_HASH";
+  }
+
+  static bool NeedsIoUring(const std::string& idx, const std::string& val) {
+    return IsSsdIndex(idx) || val == "SSD_VALUE_STORE" ||
+           val == "TIERED_VALUE_STORE";
   }
 
   json BuildConfig(size_t capacity, int value_sz) const {
