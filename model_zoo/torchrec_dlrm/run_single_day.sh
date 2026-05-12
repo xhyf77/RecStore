@@ -23,8 +23,28 @@ REPO_ROOT="$(cd "${DLRM_PATH}/../.." && pwd)"
 TORCHREC_SCRIPT="${DLRM_PATH}/tests/dlrm_main_torchrec_single.py"
 CUSTOM_SCRIPT="${DLRM_PATH}/tests/dlrm_main_single_day.py"
 DEFAULT_PS_SERVER_PATH="${REPO_ROOT}/build/bin/ps_server"
-DEFAULT_PS_CONFIG_PATH="${REPO_ROOT}/recstore_config.json"
 DEFAULT_PS_LOG_DIR="/tmp"
+
+if command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+else
+    echo "Error: Neither python nor python3 is available in PATH" >&2
+    exit 1
+fi
+
+DEFAULT_PS_CONFIG_PATH="$("$PYTHON_BIN" - "$REPO_ROOT" <<'PY'
+import sys
+
+repo_root = sys.argv[1]
+sys.path.insert(0, repo_root)
+
+from recstore_config_path import resolve_recstore_config_path
+
+print(resolve_recstore_config_path())
+PY
+)"
 
 use_torchrec=false
 use_random_dataset=false
@@ -48,15 +68,6 @@ allow_tf32=false
 embedding_storage=$DEFAULT_EMBEDDING_STORAGE
 gin_config=""
 gin_bindings=()
-
-if command -v python >/dev/null 2>&1; then
-    PYTHON_BIN="python"
-elif command -v python3 >/dev/null 2>&1; then
-    PYTHON_BIN="python3"
-else
-    echo "Error: Neither python nor python3 is available in PATH" >&2
-    exit 1
-fi
 
 show_help() {
     echo "DLRM Training Script with Performance Metrics"

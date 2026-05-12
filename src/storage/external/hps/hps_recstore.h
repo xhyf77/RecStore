@@ -68,11 +68,11 @@ public:
             ? params.path + "_value.db"
             : params.ssd_value_file;
     cfg.json_config_ = {
-        {"path", params.path},
         {"capacity", params.capacity},
         {"index", {{"type", params.index_type}}},
         {"value",
          {{"type", params.value_store_type},
+          {"path", params.path},
           {"default_value_size_hint", value_size}}}};
 
     auto& value_config = cfg.json_config_["value"];
@@ -90,9 +90,9 @@ public:
           {"max_block_size", 4096},
           {"io",
            {{"type", params.ssd_io_backend},
-            {"file_path", ssd_value_file},
             {"queue_depth", params.ssd_queue_depth},
             {"base_offset_bytes", 4096}}}};
+      value_config["path"] = ssd_value_file;
     }
     if (params.value_store_type == "TIERED_VALUE_STORE") {
       value_config["tiering"] = {{"cache_policy", "LRU"}};

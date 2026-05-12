@@ -7,6 +7,12 @@ import contextlib
 import time
 from typing import Optional, Dict, Any
 
+RECSTORE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+if RECSTORE_PATH not in sys.path:
+    sys.path.insert(0, RECSTORE_PATH)
+
+from recstore_config_path import find_recstore_config_path
+
 def get_env_config() -> Dict[str, Any]:
     """Retrieves environment configuration including device count, storage type, etc."""
     config = {}
@@ -28,23 +34,7 @@ def get_env_config() -> Dict[str, Any]:
         config["rank"] = 0
 
     # Storage Backend (RecStore specific)
-    # Search for recstore_config.json in current or project root
-    current_dir = os.getcwd()
-    recstore_config_path = None
-    
-    # Check current dir
-    if os.path.exists(os.path.join(current_dir, "recstore_config.json")):
-        recstore_config_path = os.path.join(current_dir, "recstore_config.json")
-    else:
-        # Check project root (assuming structure RecStore_/model_zoo/...)
-        # Try walking up directories
-        p = current_dir
-        for _ in range(4): # Max depth check
-            check_path = os.path.join(p, "recstore_config.json")
-            if os.path.exists(check_path):
-                recstore_config_path = check_path
-                break
-            p = os.path.dirname(p)
+    recstore_config_path = find_recstore_config_path(os.getcwd())
             
     if recstore_config_path:
         try:

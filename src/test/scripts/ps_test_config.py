@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 
 import json
+import sys
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from recstore_config_path import resolve_recstore_config_path
 
 DEFAULT_GRPC_MAIN_CONFIG = "./recstore_config.json"
 DEFAULT_BRPC_BENCHMARK_CONFIG = "./src/test/configs/recstore_config.brpc.json"
@@ -14,6 +19,8 @@ DEFAULT_RDMA_MULTI_SHARD_CONFIG = "./src/test/configs/recstore_config.rdma_multi
 
 def resolve_repo_path(config_path):
     resolved = Path(config_path)
+    if str(config_path) == DEFAULT_GRPC_MAIN_CONFIG:
+        return resolve_recstore_config_path()
     if not resolved.is_absolute():
         resolved = (REPO_ROOT / resolved).resolve()
     return resolved

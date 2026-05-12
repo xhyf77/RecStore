@@ -30,10 +30,12 @@ from .runtime.server import (
     stop_server,
     wait_server_ready,
 )
+from recstore_config_path import resolve_recstore_config_path
 
 
 def repo_root_from_this_file() -> Path:
     return Path(__file__).resolve().parents[2]
+
 
 
 def estimate_recstore_kv_capacity(num_embeddings: int, table_count: int = 26) -> int:
@@ -77,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg.start_server = False
 
     repo_root = repo_root_from_this_file()
-    with open(repo_root / "recstore_config.json", "r", encoding="utf-8") as f:
+    with open(resolve_recstore_config_path(), "r", encoding="utf-8") as f:
         base_cfg = json.load(f)
 
     p0_default, p1_default = resolve_default_ports(base_cfg)

@@ -4,7 +4,9 @@
 
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <future>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -20,6 +22,7 @@
 #include "ps/base/cache_ps_impl.h"
 #include "ps/base/parameters.h"
 #include "recstore_config.h"
+#include "src/base/config.h"
 
 #ifdef ENABLE_PERF_REPORT
 #  include <chrono>
@@ -47,9 +50,7 @@ using recstoreps::PutParameterResponse;
 using recstoreps::UpdateParameterRequest;
 using recstoreps::UpdateParameterResponse;
 
-DEFINE_string(config_path,
-              RECSTORE_PATH "/recstore_config.json",
-              "config file path");
+DEFINE_string(config_path, "", "config file path");
 
 namespace {
 
@@ -659,7 +660,14 @@ FACTORY_REGISTER(BaseParameterServer, GRPCParameterServer, GRPCParameterServer);
 int main(int argc, char** argv) {
   base::Init(&argc, &argv);
   xmh::Reporter::StartReportThread(2000);
-  std::ifstream config_file(FLAGS_config_path);
+  const std::string config_path =
+      FLAGS_config_path.empty()
+          ? base::ResolveRecStoreConfigPath().string()
+          : FLAGS_config_path;
+  std::ifstream config_file(config_path);
+  if (!config_file.is_open()) {
+    throw std::runtime_error("Cannot open config file: " + config_path);
+  }
   nlohmann::json ex;
   config_file >> ex;
   recstore::GRPCParameterServer ps;

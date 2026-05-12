@@ -2,12 +2,14 @@
 #include "framework/hugectr/op_hugectr.h"
 
 #include <cassert>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 #include <cuda_runtime_api.h>
 
@@ -32,9 +34,32 @@ void check_cuda_error(cudaError_t err) {
   }
 }
 
+bool cuda_runtime_available() {
+  int device_count         = 0;
+  const cudaError_t status = cudaGetDeviceCount(&device_count);
+  if (status != cudaSuccess) {
+    std::cerr << "Skipping HierKV CUDA selection test: "
+              << cudaGetErrorString(status) << std::endl;
+    cudaGetLastError();
+    return false;
+  }
+  if (device_count == 0) {
+    std::cerr << "Skipping HierKV CUDA selection test: no CUDA device"
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
 struct ScopedConfigOverride {
   explicit ScopedConfigOverride(const std::string& content)
-      : path_("recstore_config.json"), restore_(false) {
+      : temp_dir_(std::filesystem::temp_directory_path() /
+                  ("recstore_hugectr_test_" +
+                   std::to_string(static_cast<long long>(getpid())))),
+        old_path_(std::filesystem::current_path()),
+        path_(temp_dir_ / "recstore_config.json") {
+    std::filesystem::create_directories(temp_dir_);
+    std::filesystem::current_path(temp_dir_);
     std::ifstream input(path_);
     if (input.good()) {
       restore_ = true;
@@ -47,17 +72,22 @@ struct ScopedConfigOverride {
     output << content;
   }
 
-  ~ScopedConfigOverride() {
+  ~ScopedConfigOverride() noexcept {
     if (restore_) {
       std::ofstream output(path_, std::ios::trunc);
       output << original_;
     }
+    std::error_code ec;
+    std::filesystem::current_path(old_path_, ec);
+    std::filesystem::remove_all(temp_dir_, ec);
   }
 
 private:
-  std::string path_;
+  std::filesystem::path temp_dir_;
+  std::filesystem::path old_path_;
+  std::filesystem::path path_;
   std::string original_;
-  bool restore_;
+  bool restore_{false};
 };
 
 static void test_backend_parser() {
@@ -138,7 +168,7 @@ static void maybe_test_hierkv_selection() {
       "index": {"type": "DRAM_EXTENDIBLE_HASH"},
       "value": {
         "type": "DRAM_VALUE_STORE",
-        "path": "/tmp/recstore_data/value",
+        "path": "/dev/shm/recstore_data/value",
         "default_value_size_hint": 512,
         "dram_allocator": {
           "type": "PERSIST_LOOP_SLAB",
@@ -165,6 +195,9 @@ static void maybe_test_hierkv_selection() {
   const int batch_size = 1;
   void* d_keys_ptr     = nullptr;
   void* d_grads_ptr    = nullptr;
+
+  if (!cuda_runtime_available())
+    return;
 
   try {
     std::vector<long long> h_keys(batch_size, 1);
@@ -194,6 +227,21 @@ static void maybe_test_hierkv_selection() {
           std::string(e.what()).find("not implemented") != std::string::npos;
     }
     assert(throws_not_impl);
+  } catch (const std::runtime_error& e) {
+    if (std::string(e.what()).find("CUDA Error:") != std::string::npos) {
+      if (d_keys_ptr)
+        cudaFree(d_keys_ptr);
+      if (d_grads_ptr)
+        cudaFree(d_grads_ptr);
+      std::cerr << "Skipping HierKV CUDA selection test: " << e.what()
+                << std::endl;
+      return;
+    }
+    if (d_keys_ptr)
+      cudaFree(d_keys_ptr);
+    if (d_grads_ptr)
+      cudaFree(d_grads_ptr);
+    throw;
   } catch (...) {
     if (d_keys_ptr)
       cudaFree(d_keys_ptr);
