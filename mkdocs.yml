@@ -91,10 +91,8 @@ nav:
       - RDMA 模块: parameter_server/rdma.md
     - 存储层:
       - 架构总览: storage/index.md
-      - CachePS 层: storage/cacheps.md
-      - BaseKV 抽象: storage/basekv.md
-      - KV 引擎实现: storage/kv_engines.md
-      - 内存管理: storage/memory.md
+      - BaseKV 与配置: storage/basekv.md
+      - Composite KV 开发: storage/kv_engines.md
   - 开发:
     - 性能分析:
       - 端到端性能: dev/performance.md
