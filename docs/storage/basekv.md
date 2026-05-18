@@ -81,15 +81,17 @@ auto* kv = base::Factory<BaseKV, const BaseKVConfig&>::NewInstance(
 
 ## 外部引擎
 
-`engine_type` 只用于显式选择外部 KV：
+`external_engine_type` 只用于显式选择外部 KV 适配层：
 
 ```json
 {
-  "engine_type": "KVEngineHPSRocksDB",
+  "external_engine_type": "KVEngineHPSRocksDB",
   "path": "/data/rocksdb",
   "capacity": 1000000,
   "value_size": 512
 }
 ```
 
-允许的显式引擎是 `KVEngineFasterKV`、`KVEngineHPSHashMap`、`KVEngineHPSRocksDB`。它们不走 `KVEngineComposite` 的 `index/value` 组合规则。
+允许的显式外部引擎是 `KVEngineFasterKV`、`KVEngineHPSHashMap`、`KVEngineHPSRocksDB`。它们不走 `KVEngineComposite` 的 `index/value` 组合规则。
+
+旧字段 `engine_type` 仍作为兼容别名被接受，但新配置应使用 `external_engine_type`。如果两个字段同时出现，值必须一致。

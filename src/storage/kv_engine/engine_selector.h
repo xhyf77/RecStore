@@ -41,12 +41,25 @@ struct EngineResolved {
 inline EngineResolved ResolveEngine(BaseKVConfig cfg) {
   auto& j = cfg.json_config_;
 
-  if (j.contains("engine_type")) {
-    const std::string engine = j.at("engine_type").get<std::string>();
+  const bool has_external_engine_type = j.contains("external_engine_type");
+  const bool has_legacy_engine_type   = j.contains("engine_type");
+  if (has_external_engine_type || has_legacy_engine_type) {
+    const std::string engine =
+        has_external_engine_type
+            ? j.at("external_engine_type").get<std::string>()
+            : j.at("engine_type").get<std::string>();
+    if (has_external_engine_type && has_legacy_engine_type) {
+      const std::string legacy_engine = j.at("engine_type").get<std::string>();
+      if (legacy_engine != engine) {
+        throw std::invalid_argument(
+            "external_engine_type and deprecated engine_type disagree: " +
+            engine + " != " + legacy_engine);
+      }
+    }
     static const std::set<std::string> kExplicitEngines = {
         "KVEngineFasterKV", "KVEngineHPSHashMap", "KVEngineHPSRocksDB"};
     if (!kExplicitEngines.count(engine)) {
-      throw std::invalid_argument("unknown engine_type: " + engine);
+      throw std::invalid_argument("unknown external_engine_type: " + engine);
     }
     for (const char* k : {"path", "capacity"}) {
       if (!j.contains(k)) {

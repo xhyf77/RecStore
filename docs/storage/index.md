@@ -32,7 +32,7 @@ graph TD
     ValueStore --> IOBackend[IOBackend]
 ```
 
-`CachePS` 从 `cache_ps.base_kv_config` 构造 `BaseKVConfig`，调用 `base::ResolveEngine`，用工厂创建 `BaseKV`。嵌套配置解析成 `KVEngineComposite`。外部引擎可用 `engine_type` 显式选择，见 [basekv.md](./basekv.md)。
+`CachePS` 从 `cache_ps.base_kv_config` 构造 `BaseKVConfig`，调用 `base::ResolveEngine`，用工厂创建 `BaseKV`。嵌套配置解析成 `KVEngineComposite`。外部引擎可用 `external_engine_type` 显式选择，见 [basekv.md](./basekv.md)。
 
 ## 读写路径
 
