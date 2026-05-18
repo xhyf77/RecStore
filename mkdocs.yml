@@ -77,11 +77,8 @@ nav:
     - 总览: architecture/overview.md
     - 计算层:
       - 架构总览: calc/index.md
-      - CommonOp 接口: calc/op_interface.md
-      - KVClient 客户端: calc/kvclient.md
-      - PyTorch C++ 扩展: calc/pytorch_binding.md
-      - EmbeddingBag 模块: calc/embedding_modules.md
-      - 优化器与梯度更新: calc/optimizer.md
+      - 接口边界: calc/interfaces.md
+      - Embedding 与 Optimizer: calc/embedding_optimizer.md
     - 参数服务器:
       - 总览: parameter_server/index.md
       - 基础抽象: parameter_server/base.md
@@ -91,10 +88,8 @@ nav:
       - RDMA 模块: parameter_server/rdma.md
     - 存储层:
       - 架构总览: storage/index.md
-      - CachePS 层: storage/cacheps.md
-      - BaseKV 抽象: storage/basekv.md
-      - KV 引擎实现: storage/kv_engines.md
-      - 内存管理: storage/memory.md
+      - BaseKV 与配置: storage/basekv.md
+      - Composite KV 开发: storage/kv_engines.md
   - 开发:
     - 性能分析:
       - 端到端性能: dev/performance.md

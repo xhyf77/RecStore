@@ -1,77 +1,68 @@
 # RecStore 存储层
 
-## 概述
+存储层通过本地 KV 实现参数服务器中的请求：`uint64_t key -> embedding bytes`。
 
-存储层负责参数和嵌入向量的持久化存储与检索，从参数服务器的 CachePS 层向下，经过 BaseKV 抽象层，到具体的 KV 引擎实现，最终对接到内存管理器。
+主要由 `KVEngineComposite` 实现：索引仅记录 key 到 value handle 的映射，value store 保存实际字节；当 value 存储在 SSD 上时，`IOBackend` 负责页级读写。
 
-## 架构分层
+## 代码入口
+
+| 目的 | 文件 |
+|------|------|
+| 上层创建 KV | `src/ps/base/cache_ps_impl.h` |
+| KV 抽象接口 | `src/storage/kv_engine/base_kv.h` |
+| 配置解析 | `src/storage/kv_engine/engine_selector.h` |
+| composite KV | `src/storage/kv_engine/engine_composite.h` |
+| 索引接口 | `src/storage/index/index.h` |
+| value store 接口 | `src/storage/value_store/value_store.h` |
+| SSD IO 接口 | `src/storage/io_backend/io_backend.h` |
+
+配置说明见 [basekv.md](./basekv.md)，组合和扩展点见 [kv_engines.md](./kv_engines.md)。
+
+## 运行时分层
 
 ```mermaid
 graph TD
-    Client[PSClient] -- "GetParameter/UpdateParameter/..." --> Server[ParameterService<br>src/ps/grpc/grpc_ps_server.cpp]
-    Server --> CachePS[CachePS<br>ps/base/cache_ps_impl.h]
-    CachePS --> BaseKV[BaseKV<br>storage/kv_engine/base_kv.h]
-    
-    BaseKV --> EngineGroup
-
-    subgraph EngineGroup[KV Engine 实现]
-        direction TB
-        KVEngineExtendibleHash
-        KVEngineCCEH
-        KVEngineHybrid
-        KVEnginePetKV
-    end
-    
-    EngineGroup --> MemMgr
-
-    subgraph MemMgr[内存管理]
-        direction TB
-        PLSM[PersistLoopShmMalloc]
-        R2SM[R2ShmMalloc]
-        PSM[PersistSimpleMalloc]
-    end
+    Client[PSClient] --> Server[ParameterService]
+    Server --> CachePS[CachePS]
+    CachePS --> BaseKV[BaseKV]
+    BaseKV --> Composite[KVEngineComposite]
+    Composite --> Index[Index]
+    Composite --> ValueStore[ValueStore]
+    ValueStore --> Allocator[DRAM/SSD allocator]
+    ValueStore --> IOBackend[IOBackend]
 ```
 
-## 模块说明
+`CachePS` 从 `cache_ps.base_kv_config` 构造 `BaseKVConfig`，调用 `base::ResolveEngine`，用工厂创建 `BaseKV`。嵌套配置解析成 `KVEngineComposite`。外部引擎可用 `external_engine_type` 显式选择，见 [basekv.md](./basekv.md)。
 
-详细文档：
+## 读写路径
 
-- [cacheps.md](./cacheps.md) - CachePS 层
-- [basekv.md](./basekv.md) - BaseKV 抽象接口
-- [kv_engines.md](./kv_engines.md) - KV 引擎实现
-- [memory.md](./memory.md) - 内存管理层
+写入：
 
-## 数据流
+1. `CachePS::PutSingleParameter` 或 `PutDenseParameterBatch` 收到 key 和 float 数据。
+2. 上层调用 `BaseKV::Put` 或 `BaseKV::BatchPut`。
+3. `KVEngineComposite` 查 `Index`，判断 key 是否已有 handle。
+4. 旧 slot 容量足够时原地覆盖；否则在 `ValueStore` 重新分配、写入，更新 `Index`。
+5. 旧 handle 在索引更新后释放。
 
-### 写入流程
+读取：
 
-| 步骤 | 操作 | 说明 |
-|------|------|------|
-| 1 | GRPCPSClient.PutParameter(keys, values) | 前端/训练端批量提交键和值 |
-| 2 | CachePS.PutParameter(reader, tid) | 解压参数、准备批量写入请求 |
-| 3 | BaseKV.BatchPut(keys, values, tid) | 统一封装 KV 接口，分发到具体引擎 |
-| 4 | KVEngine.Put(key, value_view, tid) | 按引擎策略写入 (内存/SSD/混合/NVM) |
-| 5 | MallocApi.New(size) → 分配内存地址 | 内存管理器分配持久化地址，返回指针/偏移 |
-| 6 | 写入数据到分配的内存 | 值落盘/落 PMEM，完成一次写入 |
+1. 上层调用 `BaseKV::Get` 或 `BaseKV::BatchGet`。
+2. `KVEngineComposite` 从 `Index` 找到 value handle。
+3. `ValueStore::DirectPtr` 可用时直接返回内存视图；SSD 或 tiered 的 SSD 部分调用 `Read` / `BatchRead`。
+4. 未命中的 key 返回空值。
 
-### 读取流程
+`KVEngineComposite` 用 4096 个 key stripe lock 保护读写。批量写入按 key 去重；同一批次存在重复 key 时退回逐条写入，避免覆盖顺序不清。
 
-| 步骤 | 操作 | 说明 |
-|------|------|------|
-| 1 | GRPCPSClient.GetParameter(keys) | 前端/训练端批量读取键 |
-| 2 | CachePS.GetParameter(keys, output) | 组织批量读取请求，准备输出缓冲 |
-| 3 | BaseKV.BatchGet(keys, values, tid) | 统一调度到 KV 引擎 |
-| 4 | KVEngine.Get(key, value, tid) | 根据索引定位值位置，读取原始字节串 |
-| 5 | 从索引查找值的内存地址 | 解析指针/偏移，触发内存或存储读取 |
-| 6 | 读取数据到输出缓冲区 | 转换为 ParameterPack，返回给上层 |
+## 开发入口
 
-## 引擎选择
+=== "新增 Index"
 
-根据 (index_type, value_type) 组合自动选择引擎：
+    实现 `Index`，注册到 `Factory<Index, const BaseKVConfig&>`，把新 `index.type` 加入 `ResolveEngine` 的合法集合。
 
-| index_type | value_type | 引擎 |
-|------------|------------|------|
-| DRAM | SSD | KVEngineExtendibleHash |
-| SSD | SSD | KVEngineCCEH |
-| DRAM/SSD | HYBRID | KVEngineHybrid |
-| DRAM | DRAM | KVEngineMap |
+=== "新增 ValueStore"
+
+    实现 `ValueStore`，注册工厂，在 `ResolveEngine` 中写清楚必填字段和非法组合。索引语义应留在 `Index`。
+
+=== "新增 IOBackend"
+
+    实现 `IOBackend`，注册工厂，确认 `AllocateBuffer` 返回页对齐缓冲。value store 和 SSD index 将嵌套配置转换成 `file_path`、`queue_cnt`、`page_id_offset` 后创建后端。

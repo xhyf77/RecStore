@@ -215,6 +215,16 @@
       "properties": {
         "engine_type": {
           "type": "string",
+          "description": "Deprecated alias for external_engine_type. Use external_engine_type for new configs.",
+          "enum": [
+            "KVEngineFasterKV",
+            "KVEngineHPSHashMap",
+            "KVEngineHPSRocksDB"
+          ]
+        },
+        "external_engine_type": {
+          "type": "string",
+          "description": "Explicit selector for external KV backend adapters. RecStore built-in KV uses index/value instead.",
           "enum": [
             "KVEngineFasterKV",
             "KVEngineHPSHashMap",
@@ -432,6 +442,14 @@
           "anyOf": [
             {
               "required": [
+                "external_engine_type",
+                "path",
+                "capacity",
+                "value_size"
+              ]
+            },
+            {
+              "required": [
                 "engine_type",
                 "path",
                 "capacity",
@@ -481,6 +499,66 @@
                   "path",
                   "io"
                 ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "external_engine_type",
+              "engine_type"
+            ],
+            "properties": {
+              "external_engine_type": {
+                "const": "KVEngineFasterKV"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "engine_type": {
+                "const": "KVEngineFasterKV"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "external_engine_type",
+              "engine_type"
+            ],
+            "properties": {
+              "external_engine_type": {
+                "const": "KVEngineHPSHashMap"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "engine_type": {
+                "const": "KVEngineHPSHashMap"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "external_engine_type",
+              "engine_type"
+            ],
+            "properties": {
+              "external_engine_type": {
+                "const": "KVEngineHPSRocksDB"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "engine_type": {
+                "const": "KVEngineHPSRocksDB"
               }
             }
           }
