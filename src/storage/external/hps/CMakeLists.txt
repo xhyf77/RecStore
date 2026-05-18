@@ -2,6 +2,15 @@ set(RECSTORE_HPS_ROCKSDB_DIR
   ${PROJECT_SOURCE_DIR}/third_party/HugeCTR/third_party/rocksdb)
 
 if(NOT TARGET rocksdb-shared)
+  function(recstore_apply_hps_rocksdb_compat target_name)
+    if(TARGET ${target_name})
+      target_compile_options(${target_name} PRIVATE
+        "$<$<COMPILE_LANGUAGE:CXX>:-include>"
+        "$<$<COMPILE_LANGUAGE:CXX>:cstdint>"
+        -UROCKSDB_MALLOC_USABLE_SIZE)
+    endif()
+  endfunction()
+
   function(recstore_add_hps_rocksdb)
     set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
     set(PORTABLE ON)
@@ -14,9 +23,8 @@ if(NOT TARGET rocksdb-shared)
     set(FAIL_ON_WARNINGS OFF)
     add_subdirectory(${RECSTORE_HPS_ROCKSDB_DIR}
       ${PROJECT_BINARY_DIR}/third_party/HugeCTR/rocksdb)
-    if(TARGET rocksdb-shared)
-      target_compile_options(rocksdb-shared PRIVATE -UROCKSDB_MALLOC_USABLE_SIZE)
-    endif()
+    recstore_apply_hps_rocksdb_compat(rocksdb)
+    recstore_apply_hps_rocksdb_compat(rocksdb-shared)
   endfunction()
   recstore_add_hps_rocksdb()
 endif()
