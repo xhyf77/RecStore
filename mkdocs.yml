@@ -77,11 +77,8 @@ nav:
     - 总览: architecture/overview.md
     - 计算层:
       - 架构总览: calc/index.md
-      - CommonOp 接口: calc/op_interface.md
-      - KVClient 客户端: calc/kvclient.md
-      - PyTorch C++ 扩展: calc/pytorch_binding.md
-      - EmbeddingBag 模块: calc/embedding_modules.md
-      - 优化器与梯度更新: calc/optimizer.md
+      - 接口边界: calc/interfaces.md
+      - Embedding 与 Optimizer: calc/embedding_optimizer.md
     - 参数服务器:
       - 总览: parameter_server/index.md
       - 基础抽象: parameter_server/base.md
