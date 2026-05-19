@@ -31,6 +31,24 @@ DEFINE_string(ssd_path, "", "SSD data directory");
 DEFINE_string(index_type, "DRAM_EXTENDIBLE_HASH", "index.type");
 DEFINE_string(value_store_type, "DRAM_VALUE_STORE", "value.type");
 DEFINE_string(engine_class, "KVEngineComposite", "BaseKV factory class name");
+DEFINE_string(fasterkv_storage,
+              "memory",
+              "KVEngineFasterKV storage backend: memory|ssd");
+DEFINE_string(
+    fasterkv_log_path,
+    "",
+    "KVEngineFasterKV SSD log directory; defaults to ssd_path/fasterkv-log");
+DEFINE_int64(
+    fasterkv_hlog_memory_bytes,
+    0,
+    "KVEngineFasterKV hybrid log memory bytes; 0 uses backend default");
+DEFINE_double(
+    fasterkv_mutable_fraction,
+    0.0,
+    "KVEngineFasterKV hybrid log mutable fraction; 0 uses backend default");
+DEFINE_int64(fasterkv_read_cache_bytes,
+             0,
+             "KVEngineFasterKV read cache bytes; 0 disables read cache");
 DEFINE_string(dram_allocator, "PERSIST_LOOP_SLAB", "value.dram_allocator.type");
 DEFINE_string(ssd_io_backend, "IOURING", "SSD IO backend");
 DEFINE_int32(ssd_queue_depth, 512, "SSD IO queue depth");
@@ -183,7 +201,7 @@ bool HasSsdValueStore(const std::string& type) {
 
 bool IsLegacyDirectEngine(const std::string& engine_class) {
   return engine_class == "KVEngineExtendibleHash" ||
-         engine_class == "KVEngineCCEH";
+         engine_class == "KVEngineCCEH" || engine_class == "KVEngineFasterKV";
 }
 
 BaseKVConfig BuildConfig() {
@@ -238,6 +256,43 @@ BaseKVConfig BuildConfig() {
     config.num_threads_ = std::max(FLAGS_thread_num, FLAGS_load_thread_num);
     return config;
   }
+  if (FLAGS_engine_class == "KVEngineFasterKV") {
+    if (FLAGS_fasterkv_storage != "memory" && FLAGS_fasterkv_storage != "ssd") {
+      throw std::invalid_argument("fasterkv_storage must be memory or ssd");
+    }
+    if (FLAGS_fasterkv_mutable_fraction < 0.0 ||
+        FLAGS_fasterkv_mutable_fraction > 1.0) {
+      throw std::invalid_argument(
+          "fasterkv_mutable_fraction must be in [0, 1]");
+    }
+    config.json_config_ = {
+        {"external_engine_type", "KVEngineFasterKV"},
+        {"capacity", capacity},
+        {"path", FLAGS_ssd_path.empty() ? FLAGS_dram_path : FLAGS_ssd_path},
+        {"value_size", FLAGS_value_size},
+        {"fasterkv", {{"storage", FLAGS_fasterkv_storage}}}};
+    if (FLAGS_fasterkv_storage == "ssd") {
+      const std::string log_path =
+          FLAGS_fasterkv_log_path.empty()
+              ? FLAGS_ssd_path + "/fasterkv-log"
+              : FLAGS_fasterkv_log_path;
+      config.json_config_["fasterkv"]["log_path"] = log_path;
+    }
+    if (FLAGS_fasterkv_hlog_memory_bytes > 0) {
+      config.json_config_["fasterkv"]["hlog_memory_bytes"] =
+          static_cast<uint64_t>(FLAGS_fasterkv_hlog_memory_bytes);
+    }
+    if (FLAGS_fasterkv_mutable_fraction > 0.0) {
+      config.json_config_["fasterkv"]["mutable_fraction"] =
+          FLAGS_fasterkv_mutable_fraction;
+    }
+    if (FLAGS_fasterkv_read_cache_bytes > 0) {
+      config.json_config_["fasterkv"]["read_cache_bytes"] =
+          static_cast<uint64_t>(FLAGS_fasterkv_read_cache_bytes);
+    }
+    config.num_threads_ = std::max(FLAGS_thread_num, FLAGS_load_thread_num);
+    return config;
+  }
 
   const bool ssd_index = IsSsdIndexType(FLAGS_index_type);
 
@@ -251,9 +306,9 @@ BaseKVConfig BuildConfig() {
   if (ssd_index) {
     config.json_config_["index"]["path"] = FLAGS_ssd_path + "/index.db";
     config.json_config_["index"]["io"]   = {
-        {"type", FLAGS_ssd_io_backend},
-        {"queue_depth", FLAGS_ssd_queue_depth},
-        {"base_offset_bytes", 0}};
+          {"type", FLAGS_ssd_io_backend},
+          {"queue_depth", FLAGS_ssd_queue_depth},
+          {"base_offset_bytes", 0}};
   }
 
   const uint64_t dram_capacity =
@@ -447,6 +502,12 @@ int main(int argc, char* argv[]) {
       FLAGS_dram_path.empty() && FLAGS_ssd_path.empty()) {
     LOG(FATAL)
         << "dram_path or ssd_path must be set for KVEngineExtendibleHash";
+  }
+  if (FLAGS_engine_class == "KVEngineFasterKV" &&
+      FLAGS_fasterkv_storage == "ssd" && FLAGS_ssd_path.empty() &&
+      FLAGS_fasterkv_log_path.empty()) {
+    LOG(FATAL) << "ssd_path or fasterkv_log_path must be set for "
+                  "KVEngineFasterKV fasterkv_storage=ssd";
   }
 
   const std::string workload = NormalizeWorkload(FLAGS_workload);
