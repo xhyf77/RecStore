@@ -53,6 +53,27 @@ python3 model_zoo/rs_demo/run_mock_stress.py \
   --no-start-server
 ```
 
+单机单进程 TorchRec UVM caching（embedding 主存放在 host/UVM，GPU 侧使用 TorchRec/FBGEMM cache）：
+
+```bash
+python3 model_zoo/rs_demo/run_mock_stress.py \
+  --backend torchrec \
+  --nnodes 1 \
+  --node-rank 0 \
+  --nproc-per-node 1 \
+  --master-addr 127.0.0.1 \
+  --master-port 29500 \
+  --rdzv-id rs-demo-uvm \
+  --run-id rs-demo-uvm \
+  --output-root /nas/home/shq/docker/rs_demo \
+  --steps 60 \
+  --batch-size 4096 \
+  --torchrec-memory-mode uvm_caching \
+  --no-start-server
+```
+
+该 lane 依赖当前环境中的 TorchRec/FBGEMM 支持 `FUSED_UVM_CACHING`。它更接近 TorchRec 原生的 DRAM/UVM 路径，但不是纯 CPU gather + GPU copy 的 staging baseline。报告时应和默认 `hbm` lane 分开标注资源模型。
+
 双机手工启动 distributed TorchRec：
 
 机器 A（`node-rank 0`）：
@@ -183,6 +204,7 @@ python3 model_zoo/rs_demo/run_mock_stress.py \
   - `replicated`：保留当前 distributed training 观测语义
   - `fair_remote`：单 trainer + 远端 embedding worker 的公平对齐语义
   - `fair_remote` 要求 `world_size > 1`
+- `--torchrec-memory-mode`：TorchRec embedding 内存模式，默认 `hbm`；`uvm_caching` 使用 TorchRec/FBGEMM fused UVM caching，需要对应依赖支持
 - `--torchrec-trace-dir`：Torch profiler trace 输出目录
 - `--torchrec-trace-csv`：Torch profiler trace 聚合 CSV 路径
 - `--torchrec-compare-recstore-csv`：可选，指定 RecStore CSV 以导出对照差值表

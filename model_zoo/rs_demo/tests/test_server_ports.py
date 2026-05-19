@@ -53,8 +53,12 @@ class TestChooseAvailablePorts(unittest.TestCase):
             self.assertTrue(str(runtime_dir).startswith(f"{tmpdir}/runtime/case-a"))
             self.assertEqual(runtime_cfg_path, runtime_dir / "recstore_config.json")
             self.assertTrue(runtime_cfg_path.exists())
-            runtime_cfg = runtime_cfg_path.read_text(encoding="utf-8")
-            self.assertIn(str(Path(tmpdir) / "runtime" / "case-a"), runtime_cfg)
+            runtime_cfg = json.loads(runtime_cfg_path.read_text(encoding="utf-8"))
+            self.assertTrue(
+                runtime_cfg["cache_ps"]["base_kv_config"]["value"]["path"].startswith(
+                    "/dev/shm/rs_demo_kv/case-a/"
+                )
+            )
 
     def test_make_runtime_dir_overrides_kv_capacity_when_requested(self) -> None:
         base_cfg = {
@@ -94,10 +98,13 @@ class TestChooseAvailablePorts(unittest.TestCase):
                 run_id="case-shards",
                 ps_type="BRPC",
             )
-            runtime_cfg = runtime_cfg_path.read_text(encoding="utf-8")
-            self.assertIn('"value"', runtime_cfg)
-            self.assertIn('"path"', runtime_cfg)
-            self.assertIn(str(Path(tmpdir) / "runtime" / "case-shards"), runtime_cfg)
+            runtime_cfg = json.loads(runtime_cfg_path.read_text(encoding="utf-8"))
+            self.assertIn("value", runtime_cfg["cache_ps"]["base_kv_config"])
+            self.assertTrue(
+                runtime_cfg["cache_ps"]["base_kv_config"]["value"]["path"].startswith(
+                    "/dev/shm/rs_demo_kv/case-shards/"
+                )
+            )
 
     def test_make_runtime_dir_writes_local_shm_runtime_section(self) -> None:
         base_cfg = {"cache_ps": {}, "distributed_client": {"servers": []}}
@@ -154,14 +161,14 @@ class TestChooseAvailablePorts(unittest.TestCase):
             )
         )
 
-    def test_r2shmmalloc_kv_path_falls_back_to_local_tmp(self) -> None:
+    def test_dram_kv_path_uses_dev_shm_for_backend_policy(self) -> None:
         path = resolve_kv_data_path(
             output_root="/nas/home/shq/docker/rs_demo",
             run_id="case-r2",
             path_suffix="abc123",
             allocator="R2ShmMalloc",
         )
-        self.assertEqual(path, "/tmp/rs_demo_kv/case-r2/kv_abc123")
+        self.assertEqual(path, "/dev/shm/rs_demo_kv/case-r2/kv_abc123")
 
 
 if __name__ == "__main__":

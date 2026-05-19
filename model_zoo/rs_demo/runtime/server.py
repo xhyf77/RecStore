@@ -18,12 +18,10 @@ def resolve_kv_data_path(
     path_suffix: str,
     allocator: str,
 ) -> str:
-    allocator_upper = allocator.upper()
-    if allocator_upper == "R2SHMMALLOC":
-        # R2ShmMalloc can hang during ps_server init on the NAS mount.
-        # Keep its backing path on the local filesystem and move logs/configs to NAS.
-        return str(Path("/tmp") / "rs_demo_kv" / run_id / f"kv_{path_suffix}")
-    return str(Path(output_root) / "runtime" / run_id / f"kv_{path_suffix}")
+    del output_root, allocator
+    # DRAM_VALUE_STORE rejects filesystem-backed paths outside /dev/shm.
+    # Keep KV backing files on tmpfs while logs, configs, and reports stay under output_root.
+    return str(Path("/dev/shm") / "rs_demo_kv" / run_id / f"kv_{path_suffix}")
 
 
 def wait_port(host: str, port: int, timeout_s: float) -> bool:

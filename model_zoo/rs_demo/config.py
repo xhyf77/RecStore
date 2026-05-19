@@ -64,6 +64,7 @@ class RunConfig:
     ps_type: str = "BRPC"
     torchrec_profiler: bool = False
     torchrec_dist_mode: str = "replicated"
+    torchrec_memory_mode: str = "hbm"
     torchrec_profiler_warmup: int = 0
     torchrec_profiler_active: int = 2
     torchrec_profiler_repeat: int = 1
@@ -184,6 +185,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="replicated",
         choices=["replicated", "fair_remote"],
+    )
+    parser.add_argument(
+        "--torchrec-memory-mode",
+        type=str,
+        default="hbm",
+        choices=["hbm", "uvm_caching"],
+        help="TorchRec embedding memory mode. hbm keeps the current GPU-resident baseline; uvm_caching uses TorchRec/FBGEMM fused UVM caching when available.",
     )
     parser.add_argument("--torchrec-profiler-warmup", type=int, default=0)
     parser.add_argument("--torchrec-profiler-active", type=int, default=2)
