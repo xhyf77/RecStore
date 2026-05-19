@@ -15,6 +15,7 @@ from model_zoo.rs_demo.runners.torchrec_runner import (
     TorchRecRunner,
     _barrier_for_step_alignment,
     _build_worker_fingerprint,
+    _build_uvm_caching_constraints,
     _merge_rank_outputs,
     _debug_log_path,
     _maybe_wrap_dense_module_for_dist,
@@ -47,6 +48,19 @@ class _FakeParameterSharding:
         self.sharding_type = sharding_type
         self.compute_kernel = compute_kernel
         self.ranks = ranks
+
+
+class _FakeEmbeddingComputeKernelValue:
+    value = "fused_uvm_caching"
+
+
+class _FakeEmbeddingComputeKernel:
+    FUSED_UVM_CACHING = _FakeEmbeddingComputeKernelValue()
+
+
+class _FakeParameterConstraints:
+    def __init__(self, *, compute_kernels):
+        self.compute_kernels = compute_kernels
 
 
 class _FakePlan:
@@ -304,6 +318,44 @@ class TestTorchRecDispatch(unittest.TestCase):
         self.assertIn("--torchrec-dist-mode", cmd)
         self.assertIn("fair_remote", cmd)
 
+    def test_runner_forwards_torchrec_memory_mode_to_worker(self) -> None:
+        cfg = RunConfig(
+            backend="torchrec",
+            steps=1,
+            nnodes=2,
+            node_rank=0,
+            nproc=1,
+            nproc_per_node=1,
+            master_addr="10.0.2.196",
+            master_port=29611,
+            rdzv_backend="c10d",
+            rdzv_id="uvm-case",
+            output_root="/tmp/rs_demo",
+            run_id="uvm-case",
+            torchrec_main_csv="/tmp/rs_demo/out.csv",
+            torchrec_main_agg_csv="/tmp/rs_demo/out_agg.csv",
+            torchrec_trace_dir="/tmp/rs_demo/traces",
+            torchrec_trace_csv="/tmp/rs_demo/trace.csv",
+            torchrec_memory_mode="uvm_caching",
+        )
+        runner = TorchRecRunner(Path("/tmp/runtime"))
+        cmd = runner._build_torchrun_cmd(Path("/app/RecStore"), cfg)
+        self.assertIn("--torchrec-memory-mode", cmd)
+        self.assertIn("uvm_caching", cmd)
+
+    def test_build_uvm_caching_constraints_uses_all_table_names(self) -> None:
+        constraints = _build_uvm_caching_constraints(
+            table_names=["t_cat_0", "t_cat_1"],
+            parameter_constraints_cls=_FakeParameterConstraints,
+            embedding_compute_kernel_cls=_FakeEmbeddingComputeKernel,
+        )
+
+        self.assertEqual(set(constraints), {"t_cat_0", "t_cat_1"})
+        self.assertEqual(
+            constraints["t_cat_0"].compute_kernels,
+            ["fused_uvm_caching"],
+        )
+
     def test_runner_forwards_dense_arch_args_to_worker(self) -> None:
         cfg = RunConfig(
             backend="torchrec",
@@ -365,10 +417,37 @@ class TestTorchRecDispatch(unittest.TestCase):
             torchrec_trace_csv="/nas/home/shq/docker/rs_demo/outputs/case-c/torchrec_trace.csv",
         )
         runner = TorchRecRunner(Path("/tmp/runtime"))
-        with mock.patch.object(runner, "_run_distributed", return_value={"backend": "torchrec", "rows": []}) as dist_run:
+        with mock.patch(
+            "model_zoo.rs_demo.runners.torchrec_runner.ensure_torchrec_available",
+            return_value=None,
+        ), mock.patch.object(runner, "_run_distributed", return_value={"backend": "torchrec", "rows": []}) as dist_run:
             result = runner.run(Path("/app/RecStore"), cfg)
         self.assertEqual(result["backend"], "torchrec")
         dist_run.assert_called_once()
+
+    def test_runner_uses_torchrun_for_single_process_uvm_caching(self) -> None:
+        cfg = RunConfig(
+            backend="torchrec",
+            steps=1,
+            nproc=1,
+            nnodes=1,
+            nproc_per_node=1,
+            torchrec_memory_mode="uvm_caching",
+        )
+        runner = TorchRecRunner(Path("/tmp/runtime"))
+        with mock.patch(
+            "model_zoo.rs_demo.runners.torchrec_runner.ensure_torchrec_available",
+            return_value=None,
+        ), mock.patch.object(
+            runner, "_run_distributed", return_value={"backend": "torchrec", "rows": []}
+        ) as dist_run, mock.patch.object(
+            runner, "_run_single_process", return_value={"backend": "torchrec", "rows": []}
+        ) as single_run:
+            result = runner.run(Path("/app/RecStore"), cfg)
+
+        self.assertEqual(result["backend"], "torchrec")
+        dist_run.assert_called_once()
+        single_run.assert_not_called()
 
     def test_runner_sets_explicit_socket_env_for_multi_node(self) -> None:
         cfg = RunConfig(

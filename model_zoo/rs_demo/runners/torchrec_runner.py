@@ -220,6 +220,25 @@ def _is_fair_remote_mode(cfg: RunConfig, world_size: int) -> bool:
     return cfg.torchrec_dist_mode == "fair_remote" and world_size > 1
 
 
+def _build_uvm_caching_constraints(
+    table_names: list[str],
+    parameter_constraints_cls,
+    embedding_compute_kernel_cls,
+) -> dict[str, Any]:
+    try:
+        fused_uvm_caching = embedding_compute_kernel_cls.FUSED_UVM_CACHING
+    except AttributeError as exc:
+        raise RuntimeError(
+            "TorchRec UVM caching requires EmbeddingComputeKernel.FUSED_UVM_CACHING. "
+            "Install a TorchRec/FBGEMM version that supports fused UVM caching."
+        ) from exc
+    fused_uvm_caching_value = getattr(fused_uvm_caching, "value", fused_uvm_caching)
+    return {
+        table_name: parameter_constraints_cls(compute_kernels=[fused_uvm_caching_value])
+        for table_name in table_names
+    }
+
+
 def _build_train_dataloader_for_mode(
     repo_root: Path,
     cfg: RunConfig,
@@ -288,11 +307,14 @@ def _run_single_or_dist_worker(
         DistributedModelParallel,
         get_default_sharders,
     )
+    from torchrec.distributed.embedding_types import EmbeddingComputeKernel
     from torchrec.distributed.planner import EmbeddingShardingPlanner, Topology
+    from torchrec.distributed.planner import ParameterConstraints
     from torchrec.modules.embedding_configs import EmbeddingBagConfig
     from torchrec.modules.embedding_modules import EmbeddingBagCollection
 
     is_dist = world_size > 1
+    use_uvm_caching = cfg.torchrec_memory_mode == "uvm_caching"
     backend = "nccl" if torch.cuda.is_available() else "gloo"
     _append_worker_debug(
         cfg,
@@ -304,7 +326,7 @@ def _run_single_or_dist_worker(
         device = torch.device(f"cuda:{local_rank}")
     else:
         device = torch.device("cpu")
-    if is_dist and not dist.is_initialized():
+    if (is_dist or use_uvm_caching) and not dist.is_initialized():
         _append_worker_debug(cfg, rank, f"before_init_process_group device={device}")
         dist.init_process_group(backend=backend)
         _append_worker_debug(cfg, rank, "after_init_process_group")
@@ -341,17 +363,32 @@ def _run_single_or_dist_worker(
         for feature_name in DEFAULT_CAT_NAMES
     ]
 
-    embedding_module = EmbeddingBagCollection(tables=eb_configs, device=device)
     use_dist = world_size > 1
+    use_dmp = use_dist or use_uvm_caching
+    embedding_init_device = torch.device("meta") if use_dmp else device
+    embedding_module = EmbeddingBagCollection(tables=eb_configs, device=embedding_init_device)
     if use_dist:
         _append_worker_debug(cfg, rank, "before_sharding_plan")
+    if use_uvm_caching:
+        _append_worker_debug(cfg, rank, "torchrec_memory_mode=uvm_caching")
+    if use_dmp:
         sharders = get_default_sharders()
+        constraints = (
+            _build_uvm_caching_constraints(
+                table_names=[config.name for config in eb_configs],
+                parameter_constraints_cls=ParameterConstraints,
+                embedding_compute_kernel_cls=EmbeddingComputeKernel,
+            )
+            if use_uvm_caching
+            else None
+        )
         planner = EmbeddingShardingPlanner(
             topology=Topology(
                 world_size=world_size,
                 local_world_size=cfg.nproc_per_node,
                 compute_device=device.type,
-            )
+            ),
+            constraints=constraints,
         )
         plan = _compute_or_load_shared_sharding_plan(
             dist=dist,
@@ -361,7 +398,8 @@ def _run_single_or_dist_worker(
             planner=planner,
             plan_path=Path(cfg.output_root) / "outputs" / cfg.run_id / "torchrec_plan.pkl",
         )
-        _append_worker_debug(cfg, rank, "after_sharding_plan")
+        if use_dist:
+            _append_worker_debug(cfg, rank, "after_sharding_plan")
         _append_worker_debug(cfg, rank, f"plan_summary {_summarize_sharding_plan(plan)}")
         _append_worker_debug(
             cfg,
@@ -383,8 +421,8 @@ def _run_single_or_dist_worker(
             )
             raise
         _append_worker_debug(cfg, rank, "after_distributed_model_parallel")
-        collective_mode = "measured_distributed"
-        collective_measured = 1
+        collective_mode = "measured_distributed" if use_dist else "not_measured_single_process"
+        collective_measured = 1 if use_dist else 0
     else:
         embedding_module = embedding_module.to(device)
         collective_mode = "not_measured_single_process"
@@ -443,6 +481,7 @@ def _run_single_or_dist_worker(
                 "world_size": cfg.nnodes * cfg.nproc_per_node,
                 "dist_mode": "multi_node" if cfg.nnodes > 1 else "single_node",
                 "torchrec_dist_mode": cfg.torchrec_dist_mode,
+                "torchrec_memory_mode": cfg.torchrec_memory_mode,
                 "torchrec_role": "trainer" if is_trainer_rank else "embedding_worker",
                 "torchrec_is_trainer": _bool_int(is_trainer_rank),
             }
@@ -574,9 +613,10 @@ def _run_single_or_dist_worker(
     _append_worker_debug(cfg, rank, f"before_write_rows count={len(rows)} out_csv={out_csv}")
     _write_rows(out_csv, rows)
     _append_worker_debug(cfg, rank, "after_write_rows")
-    if is_dist and dist.is_initialized():
+    if (is_dist or use_uvm_caching) and dist.is_initialized():
         _append_worker_debug(cfg, rank, "before_barrier")
-        dist.barrier(device_ids=[local_rank] if device.type == "cuda" else None)
+        if is_dist:
+            dist.barrier(device_ids=[local_rank] if device.type == "cuda" else None)
         _append_worker_debug(cfg, rank, "after_barrier")
         dist.destroy_process_group()
         _append_worker_debug(cfg, rank, "after_destroy_process_group")
@@ -661,6 +701,8 @@ class TorchRecRunner(BenchmarkRunner):
             str(Path(cfg.torchrec_trace_csv)),
             "--torchrec-dist-mode",
             str(cfg.torchrec_dist_mode),
+            "--torchrec-memory-mode",
+            str(cfg.torchrec_memory_mode),
             "--no-start-server",
         ]
         if cfg.torchrec_profiler:
@@ -755,6 +797,6 @@ class TorchRecRunner(BenchmarkRunner):
             )
             return {"backend": "torchrec", "rows": rows}
 
-        if cfg.nnodes * cfg.nproc_per_node <= 1:
+        if cfg.nnodes * cfg.nproc_per_node <= 1 and cfg.torchrec_memory_mode == "hbm":
             return self._run_single_process(repo_root, cfg)
         return self._run_distributed(repo_root, cfg)

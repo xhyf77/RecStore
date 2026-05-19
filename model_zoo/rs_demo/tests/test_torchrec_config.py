@@ -81,6 +81,17 @@ class TestTorchRecConfig(unittest.TestCase):
         )
         self.assertEqual(cfg.torchrec_dist_mode, "fair_remote")
 
+    def test_torchrec_memory_mode_parses_uvm_caching(self) -> None:
+        cfg = parse_config(
+            [
+                "--backend",
+                "torchrec",
+                "--torchrec-memory-mode",
+                "uvm_caching",
+            ]
+        )
+        self.assertEqual(cfg.torchrec_memory_mode, "uvm_caching")
+
     def test_torchrec_backend_parses_profiler_flags(self) -> None:
         cfg = parse_config(
             [
