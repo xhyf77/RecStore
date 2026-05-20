@@ -410,6 +410,27 @@ class ShardedRecstoreClient:
             )
         reset()
 
+    def prefill_gpu_cache(
+        self,
+        name: str,
+        ids: torch.Tensor,
+        values: torch.Tensor,
+    ) -> None:
+        self._require_active_shard("prefill_gpu_cache")
+        prefill = getattr(self._client, "prefill_gpu_cache", None)
+        if callable(prefill):
+            prefill(name, ids, values)
+            return
+        ops = getattr(self._client, "ops", None)
+        prefill = getattr(ops, "prefill_gpu_cache", None)
+        if not callable(prefill):
+            raise RuntimeError(
+                "prefill_gpu_cache requires a RecStore client or ops library "
+                "exposing prefill_gpu_cache()."
+            )
+        normalized_ids = self._normalize_ids(ids, keep_device=True)
+        prefill(normalized_ids, values)
+
     def get_last_gpu_cache_profile(self) -> dict[str, float]:
         getter = getattr(self._client, "get_last_gpu_cache_profile", None)
         if callable(getter):

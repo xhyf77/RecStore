@@ -10,6 +10,7 @@ class _FakeOps:
         self.backend = backend
         self.lookup_calls = []
         self.update_calls = []
+        self.prefill_calls = []
         self.update_clear_gpu_cache_call_counts = []
         self.backend_switch_calls = []
         self.clear_gpu_cache_calls = 0
@@ -29,6 +30,9 @@ class _FakeOps:
     def local_update_flat(self, table_name: str, keys: torch.Tensor, grads: torch.Tensor) -> None:
         self.update_clear_gpu_cache_call_counts.append(self.clear_gpu_cache_calls)
         self.update_calls.append((table_name, keys.clone(), grads.clone()))
+
+    def prefill_gpu_cache(self, keys: torch.Tensor, values: torch.Tensor) -> None:
+        self.prefill_calls.append((keys.clone(), values.clone()))
 
     def clear_gpu_cache(self) -> None:
         self.clear_gpu_cache_calls += 1
@@ -74,6 +78,19 @@ class TestKVClientLocalFastPath(unittest.TestCase):
         self.assertEqual(table_name, "table_a")
         self.assertTrue(torch.equal(called_keys, keys))
         self.assertTrue(torch.equal(called_grads, grads))
+
+    def test_prefill_gpu_cache_forwards_to_ops(self):
+        client = self._build_client()
+
+        keys = torch.tensor([7, 3], dtype=torch.int64)
+        values = torch.ones((2, 4), dtype=torch.float32)
+        client.prefill_gpu_cache("table_a", keys, values)
+
+        self.assertEqual(len(client.ops.prefill_calls), 1)
+        called_keys, called_values = client.ops.prefill_calls[0]
+        self.assertTrue(torch.equal(called_keys, keys))
+        self.assertTrue(torch.equal(called_values, values))
+        self.assertEqual(client._gpu_cache_table_name, "table_a")
 
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required for CPU-normalization regression coverage")
     def test_default_normalizers_still_move_cuda_tensors_to_cpu(self):
@@ -259,6 +276,7 @@ class TestKVClientLocalFastPath(unittest.TestCase):
     def test_gpu_cache_control_requires_ops_support(self):
         client = self._build_client()
         client.ops.clear_gpu_cache = None
+        client.ops.prefill_gpu_cache = None
         client.ops.set_gpu_cache_lookup_bypass_enabled = None
         client.ops.is_gpu_cache_lookup_bypass_enabled = None
         client.ops.is_gpu_cache_lookup_bypassed = None
@@ -270,6 +288,12 @@ class TestKVClientLocalFastPath(unittest.TestCase):
             client.disable_gpu_cache()
         with self.assertRaisesRegex(RuntimeError, "clear_gpu_cache"):
             client.clear_gpu_cache()
+        with self.assertRaisesRegex(RuntimeError, "prefill_gpu_cache"):
+            client.prefill_gpu_cache(
+                "table_a",
+                torch.tensor([1], dtype=torch.int64),
+                torch.ones((1, 4), dtype=torch.float32),
+            )
         with self.assertRaisesRegex(RuntimeError, "set_gpu_cache_lookup_bypass_enabled"):
             client.set_gpu_cache_lookup_bypass_enabled(False)
         with self.assertRaisesRegex(RuntimeError, "is_gpu_cache_lookup_bypass_enabled"):

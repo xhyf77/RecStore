@@ -844,6 +844,38 @@ void clear_gpu_cache_torch() {
 #endif
 }
 
+void prefill_gpu_cache_torch(const torch::Tensor& keys,
+                             const torch::Tensor& values) {
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+  TORCH_CHECK(keys.dim() == 1, "keys must be 1-dimensional");
+  TORCH_CHECK(keys.scalar_type() == torch::kInt64,
+              "keys must have dtype int64");
+  TORCH_CHECK(values.dim() == 2, "values must be 2-dimensional");
+  TORCH_CHECK(values.scalar_type() == torch::kFloat32,
+              "values must have dtype float32");
+  TORCH_CHECK(keys.size(0) == values.size(0),
+              "keys and values must have the same number of rows");
+  if (keys.numel() == 0) {
+    return;
+  }
+  TORCH_CHECK(keys.is_cuda() || values.is_cuda(),
+              "prefill_gpu_cache requires keys or values on CUDA");
+  const auto cache_device = values.is_cuda() ? values.device() : keys.device();
+  auto keys_cuda          = keys.is_cuda() ? keys : keys.to(cache_device);
+  auto values_cuda        = values.is_cuda() ? values : values.to(cache_device);
+  if (!keys_cuda.is_contiguous()) {
+    keys_cuda = keys_cuda.contiguous();
+  }
+  if (!values_cuda.is_contiguous()) {
+    values_cuda = values_cuda.contiguous();
+  }
+  gpu::FillGpuCache(keys_cuda, values_cuda);
+#else
+  (void)keys;
+  (void)values;
+#endif
+}
+
 void set_gpu_cache_lookup_bypass_enabled_torch(bool enabled) {
 #ifdef RECSTORE_ENABLE_GPU_CACHE
   SetGpuCacheLookupBypassEnabled(enabled);
@@ -914,6 +946,7 @@ TORCH_LIBRARY(recstore_ops, m) {
   m.def("enable_gpu_cache", enable_gpu_cache_torch);
   m.def("disable_gpu_cache", disable_gpu_cache_torch);
   m.def("clear_gpu_cache", clear_gpu_cache_torch);
+  m.def("prefill_gpu_cache", prefill_gpu_cache_torch);
   m.def("set_gpu_cache_lookup_bypass_enabled",
         set_gpu_cache_lookup_bypass_enabled_torch);
   m.def("is_gpu_cache_lookup_bypass_enabled",
