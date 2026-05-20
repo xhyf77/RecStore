@@ -26,6 +26,7 @@ class RunConfig:
     init_rows: int = 50000
     read_before_update: bool = True
     read_mode: str = "prefetch"
+    prefetch_depth: int = 0
     start_server: bool = True
     server_host: str = "127.0.0.1"
     server_port0: int | None = None
@@ -146,6 +147,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="prefetch",
         choices=["prefetch", "direct"],
         help="read path mode when read-before-update is enabled",
+    )
+    parser.add_argument(
+        "--prefetch-depth",
+        type=int,
+        default=0,
+        help=(
+            "Number of future batches to issue fused embedding prefetches ahead. "
+            "0 keeps the legacy issue-and-immediate-wait path."
+        ),
     )
     parser.add_argument("--start-server", action="store_true", default=True)
     parser.add_argument("--no-start-server", action="store_true")
@@ -276,6 +286,8 @@ def validate_recstore_config(cfg: RunConfig) -> None:
         raise RuntimeError(
             "--gpu-cache-capacity must be positive when --enable-gpu-cache is set"
         )
+    if cfg.prefetch_depth < 0:
+        raise RuntimeError("--prefetch-depth must be non-negative")
     if cfg.enable_single_node_distributed_fast_path:
         if cfg.nnodes != 1:
             raise RuntimeError(
