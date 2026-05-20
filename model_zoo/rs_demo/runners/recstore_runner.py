@@ -289,6 +289,14 @@ def _configure_gpu_cache(
     enabled = bool(enable(int(cfg.gpu_cache_capacity), int(embedding_dim)))
     if not enabled:
         raise RuntimeError("GPU cache enable request returned False")
+    if getattr(cfg, "disable_gpu_cache_lookup_bypass", False):
+        setter = getattr(kv_client, "set_gpu_cache_lookup_bypass_enabled", None)
+        if not callable(setter):
+            raise RuntimeError(
+                "GPU cache lookup bypass control requires "
+                "kv_client.set_gpu_cache_lookup_bypass_enabled support"
+            )
+        setter(False)
 
 
 def _pick_socket_ifname() -> str | None:
@@ -556,6 +564,8 @@ class RecStoreRunner(BenchmarkRunner):
                     str(cfg.gpu_cache_capacity),
                 ]
             )
+            if cfg.disable_gpu_cache_lookup_bypass:
+                cmd.append("--disable-gpu-cache-lookup-bypass")
         if not cfg.read_before_update:
             cmd.append("--no-read-before-update")
         return cmd

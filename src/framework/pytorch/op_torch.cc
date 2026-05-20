@@ -85,11 +85,12 @@ inline void ResetLocalUpdateFlatProfile() {
 }
 
 #ifdef RECSTORE_ENABLE_GPU_CACHE
-constexpr int64_t kGpuCacheBypassMinRows      = 1024;
-constexpr int kGpuCacheLowHitLimit            = 1;
-constexpr double kGpuCacheLowHitRatio         = 0.05;
-thread_local int g_gpu_cache_low_hit_streak   = 0;
-thread_local bool g_gpu_cache_lookup_bypassed = false;
+constexpr int64_t kGpuCacheBypassMinRows            = 1024;
+constexpr int kGpuCacheLowHitLimit                  = 1;
+constexpr double kGpuCacheLowHitRatio               = 0.05;
+thread_local int g_gpu_cache_low_hit_streak         = 0;
+thread_local bool g_gpu_cache_lookup_bypassed       = false;
+thread_local bool g_gpu_cache_lookup_bypass_enabled = true;
 
 void SafeClearGpuCacheNoThrow();
 
@@ -99,7 +100,8 @@ void ResetGpuCacheBypassState() {
 }
 
 bool ShouldBypassGpuCacheLookup(int64_t num_keys) {
-  return num_keys >= kGpuCacheBypassMinRows &&
+  return g_gpu_cache_lookup_bypass_enabled &&
+         num_keys >= kGpuCacheBypassMinRows &&
          g_gpu_cache_low_hit_streak >= kGpuCacheLowHitLimit;
 }
 
@@ -118,7 +120,8 @@ void RecordGpuCacheLookupOutcome(
 }
 
 bool ShouldBypassGpuCacheMaintenance(int64_t num_keys) {
-  return num_keys >= kGpuCacheBypassMinRows && g_gpu_cache_lookup_bypassed;
+  return g_gpu_cache_lookup_bypass_enabled &&
+         num_keys >= kGpuCacheBypassMinRows && g_gpu_cache_lookup_bypassed;
 }
 
 void MarkGpuCacheLookupBypassed() {
@@ -143,6 +146,13 @@ void SafeClearGpuCacheNoThrow() {
     LOG(WARNING) << "Failed to clear GPU cache: " << e.what();
   } catch (...) {
     LOG(WARNING) << "Failed to clear GPU cache: unknown exception";
+  }
+}
+
+void SetGpuCacheLookupBypassEnabled(bool enabled) {
+  g_gpu_cache_lookup_bypass_enabled = enabled;
+  if (!enabled) {
+    ResetGpuCacheBypassState();
   }
 }
 
@@ -834,6 +844,36 @@ void clear_gpu_cache_torch() {
 #endif
 }
 
+void set_gpu_cache_lookup_bypass_enabled_torch(bool enabled) {
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+  SetGpuCacheLookupBypassEnabled(enabled);
+#else
+  (void)enabled;
+#endif
+}
+
+bool is_gpu_cache_lookup_bypass_enabled_torch() {
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+  return g_gpu_cache_lookup_bypass_enabled;
+#else
+  return false;
+#endif
+}
+
+bool is_gpu_cache_lookup_bypassed_torch() {
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+  return g_gpu_cache_lookup_bypassed;
+#else
+  return false;
+#endif
+}
+
+void reset_gpu_cache_bypass_state_torch() {
+#ifdef RECSTORE_ENABLE_GPU_CACHE
+  ResetGpuCacheBypassState();
+#endif
+}
+
 std::vector<double> get_last_gpu_cache_profile_torch() {
 #ifdef RECSTORE_ENABLE_GPU_CACHE
   const auto profile = gpu::GetLastGpuCacheProfile();
@@ -874,6 +914,12 @@ TORCH_LIBRARY(recstore_ops, m) {
   m.def("enable_gpu_cache", enable_gpu_cache_torch);
   m.def("disable_gpu_cache", disable_gpu_cache_torch);
   m.def("clear_gpu_cache", clear_gpu_cache_torch);
+  m.def("set_gpu_cache_lookup_bypass_enabled",
+        set_gpu_cache_lookup_bypass_enabled_torch);
+  m.def("is_gpu_cache_lookup_bypass_enabled",
+        is_gpu_cache_lookup_bypass_enabled_torch);
+  m.def("is_gpu_cache_lookup_bypassed", is_gpu_cache_lookup_bypassed_torch);
+  m.def("reset_gpu_cache_bypass_state", reset_gpu_cache_bypass_state_torch);
   m.def("get_last_gpu_cache_profile", get_last_gpu_cache_profile_torch);
 }
 

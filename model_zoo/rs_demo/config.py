@@ -58,6 +58,7 @@ class RunConfig:
     single_node_owner_policy: str = "hash_mod_world_size"
     enable_gpu_cache: bool = False
     gpu_cache_capacity: int = 0
+    disable_gpu_cache_lookup_bypass: bool = False
     master_addr: str = "127.0.0.1"
     master_port: int = 29500
     rdzv_backend: str = "c10d"
@@ -118,6 +119,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Number of embedding rows to keep in the RecStore GPU cache.",
+    )
+    parser.add_argument(
+        "--disable-gpu-cache-lookup-bypass",
+        action="store_true",
+        default=False,
+        help=(
+            "Keep querying the RecStore GPU cache for large low-hit lookups. "
+            "Useful for planned/lookahead cache experiments."
+        ),
     )
     parser.add_argument("--master-addr", type=str, default="127.0.0.1")
     parser.add_argument("--master-port", type=int, default=29500)

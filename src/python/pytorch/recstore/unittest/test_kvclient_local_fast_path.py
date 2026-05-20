@@ -197,15 +197,33 @@ class TestKVClientLocalFastPath(unittest.TestCase):
         client.ops.disable_gpu_cache = lambda: client.ops.gpu_cache_calls.append(("disable",))
         client.ops.clear_gpu_cache = lambda: client.ops.gpu_cache_calls.append(("clear",))
         client.ops.get_last_gpu_cache_profile = lambda: [1.0, 2.0, 3.0, 4.0, 5.0]
+        client.ops.set_gpu_cache_lookup_bypass_enabled = (
+            lambda enabled: client.ops.gpu_cache_calls.append(("bypass", bool(enabled)))
+        )
+        client.ops.is_gpu_cache_lookup_bypass_enabled = lambda: False
+        client.ops.is_gpu_cache_lookup_bypassed = lambda: True
+        client.ops.reset_gpu_cache_bypass_state = (
+            lambda: client.ops.gpu_cache_calls.append(("reset_bypass",))
+        )
 
         self.assertTrue(client.enable_gpu_cache(capacity=1024, embedding_dim=4))
+        client.set_gpu_cache_lookup_bypass_enabled(False)
+        self.assertFalse(client.is_gpu_cache_lookup_bypass_enabled())
+        self.assertTrue(client.is_gpu_cache_lookup_bypassed())
+        client.reset_gpu_cache_bypass_state()
         client.clear_gpu_cache()
         client.disable_gpu_cache()
         profile = client.get_last_gpu_cache_profile()
 
         self.assertEqual(
             client.ops.gpu_cache_calls,
-            [("enable", 1024, 4), ("clear",), ("disable",)],
+            [
+                ("enable", 1024, 4),
+                ("bypass", False),
+                ("reset_bypass",),
+                ("clear",),
+                ("disable",),
+            ],
         )
         self.assertEqual(
             profile,
@@ -241,6 +259,10 @@ class TestKVClientLocalFastPath(unittest.TestCase):
     def test_gpu_cache_control_requires_ops_support(self):
         client = self._build_client()
         client.ops.clear_gpu_cache = None
+        client.ops.set_gpu_cache_lookup_bypass_enabled = None
+        client.ops.is_gpu_cache_lookup_bypass_enabled = None
+        client.ops.is_gpu_cache_lookup_bypassed = None
+        client.ops.reset_gpu_cache_bypass_state = None
 
         with self.assertRaisesRegex(RuntimeError, "enable_gpu_cache"):
             client.enable_gpu_cache(capacity=1024, embedding_dim=4)
@@ -248,6 +270,14 @@ class TestKVClientLocalFastPath(unittest.TestCase):
             client.disable_gpu_cache()
         with self.assertRaisesRegex(RuntimeError, "clear_gpu_cache"):
             client.clear_gpu_cache()
+        with self.assertRaisesRegex(RuntimeError, "set_gpu_cache_lookup_bypass_enabled"):
+            client.set_gpu_cache_lookup_bypass_enabled(False)
+        with self.assertRaisesRegex(RuntimeError, "is_gpu_cache_lookup_bypass_enabled"):
+            client.is_gpu_cache_lookup_bypass_enabled()
+        with self.assertRaisesRegex(RuntimeError, "is_gpu_cache_lookup_bypassed"):
+            client.is_gpu_cache_lookup_bypassed()
+        with self.assertRaisesRegex(RuntimeError, "reset_gpu_cache_bypass_state"):
+            client.reset_gpu_cache_bypass_state()
 
         self.assertEqual(client.get_last_gpu_cache_profile(), {})
 

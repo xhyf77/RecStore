@@ -46,6 +46,7 @@ class _FakeShardedClient:
         self.activate_shard_calls: list[int] = []
         self.enable_gpu_cache_calls: list[tuple[int, int]] = []
         self.enable_gpu_cache_result = True
+        self.gpu_cache_lookup_bypass_enabled: bool | None = True
         self.gpu_cache_profile = {}
         self.local_shm_warmup_calls = 0
         self._shared_local_shm_table = False
@@ -66,6 +67,9 @@ class _FakeShardedClient:
     def enable_gpu_cache(self, capacity: int, embedding_dim: int) -> bool:
         self.enable_gpu_cache_calls.append((int(capacity), int(embedding_dim)))
         return self.enable_gpu_cache_result
+
+    def set_gpu_cache_lookup_bypass_enabled(self, enabled: bool) -> None:
+        self.gpu_cache_lookup_bypass_enabled = bool(enabled)
 
     def get_last_gpu_cache_profile(self):
         return self.gpu_cache_profile
@@ -527,11 +531,13 @@ class TestRecStoreRunner(unittest.TestCase):
                 "--enable-gpu-cache",
                 "--gpu-cache-capacity",
                 "1024",
+                "--disable-gpu-cache-lookup-bypass",
             ]
         )
 
         self.assertTrue(cfg.enable_gpu_cache)
         self.assertEqual(cfg.gpu_cache_capacity, 1024)
+        self.assertTrue(cfg.disable_gpu_cache_lookup_bypass)
 
     def test_parse_config_accepts_prefetch_depth(self) -> None:
         cfg = config.parse_config(
@@ -879,6 +885,26 @@ class TestRecStoreRunner(unittest.TestCase):
         fake_ebc = self._run_local_worker_with_fake_embedding_module(cfg)
 
         self.assertEqual(fake_ebc.kv_client.enable_gpu_cache_calls, [(1024, 4)])
+
+    def test_gpu_cache_lookup_bypass_option_is_forwarded(self) -> None:
+        cfg = RunConfig(
+            backend="recstore",
+            steps=1,
+            warmup_steps=0,
+            init_rows=1,
+            batch_size=1,
+            embedding_dim=4,
+            num_embeddings=16,
+            enable_gpu_cache=True,
+            gpu_cache_capacity=1024,
+            disable_gpu_cache_lookup_bypass=True,
+            recstore_main_csv="/tmp/recstore-gpu-cache-no-bypass.csv",
+        )
+
+        fake_ebc = self._run_local_worker_with_fake_embedding_module(cfg)
+
+        self.assertEqual(fake_ebc.kv_client.enable_gpu_cache_calls, [(1024, 4)])
+        self.assertFalse(fake_ebc.kv_client.gpu_cache_lookup_bypass_enabled)
 
     def test_gpu_cache_enable_false_fails_loudly(self) -> None:
         cfg = RunConfig(
