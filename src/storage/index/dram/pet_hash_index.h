@@ -44,8 +44,13 @@ public:
   void BatchGet(base::ConstArray<Key_t> keys,
                 Value_t* pointers,
                 unsigned tid) override {
+    (void)tid;
     for (int i = 0; i < keys.Size(); ++i) {
-      Get(keys[i], pointers[i], tid);
+      if (i + 1 < keys.Size()) {
+        impl_->HintPrefetch(keys[i + 1]);
+      }
+      auto [value, exists] = impl_->Get(keys[i]);
+      pointers[i] = exists ? value : NONE;
     }
   }
 

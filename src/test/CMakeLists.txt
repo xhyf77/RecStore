@@ -58,46 +58,9 @@ target_link_libraries(test_extendible_hash PUBLIC
 )
 add_test(NAME test_extendible_hash COMMAND test_extendible_hash)
 
-add_executable(test_engine_extendible_hash test_engine_extendible_hash.cpp)
-target_link_libraries(test_engine_extendible_hash PUBLIC
-    extendible_hash
-    base
-    base_memory
-    ps_common
-    kv_engine
-    gtest
-    gtest_main
-    pthread
-    TBB::tbb
-)
-add_test(NAME test_engine_extendible_hash COMMAND test_engine_extendible_hash)
-
-add_executable(test_cceh test_cceh.cpp)
-target_link_libraries(test_cceh PUBLIC
-    cceh
-    base
-    gtest
-    gtest_main
-    pthread
-)
-add_test(NAME test_cceh COMMAND test_cceh)
-
-add_executable(test_engine_cceh test_engine_cceh.cpp)
-target_link_libraries(test_engine_cceh PUBLIC
-    cceh
-    base
-    base_memory
-    ps_common
-    kv_engine
-    gtest
-    gtest_main
-    pthread
-)
-add_test(NAME test_engine_cceh COMMAND test_engine_cceh)
-
 add_executable(test_io_backend test_io_backend.cpp)
 target_link_libraries(test_io_backend PUBLIC
-    cceh
+    io_backend
     base
     gtest
     gtest_main

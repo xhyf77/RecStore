@@ -14,7 +14,6 @@
 #include "storage/index/dram/extendible_hash_index.h"
 #include "storage/index/dram/pet_hash_index.h"
 #include "storage/index/dram/unordered_map_index.h"
-#include "storage/index/ssd/ssd_extendible_hash_index.h"
 #include "storage/kv_engine/base_kv.h"
 #include "storage/value_store/dram_value_store.h"
 #include "storage/value_store/hybrid_value_store.h"
@@ -52,6 +51,11 @@ public:
     index_->Get(key, handle);
     if (handle == kValueHandleNone) {
       value.clear();
+      return;
+    }
+    if (const char* ptr = value_store_->DirectPtr(handle)) {
+      value.resize(value_store_->SlotCapacity(handle));
+      std::memcpy(value.data(), ptr, value.size());
       return;
     }
     value.resize(value_store_->SlotCapacity(handle));
@@ -212,12 +216,14 @@ public:
       locks.emplace_back(key_mutexes_[id]);
     }
 
+    if (keys.Size() > 0) {
+      index_->BatchGet(keys, handles.data(), tid);
+    }
     std::vector<uint64_t> batch_handles;
     std::vector<size_t> batch_indices;
     batch_handles.reserve(static_cast<size_t>(keys.Size()));
     batch_indices.reserve(static_cast<size_t>(keys.Size()));
     for (int i = 0; i < keys.Size(); ++i) {
-      index_->Get(keys[i], handles[i]);
       if (handles[i] == kValueHandleNone) {
         (*values)[i] = base::ConstArray<float>();
         continue;
@@ -295,10 +301,26 @@ public:
     if (value_size == 0) {
       LOG(FATAL) << "KVEngine::BulkLoad requires value_size hint";
     }
-    const char* data = reinterpret_cast<const char*>(value);
-    for (int i = 0; i < keys.Size(); ++i) {
-      PutInternal(keys[i], data + i * value_size, value_size, 0, false);
+    if (keys.Size() == 0) {
+      return;
     }
+    const char* data = reinterpret_cast<const char*>(value);
+    std::vector<ValueStore::WriteSpec> specs;
+    specs.reserve(static_cast<size_t>(keys.Size()));
+    for (int i = 0; i < keys.Size(); ++i) {
+      specs.push_back(ValueStore::WriteSpec{data + i * value_size, value_size});
+    }
+    std::vector<uint64_t> handles = value_store_->BatchAllocAndWrite(specs);
+    if (handles.size() != static_cast<size_t>(keys.Size())) {
+      LOG(FATAL) << "KVEngine::BulkLoad allocation result size mismatch";
+    }
+    for (int i = 0; i < keys.Size(); ++i) {
+      if (handles[static_cast<size_t>(i)] == kValueHandleNone) {
+        LOG(FATAL) << "KVEngine bulk value allocation failed, key=" << keys[i]
+                   << " size=" << value_size;
+      }
+    }
+    index_->BatchPut(keys, handles.data(), 0);
   }
 
   void Util() override {

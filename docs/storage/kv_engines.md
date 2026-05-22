@@ -2,122 +2,53 @@
 
 ## 概述
 
-RecStore 提供了 5 种 KV 引擎实现，分别适用于不同的存储配置。所有引擎均继承自 `BaseKV`。
+RecStore 提供多种 KV 引擎实现，分别适用于不同的存储配置。所有引擎均继承自 `BaseKV`。
 
 ## 引擎列表
 
-| 引擎名称 | 索引位置 | 值位置 | 文件 |
-|---------|---------|--------|------|
-| KVEngineMap | DRAM | DRAM | engine_map.h |
-| KVEngineExtendibleHash | DRAM | SSD | engine_extendible_hash.h |
-| KVEngineCCEH | SSD | SSD | engine_cceh.h |
-| KVEngineHybrid | DRAM/SSD | HYBRID (DRAM+SSD) | engine_hybridkv.h |
-| KVEnginePetKV | NVM | NVM | engine_pethash.h |
+| 引擎名称 | 说明 | 文件 |
+|---------|------|------|
+| KVEngineComposite | 可组合 DRAM 索引 + DRAM/SSD/Tiered 值存储 | engine_composite.h |
+| KVEnginePetKV | 基于持久化内存 (PetKV) | engine_petkv.h |
 
 ## 各引擎详细说明
 
-### KVEngineMap
+### KVEngineComposite
 
-最简单的实现，使用 `std::unordered_map<uint64_t, std::string>` 存储键值对。
+通过 `index.type` + `value.type` 组合 DRAM 索引与 DRAM/SSD/Tiered 值存储，是 YCSB benchmark 与 `test_kvengine` 的默认路径。
 
-**特点**
-
-- 纯内存，无持久化
-- 单线程读写通过 mutex 保护
-- 适用于小规模测试
-
-??? example "配置示例"
+??? example "配置示例（DRAM 索引 + SSD 值）"
     ```json
     {
-        "index_type": "DRAM",
-        "value_type": "DRAM",
-        "capacity": 10000,
-        "value_size": 128
-    }
-    ```
-
-### KVEngineExtendibleHash
-
-**特点**
-
-- 索引在 DRAM (ExtendibleHashMap)
-- 值在 SSD 持久化
-- 使用可扩展哈希实现动态扩容
-- 支持批量操作
-
-**核心组件**
-
-- `ExtendibleHashMap<uint64_t, SSDPointer>` - DRAM 索引
-- `SSDValueWriter` - SSD 写入器
-- `value_file_` - 值文件路径
-
-??? example "配置示例"
-    ```json
-    {
-        "index": {"type": "DRAM_EXTENDIBLE_HASH"},
+        "index": {"type": "DRAM_PET_HASH"},
         "value": {"type": "SSD_VALUE_STORE", "path": "/data/recstore/value.db",
+                  "ssd_allocator": {"type": "SSD_SLAB", "capacity_bytes": 1073741824}},
         "capacity": 1000000,
         "value_size": 128
     }
     ```
 
-### KVEngineCCEH
+### Tiered 值存储
 
-CCEH (Cacheline-Conscious Extendible Hash) 全部使用 SSD 存储。
-
-**特点**
-
-- 索引在 SSD (CCEHDirectory + CCEHSegment)
-- 值在 SSD
-- 缓存行感知设计，提高访问效率
-- 支持分段锁，提高并发性
-
-**核心组件**
-
-- `CCEHDirectory` - SSD 目录结构
-- `CCEHSegment[]` - SSD 段数组
-- 每个 segment 对应一个 lock
-
-??? example "配置示例"
-    ```json
-    {
-        "index": {"type": "SSD_EXTENDIBLE_HASH", "path": "/data/recstore/index.db"},
-        "value": {"type": "SSD_VALUE_STORE", "path": "/data/recstore/value.db",
-        "capacity": 1000000,
-        "value_size": 128
-    }
-    ```
-
-### KVEngineHybrid
-
-**特点**
-
-- 索引可配置为 DRAM 或 SSD
-- 值使用两层存储: DRAM (热数据) + SSD (冷数据)
-- 自动进行冷热数据迁移
-- 支持可配置的容量分配
-
-**核心组件**
-
-- `ValueManager valm` - 混合值管理器
-  - `shmcapacity` - DRAM 层字节数
-  - `ssdcapacity` - SSD 层字节数
-- `Index*` - 索引指针，支持多种实现
+DRAM/SSD 分层值存储不再通过旧的独立 Hybrid 引擎实现，而是作为 `KVEngineComposite` 的 `TIERED_VALUE_STORE` 值存储模式提供。
 
 ??? example "配置示例"
     ```json
     {
         "index": {"type": "DRAM_EXTENDIBLE_HASH"},
-        "value": {"type": "TIERED_VALUE_STORE",
-        "shmcapacity": 10737418240,
-        "ssdcapacity": 107374182400
+        "value": {
+            "type": "TIERED_VALUE_STORE",
+            "dram_allocator": {"type": "PersistLoopShmMalloc"},
+            "ssd_allocator": {
+                "type": "SSD_SLAB",
+                "path": "/data/recstore/value.db",
+                "capacity_bytes": 107374182400
+            }
+        },
+        "capacity": 1000000,
+        "value_size": 128
     }
     ```
-
-**数据流程**
-1. 写入: 优先写入 DRAM 层
-2. DRAM 满: 淘汰冷数据到 SSD 层
-3. 读取: 先查 DRAM，未命中再查 SSD
 
 ### KVEnginePetKV
 
@@ -154,10 +85,7 @@ CCEH (Cacheline-Conscious Extendible Hash) 全部使用 SSD 存储。
 
 | 引擎 | 同步机制 |
 |------|---------|
-| Map | std::mutex |
-| ExtendibleHash | 无锁 (依赖内存管理器的 tid) |
-| CCEH | 分段锁 (per-segment lock) |
-| Hybrid | std::shared_mutex |
+| KVEngineComposite | per-key stripe `shared_mutex` |
 | PetKV | 内部分片锁 |
 
 ## 工厂注册
@@ -165,10 +93,7 @@ CCEH (Cacheline-Conscious Extendible Hash) 全部使用 SSD 存储。
 所有引擎通过宏注册到工厂：
 
 ```cpp
-FACTORY_REGISTER(BaseKV, KVEngineMap, KVEngineMap, const BaseKVConfig&);
-FACTORY_REGISTER(BaseKV, KVEngineExtendibleHash, ...);
-FACTORY_REGISTER(BaseKV, KVEngineCCEH, ...);
-FACTORY_REGISTER(BaseKV, KVEngineHybrid, ...);
+FACTORY_REGISTER(BaseKV, KVEngineComposite, KVEngineComposite, const BaseKVConfig&);
 FACTORY_REGISTER(BaseKV, KVEnginePetKV, ...);
 ```
 

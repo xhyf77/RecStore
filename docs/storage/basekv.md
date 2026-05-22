@@ -48,31 +48,16 @@ struct BaseKVConfig {
 
 ### 配置字段
 
-**必填字段（非 HYBRID）**
+**必填字段**
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| path | string | 工作目录 |
-| index_type | string | "DRAM" 或 "SSD" |
-| value_type | string | "DRAM" 或 "SSD" |
 | capacity | uint64_t | 预估条目数 |
+| index | object | 索引配置，必须包含 `type` |
+| value | object | 值存储配置，必须包含 `type` |
 | value_size | int | 每个值的字节数 |
 
-**必填字段（HYBRID）**
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| path | string | 工作目录 |
-| index_type | string | "DRAM" 或 "SSD" |
-| value_type | string | "HYBRID" |
-| shmcapacity | uint64_t | DRAM 字节数 |
-| ssdcapacity | uint64_t | SSD 字节数 |
-
-**可选字段**
-
-| 字段 | 默认值 | 说明 |
-|------|--------|------|
-| value_memory_management | "PersistLoopShmMalloc" | 内存管理器类型 |
+分层 DRAM/SSD 值存储使用 `value.type = "TIERED_VALUE_STORE"`，并在 `value.dram_allocator` 与 `value.ssd_allocator` 中配置两层 allocator。
 
 ## 引擎选择机制
 
@@ -86,11 +71,9 @@ auto r = base::ResolveEngine(kv_config);
 
 引擎选择规则：
 
-| index_type | value_type | 选择的引擎 |
+| index.type | value.type | 选择的引擎 |
 |------------|------------|-----------|
-| DRAM | SSD | KVEngineExtendibleHash |
-| SSD | SSD | KVEngineCCEH |
-| DRAM/SSD | HYBRID | KVEngineHybrid |
+| DRAM_* | DRAM_VALUE_STORE / SSD_VALUE_STORE / TIERED_VALUE_STORE | KVEngineComposite |
 
 ## 工厂创建
 

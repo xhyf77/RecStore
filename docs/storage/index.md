@@ -16,9 +16,7 @@ graph TD
 
     subgraph EngineGroup[KV Engine 实现]
         direction TB
-        KVEngineExtendibleHash
-        KVEngineCCEH
-        KVEngineHybrid
+        KVEngineComposite
         KVEnginePetKV
     end
     
@@ -50,7 +48,7 @@ graph TD
 | 1 | GRPCPSClient.PutParameter(keys, values) | 前端/训练端批量提交键和值 |
 | 2 | CachePS.PutParameter(reader, tid) | 解压参数、准备批量写入请求 |
 | 3 | BaseKV.BatchPut(keys, values, tid) | 统一封装 KV 接口，分发到具体引擎 |
-| 4 | KVEngine.Put(key, value_view, tid) | 按引擎策略写入 (内存/SSD/混合/NVM) |
+| 4 | KVEngine.Put(key, value_view, tid) | 按引擎策略写入 (内存/SSD/Tiered/NVM) |
 | 5 | MallocApi.New(size) → 分配内存地址 | 内存管理器分配持久化地址，返回指针/偏移 |
 | 6 | 写入数据到分配的内存 | 值落盘/落 PMEM，完成一次写入 |
 
@@ -69,9 +67,6 @@ graph TD
 
 根据 (index_type, value_type) 组合自动选择引擎：
 
-| index_type | value_type | 引擎 |
+| index.type | value.type | 引擎 |
 |------------|------------|------|
-| DRAM | SSD | KVEngineExtendibleHash |
-| SSD | SSD | KVEngineCCEH |
-| DRAM/SSD | HYBRID | KVEngineHybrid |
-| DRAM | DRAM | KVEngineMap |
+| DRAM_* | DRAM_VALUE_STORE / SSD_VALUE_STORE / TIERED_VALUE_STORE | KVEngineComposite |

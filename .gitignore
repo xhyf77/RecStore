@@ -33,3 +33,4 @@ third_party/protobuf-install/
 third_party/libtorch/
 results/
 plan
+dockerfiles/start_sshd.sh

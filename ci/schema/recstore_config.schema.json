@@ -233,9 +233,7 @@
               "enum": [
                 "DRAM_EXTENDIBLE_HASH",
                 "DRAM_UNORDERED_MAP",
-                "DRAM_PET_HASH",
-                "SSD",
-                "SSD_EXTENDIBLE_HASH"
+                "DRAM_PET_HASH"
               ]
             },
             "path": {
@@ -406,38 +404,7 @@
             }
           ]
         }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "index": {
-                "properties": {
-                  "type": {
-                    "enum": [
-                      "SSD",
-                      "SSD_EXTENDIBLE_HASH"
-                    ]
-                  }
-                },
-                "required": [
-                  "type"
-                ]
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "index": {
-                "required": [
-                  "path",
-                  "io"
-                ]
-              }
-            }
-          }
-        }
-      ]
+      }
     }
   }
 }
