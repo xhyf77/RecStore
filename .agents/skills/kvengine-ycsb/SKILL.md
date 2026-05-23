@@ -17,6 +17,7 @@ Use this skill from a RecStore checkout. Do not run helper scripts from this ski
    - workloads to run (default = a b c)
    - repeat count for YCSB (default = 3, ask if user wants 1)
    - distributions to use (default = uniform and zipfian)
+   - record-count (default=10M)
 3. Run:
    - `cmake -S . -B build`
    - `cmake --build build --target test_kvengine -j`
@@ -45,7 +46,7 @@ python3 tools/benchmark/run_ycsb_compare.py \
   --output-dir <output_dir> \
   --workloads a b c \
   --distributions uniform \
-  --record-count 100000 \
+  --record-count 10000000 \
   --runtime-seconds 3 \
   --threads <threads> \
   --load-threads <threads> \
