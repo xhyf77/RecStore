@@ -88,6 +88,16 @@ target_link_libraries(test_io_uring_test_utils PUBLIC
 )
 add_test(NAME test_io_uring_test_utils COMMAND test_io_uring_test_utils)
 
+add_executable(test_shm_file test_shm_file.cpp)
+target_link_libraries(test_shm_file PUBLIC
+    base
+    base_memory
+    gtest
+    gtest_main
+    pthread
+)
+add_test(NAME test_shm_file COMMAND test_shm_file)
+
 add_executable(test_kvengine test_kvengine.cpp)
 target_link_libraries(test_kvengine PUBLIC
     extendible_hash

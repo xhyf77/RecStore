@@ -88,7 +88,8 @@ protected:
                 "_" + index_type_ + "_" + value_type_ + "_" + allocator_type_;
     std::filesystem::create_directories(test_dir_);
 
-    base::PMMmapRegisterCenter::GetConfig().use_dram = true;
+    base::PMMmapRegisterCenter::GetConfig().backend =
+        base::PMMmapRegisterCenter::Backend::kAnonymousDram;
     base::PMMmapRegisterCenter::GetConfig().numa_id  = 0;
 
     cfg_.num_threads_     = 8;

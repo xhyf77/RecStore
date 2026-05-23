@@ -14,6 +14,7 @@ BENCHMARK_BIN = ROOT / "build/bin/benchmark_kv_engine"
 DEFAULT_DRAM_ROOT = Path("/dev/shm/recstore")
 DEFAULT_SSD_ROOT = Path("/mnt/nvme1n1_recstore/recstore")
 ENGINE_LABELS = {
+    "petkv": "KVEnginePetKV",
     "dram_eh_dram": "DRAM_EH+DRAM",
     "dram_map_dram": "DRAM_MAP+DRAM",
     "dram_pet_dram": "DRAM_PET+DRAM",
@@ -37,8 +38,8 @@ class EngineSpec:
 
 
 KVENGINE_ALIASES: dict[str, EngineSpec] = {
+    "petkv": EngineSpec("DRAM_PET_HASH", "DRAM_VALUE_STORE", "KVEnginePetKV"),
     "dram_eh_dram": EngineSpec("DRAM_EXTENDIBLE_HASH", "DRAM_VALUE_STORE"),
-    # "dram_map_dram": EngineSpec("DRAM_UNORDERED_MAP", "DRAM_VALUE_STORE"),
     "dram_pet_dram": EngineSpec("DRAM_PET_HASH", "DRAM_VALUE_STORE"),
     "dram_eh_ssd": EngineSpec("DRAM_EXTENDIBLE_HASH", "SSD_VALUE_STORE"),
     "dram_pet_ssd": EngineSpec("DRAM_PET_HASH", "SSD_VALUE_STORE"),
