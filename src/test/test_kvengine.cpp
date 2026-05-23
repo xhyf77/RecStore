@@ -52,12 +52,17 @@ public:
     return false;
   }
 
+  static bool IsSlabAllocatorForHeavyScenarios(const std::string& allocator) {
+    return allocator == "PERSIST_LOOP_SLAB" ||
+           allocator == "CONCURRENT_SLAB_MEMORY_POOL";
+  }
+
   static bool ShouldRunHeavyScenario(const std::string& idx,
                                      const std::string& val,
                                      const std::string& allocator) {
     if (idx == "DRAM_EXTENDIBLE_HASH" && val == "DRAM_VALUE_STORE")
       return true;
-    if (allocator != "PERSIST_LOOP_SLAB")
+    if (!IsSlabAllocatorForHeavyScenarios(allocator))
       return false;
     return idx == "DRAM_UNORDERED_MAP" || idx == "DRAM_PET_HASH";
   }
@@ -855,7 +860,9 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values("DRAM_VALUE_STORE",
                           "SSD_VALUE_STORE",
                           "TIERED_VALUE_STORE"),
-        ::testing::Values("PERSIST_LOOP_SLAB", "R2_SLAB")),
+        ::testing::Values("PERSIST_LOOP_SLAB",
+                          "R2_SLAB",
+                          "CONCURRENT_SLAB_MEMORY_POOL")),
     [](const testing::TestParamInfo<KVEngineCartesianTest::ParamType>& info) {
       auto idx = std::get<0>(info.param);
       auto val = std::get<1>(info.param);

@@ -1,7 +1,5 @@
 #include "ps/grpc/dist_grpc_ps_client.h"
 
-#include <folly/executors/CPUThreadPoolExecutor.h>
-#include <folly/init/Init.h>
 #include <future>
 #include <random>
 
