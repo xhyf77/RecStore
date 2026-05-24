@@ -40,24 +40,61 @@ struct EngineResolved {
 inline EngineResolved ResolveEngine(BaseKVConfig cfg) {
   auto& j = cfg.json_config_;
 
+  const bool has_external_engine_type = j.contains("external_engine_type");
+  const bool has_legacy_engine_type   = j.contains("engine_type");
+  if (has_external_engine_type || has_legacy_engine_type) {
+    const std::string engine =
+        has_external_engine_type
+            ? j.at("external_engine_type").get<std::string>()
+            : j.at("engine_type").get<std::string>();
+    if (has_external_engine_type && has_legacy_engine_type) {
+      const std::string legacy_engine = j.at("engine_type").get<std::string>();
+      if (legacy_engine != engine) {
+        throw std::invalid_argument(
+            "external_engine_type and deprecated engine_type disagree: " +
+            engine + " != " + legacy_engine);
+      }
+    }
+    static const std::set<std::string> kExplicitEngines = {
+        "KVEngineFasterKV", "KVEngineHPSHashMap", "KVEngineHPSRocksDB"};
+    if (!kExplicitEngines.count(engine)) {
+      throw std::invalid_argument("unknown external_engine_type: " + engine);
+    }
+    for (const char* k : {"path", "capacity"}) {
+      if (!j.contains(k)) {
+        throw std::invalid_argument(
+            std::string(k) + " is required for " + engine);
+      }
+    }
+    const bool has_value_size =
+        j.contains("value_size") ||
+        (j.contains("value") &&
+         j.at("value").contains("default_value_size_hint"));
+    if (!has_value_size) {
+      throw std::invalid_argument("value_size is required for " + engine);
+    }
+    return EngineResolved{engine, std::move(cfg)};
+  }
+
   for (const char* k : {"capacity", "index", "value"}) {
     if (!j.contains(k)) {
       throw std::invalid_argument(std::string(k) + " is required");
     }
   }
 
-  for (const char* k : {"path",
-                        "index_type",
-                        "value_type",
-                        "allocator_type",
-                        "value_memory_management",
-                        "io_backend_type",
-                        "value_size",
-                        "engine_type",
-                        "mode",
-                        "value_layout",
-                        "shmcapacity",
-                        "ssdcapacity"}) {
+  for (const char* k :
+       {"path",
+        "index_type",
+        "value_type",
+        "allocator_type",
+        "value_memory_management",
+        "io_backend_type",
+        "value_size",
+        "engine_type",
+        "mode",
+        "value_layout",
+        "shmcapacity",
+        "ssdcapacity"}) {
     if (j.contains(k)) {
       throw std::invalid_argument("legacy field '" + std::string(k) +
                                   "' not allowed; use nested index/value config");

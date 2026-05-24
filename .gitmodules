@@ -16,11 +16,6 @@
 [submodule "third_party/json"]
 	path = third_party/json
 	url = https://github.com/nlohmann/json
-[submodule "src/framework_adapters/torch/kg/dgl"]
-	path = src/framework_adapters/torch/kg/dgl
-	url = https://github.com/dmlc/dgl.git
-  commit = d4a1be3266857c963e4a8e76746baeba3be8f369
-
 [submodule "third_party/grpc"]
 	path = third_party/grpc
 	url = https://github.com/grpc/grpc.git
@@ -48,3 +43,6 @@
 [submodule "third_party/gpudirect-nvme"]
 	path = third_party/gpudirect-nvme
 	url = https://github.com/ZaidQureshi/bam
+[submodule "third_party/faster"]
+	path = third_party/faster
+	url = https://github.com/microsoft/FASTER.git

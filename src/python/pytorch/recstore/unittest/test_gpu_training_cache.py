@@ -12,6 +12,7 @@ from model_zoo.rs_demo.runners.recstore_runner import (
     _merge_gpu_cache_profile,
 )
 from model_zoo.rs_demo.runtime.recstore_distributed import ShardedRecstoreClient
+from recstore_config_path import resolve_recstore_config_path
 from ..KVClient import RecStoreClient
 
 
@@ -97,7 +98,7 @@ class TestGpuTrainingCache(unittest.TestCase):
             raise unittest.SkipTest("CUDA is required")
         cls.repo_root = Path(__file__).resolve().parents[5]
         cls.library_path = cls.repo_root / "build/lib/lib_recstore_ops.so"
-        cls.config_path = cls.repo_root / "recstore_config.json"
+        cls.config_path = resolve_recstore_config_path()
         if not cls.library_path.exists():
             raise unittest.SkipTest(f"missing ops library: {cls.library_path}")
         if not cls.config_path.exists():

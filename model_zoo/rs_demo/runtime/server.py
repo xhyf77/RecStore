@@ -18,12 +18,10 @@ def resolve_kv_data_path(
     path_suffix: str,
     allocator: str,
 ) -> str:
-    allocator_upper = allocator.upper()
-    if allocator_upper == "R2SHMMALLOC":
-        # R2ShmMalloc can hang during ps_server init on the NAS mount.
-        # Keep its backing path on the local filesystem and move logs/configs to NAS.
-        return str(Path("/tmp") / "rs_demo_kv" / run_id / f"kv_{path_suffix}")
-    return str(Path(output_root) / "runtime" / run_id / f"kv_{path_suffix}")
+    del output_root, allocator
+    # DRAM_VALUE_STORE rejects filesystem-backed paths outside /dev/shm.
+    # Keep KV backing files on tmpfs while logs, configs, and reports stay under output_root.
+    return str(Path("/dev/shm") / "rs_demo_kv" / run_id / f"kv_{path_suffix}")
 
 
 def wait_port(host: str, port: int, timeout_s: float) -> bool:
@@ -115,6 +113,7 @@ def build_runtime_config(
     run_id: str,
     kv_capacity: int | None = None,
     value_size_bytes: int | None = None,
+    index_type: str = "DRAM_EXTENDIBLE_HASH",
 ) -> dict:
     cfg = copy.deepcopy(base_cfg)
     cfg.setdefault("cache_ps", {})
@@ -163,13 +162,13 @@ def build_runtime_config(
     if value_size_bytes is not None:
         value["default_value_size_hint"] = int(value_size_bytes)
     value_size_hint = int(value.get("default_value_size_hint", value_size_bytes or 512))
-    base_kv["index"] = {"type": "DRAM_EXTENDIBLE_HASH"}
+    base_kv["index"] = {"type": index_type}
     value["type"] = "DRAM_VALUE_STORE"
     dram_allocator = value.setdefault("dram_allocator", {})
     dram_allocator["type"] = normalize_allocator_type(allocator)
     dram_allocator["capacity_bytes"] = max(
         int(dram_allocator.get("capacity_bytes", 0)),
-        capacity * value_size_hint,
+        capacity * value_size_hint * 2,
     )
     return cfg
 
@@ -240,6 +239,7 @@ def make_runtime_dir(
     ps_type: str = "BRPC",
     kv_capacity: int | None = None,
     value_size_bytes: int | None = None,
+    index_type: str = "DRAM_EXTENDIBLE_HASH",
 ) -> tuple[Path, Path]:
     unique_tag = f"{time.time_ns()}_{uuid.uuid4().hex[:8]}"
     runtime_cfg = build_runtime_config(
@@ -254,6 +254,7 @@ def make_runtime_dir(
         run_id=run_id,
         kv_capacity=kv_capacity,
         value_size_bytes=value_size_bytes,
+        index_type=index_type,
     )
     runtime_dir = Path(output_root) / "runtime" / run_id / unique_tag
     runtime_dir.mkdir(parents=True, exist_ok=True)

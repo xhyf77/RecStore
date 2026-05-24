@@ -1,100 +1,246 @@
-# KV 引擎实现
+# Composite KV 开发指南
 
-## 概述
+`KVEngineComposite` 把 KV 拆成三个层次：`Index` 保存 key 到 handle 的映射，`ValueStore` 管理 handle 指向的字节，`IOBackend` 只处理页级 SSD IO。开发新的本地 KV 能力时，优先扩展其中一个层次。
 
-RecStore 提供多种 KV 引擎实现，分别适用于不同的存储配置。所有引擎均继承自 `BaseKV`。
+## 组件组合
 
-## 引擎列表
+| 组件 | 实现 |
+|------|----------|
+| `Index` | `DRAM_EXTENDIBLE_HASH`、`DRAM_UNORDERED_MAP`、`DRAM_PET_HASH`、`SSD`、`SSD_EXTENDIBLE_HASH` |
+| `ValueStore` | `DRAM_VALUE_STORE`、`SSD_VALUE_STORE`、`TIERED_VALUE_STORE` |
+| `IOBackend` | `IOURING`、`SPDK` |
+| DRAM allocator | `PERSIST_LOOP_SLAB`、`R2_SLAB` |
+| SSD allocator | `SSD_SLAB`、`SSD_BUDDY` |
 
-| 引擎名称 | 说明 | 文件 |
-|---------|------|------|
-| KVEngineComposite | 可组合 DRAM 索引 + DRAM/SSD/Tiered 值存储 | engine_composite.h |
-| KVEnginePetKV | 基于持久化内存 (PetKV) | engine_petkv.h |
+`ResolveEngine` 限制以下组合：
 
-## 各引擎详细说明
+| 组合 | 状态 |
+|------|------|
+| DRAM index + `DRAM_VALUE_STORE` | 支持 |
+| DRAM index + `SSD_VALUE_STORE` | 支持 |
+| DRAM index + `TIERED_VALUE_STORE` | 支持 |
+| SSD index + `SSD_VALUE_STORE` | 支持 |
+| SSD index + `DRAM_VALUE_STORE` | 拒绝 |
+| SSD index + `TIERED_VALUE_STORE` | 拒绝 |
 
-### KVEngineComposite
+显式外部引擎不参与上表的 `KVEngineComposite` 组合规则。`KVEngineFasterKV` 使用 FasterKV 内部的内存 hash index；它的可选 `fasterkv.storage` 只控制 FasterKV hybrid log/value backend：`memory` 使用 `NullDisk`，`ssd` 使用 `FileSystemDisk` 并可将 hybrid log/value 放到 `fasterkv.log_path`。这和 RecStore 内置的 `index` / `value` 分层不是同一套配置面。
 
-通过 `index.type` + `value.type` 组合 DRAM 索引与 DRAM/SSD/Tiered 值存储，是 YCSB benchmark 与 `test_kvengine` 的默认路径。
+## 配置样例
 
-??? example "配置示例（DRAM 索引 + SSD 值）"
+??? example "DRAM index + DRAM value"
+
     ```json
     {
-        "index": {"type": "DRAM_PET_HASH"},
-        "value": {"type": "SSD_VALUE_STORE", "path": "/data/recstore/value.db",
-                  "ssd_allocator": {"type": "SSD_SLAB", "capacity_bytes": 1073741824}},
-        "capacity": 1000000,
-        "value_size": 128
+      "capacity": 1000000,
+      "index": {
+        "type": "DRAM_EXTENDIBLE_HASH"
+      },
+      "value": {
+        "type": "DRAM_VALUE_STORE",
+        "default_value_size_hint": 512,
+        "path": "/dev/shm/recstore_data/value",
+        "dram_allocator": {
+          "type": "PERSIST_LOOP_SLAB",
+          "capacity_bytes": 512000000
+        }
+      }
     }
     ```
 
-### Tiered 值存储
+??? example "DRAM index + SSD value"
 
-DRAM/SSD 分层值存储不再通过旧的独立 Hybrid 引擎实现，而是作为 `KVEngineComposite` 的 `TIERED_VALUE_STORE` 值存储模式提供。
-
-??? example "配置示例"
     ```json
     {
-        "index": {"type": "DRAM_EXTENDIBLE_HASH"},
-        "value": {
-            "type": "TIERED_VALUE_STORE",
-            "dram_allocator": {"type": "PersistLoopShmMalloc"},
-            "ssd_allocator": {
-                "type": "SSD_SLAB",
-                "path": "/data/recstore/value.db",
-                "capacity_bytes": 107374182400
-            }
+      "capacity": 1000000,
+      "index": {
+        "type": "DRAM_UNORDERED_MAP"
+      },
+      "value": {
+        "type": "SSD_VALUE_STORE",
+        "default_value_size_hint": 512,
+        "path": "/data/recstore/value_pages.db",
+        "ssd_allocator": {
+          "type": "SSD_BUDDY",
+          "capacity_bytes": 512000000,
+          "min_block_size": 128,
+          "max_block_size": 65536,
+          "io": {
+            "type": "IOURING",
+            "queue_depth": 512,
+            "base_offset_bytes": 4096
+          }
+        }
+      }
+    }
+    ```
+
+??? example "DRAM index + tiered value"
+
+    ```json
+    {
+      "capacity": 1000000,
+      "index": {
+        "type": "DRAM_EXTENDIBLE_HASH"
+      },
+      "value": {
+        "type": "TIERED_VALUE_STORE",
+        "default_value_size_hint": 512,
+        "dram_allocator": {
+          "type": "PERSIST_LOOP_SLAB",
+          "capacity_bytes": 128000000,
+          "path": "/dev/shm/recstore_data/tiered_dram"
         },
-        "capacity": 1000000,
-        "value_size": 128
+        "ssd_allocator": {
+          "type": "SSD_BUDDY",
+          "capacity_bytes": 512000000,
+          "path": "/data/recstore/tiered_value_pages.db",
+          "min_block_size": 128,
+          "max_block_size": 65536,
+          "io": {
+            "type": "IOURING",
+            "queue_depth": 512,
+            "base_offset_bytes": 4096
+          }
+        },
+        "tiering": {
+          "high_watermark_ratio": 0.85
+        }
+      }
     }
     ```
 
-### KVEnginePetKV
+??? example "SSD index + SSD value"
 
-基于持久化内存 (Persistent Memory) 的实现。
-
-**特点**
-
-- 使用 PetMultiKV 作为底层存储
-- 支持多个 shard，降低锁竞争
-- 支持 RDMA 内存注册
-- 提供预取优化
-
-**核心组件**
-
-- `PetMultiKV* shm_kv` - 分片 KV 存储
-- `shard_num = 16` - 固定 16 个分片
-
-??? example "配置示例"
     ```json
     {
-        "path": "/mnt/pmem/recstore/value",
-        "capacity": 1000000,
-        "value_size": 128
+      "capacity": 1000000,
+      "index": {
+        "type": "SSD_EXTENDIBLE_HASH",
+        "path": "/data/recstore/index_pages.db",
+        "io": {
+          "type": "IOURING",
+          "queue_depth": 512,
+          "base_offset_bytes": 0
+        }
+      },
+      "value": {
+        "type": "SSD_VALUE_STORE",
+        "default_value_size_hint": 512,
+        "path": "/data/recstore/value_pages.db",
+        "ssd_allocator": {
+          "type": "SSD_SLAB",
+          "capacity_bytes": 512000000,
+          "size_classes": [128, 256, 512, 1024, 4096],
+          "io": {
+            "type": "IOURING",
+            "queue_depth": 512,
+            "base_offset_bytes": 4096
+          }
+        }
+      }
     }
     ```
 
-**预取方法** (通过 FLAGS_prefetch_method 控制)
-- `0`: 逐个 Get
-- `1`: 使用 BatchGet 预取
+??? example "完整配置示例"
 
-## 线程安全
+    ```json
+    {
+      "cache_ps": {
+        "num_threads": 32,
+        "base_kv_config": {
+          "capacity": 1000000,
+          "index": {
+            "type": "SSD_EXTENDIBLE_HASH",
+            "path": "/data/recstore/index_pages.db",
+            "io": {
+              "type": "IOURING",
+              "queue_depth": 512,
+              "base_offset_bytes": 0
+            }
+          },
+          "value": {
+            "type": "SSD_VALUE_STORE",
+            "default_value_size_hint": 512,
+            "path": "/data/recstore/value_pages.db",
+            "ssd_allocator": {
+              "type": "SSD_BUDDY",
+              "capacity_bytes": 512000000,
+              "min_block_size": 128,
+              "max_block_size": 65536,
+              "io": {
+                "type": "IOURING",
+                "queue_depth": 512,
+                "base_offset_bytes": 4096
+              }
+            }
+          }
+        }
+      }
+    }
+    ```
 
-各引擎的线程安全实现：
+## Index 接口
 
-| 引擎 | 同步机制 |
-|------|---------|
-| KVEngineComposite | per-key stripe `shared_mutex` |
-| PetKV | 内部分片锁 |
+`Index` 只保存 `Key_t -> Value_t`。value 字节由 `ValueStore` 读写。
 
-## 工厂注册
-
-所有引擎通过宏注册到工厂：
+实现新索引时需要覆盖：
 
 ```cpp
-FACTORY_REGISTER(BaseKV, KVEngineComposite, KVEngineComposite, const BaseKVConfig&);
-FACTORY_REGISTER(BaseKV, KVEnginePetKV, ...);
+void Get(Key_t key, Value_t& pointer, unsigned tid) override;
+void Put(Key_t key, Value_t pointer, unsigned tid) override;
+void BatchGet(base::ConstArray<Key_t> keys, Value_t* pointers, unsigned tid) override;
+void BatchPut(base::ConstArray<Key_t> keys, Value_t* pointers, unsigned tid) override;
+bool Delete(Key_t& key) override;
 ```
 
-使用 `#include "storage/kv_engine/engine_factory.h"` 即可完成所有引擎的注册。
+未命中必须返回 `kValueHandleNone`。注册示例：
+
+```cpp
+FACTORY_REGISTER(Index, MY_INDEX, MyIndex, const BaseKVConfig&);
+```
+
+还要在 `engine_selector.h` 中加入 `MY_INDEX`，写清楚它需要哪些配置。SSD index 要求 `index.path` 和 `index.io`。
+
+## ValueStore 接口
+
+`ValueStore` 负责分配、读写、释放 handle。`KVEngineComposite` 根据 `SlotCapacity(handle)` 判断覆盖还是重新分配。
+
+核心接口：
+
+```cpp
+uint64_t Alloc(size_t size) override;
+void Write(uint64_t handle, const void* data, size_t size) override;
+uint64_t AllocAndWrite(const void* data, size_t size) override;
+size_t Read(uint64_t handle, void* out_buf, size_t buf_size) override;
+void Free(uint64_t handle) override;
+size_t SlotCapacity(uint64_t handle) const override;
+```
+
+DRAM value store 可以实现 `DirectPtr`，让 `BatchGet` 少一次拷贝。SSD value store 不应返回直接指针。
+
+`TIERED_VALUE_STORE` 按容量水位选择 DRAM 或 SSD：DRAM 预留空间未超过 `high_watermark_ratio` 时分配 DRAM，否则分配 SSD。它不做后台冷热迁移。
+
+新增 value store 后要注册工厂，更新 `ResolveEngine` 的合法 value 类型和字段校验。
+
+## IOBackend 接口
+
+`IOBackend` 的单位是 page。`SsdValueStore` 和 SSD index 将嵌套配置转换成后端字段：
+
+| 嵌套字段 | 传给 `IOBackend` 的字段 |
+|----------|--------------------------|
+| `path` | `file_path` |
+| `io.queue_depth` | `queue_cnt` |
+| `io.base_offset_bytes / PAGE_SIZE` | `page_id_offset` |
+| `io.type` | 工厂类型名 |
+
+新后端至少要实现同步页读写、异步页读写、页对齐 buffer 分配和完成轮询。`BatchReadPages` / `BatchWritePages` 有默认逐页实现；如果后端能批量提交，应覆盖它们。
+
+## 修改检查
+
+改索引：跑 `test_kvengine` 中覆盖该 `index.type` 的用例。
+
+改 value store 或 allocator：跑 `test_kvengine`，必要时补充 `src/test/test_ssd_allocators.cpp`。
+
+改 IO 后端：跑 `test_io_backend`，补跑包含 SSD value 的 `test_kvengine` 场景。
+
+改 `ResolveEngine`：补充拒绝非法字段和非法组合的测试，现有样例在 `src/test/test_kvengine.cpp` 末尾。

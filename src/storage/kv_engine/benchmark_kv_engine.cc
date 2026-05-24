@@ -6,7 +6,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -19,21 +18,37 @@
 #include "base/init.h"
 #include "base/log.h"
 #include "memory/shm_file.h"
-#include "storage/io_backend/force_link.h"
 #include "storage/kv_engine/base_kv.h"
+#include "storage/kv_engine/engine_cceh.h"
+#include "storage/kv_engine/engine_extendible_hash.h"
 #include "storage/kv_engine/engine_selector.h"
 
-#ifdef RECSTORE_USE_GPERF_PROFILING
-#include <gperftools/profiler.h>
-#endif
-
-DEFINE_string(dram_path,
-              "",
-              "DRAM data directory; empty only works with anonymous DRAM allocators");
+DEFINE_string(
+    dram_path,
+    "",
+    "DRAM data directory; empty only works with anonymous DRAM allocators");
 DEFINE_string(ssd_path, "", "SSD data directory");
 DEFINE_string(index_type, "DRAM_EXTENDIBLE_HASH", "index.type");
 DEFINE_string(value_store_type, "DRAM_VALUE_STORE", "value.type");
 DEFINE_string(engine_class, "KVEngineComposite", "BaseKV factory class name");
+DEFINE_string(fasterkv_storage,
+              "memory",
+              "KVEngineFasterKV storage backend: memory|ssd");
+DEFINE_string(
+    fasterkv_log_path,
+    "",
+    "KVEngineFasterKV SSD log directory; defaults to ssd_path/fasterkv-log");
+DEFINE_int64(
+    fasterkv_hlog_memory_bytes,
+    0,
+    "KVEngineFasterKV hybrid log memory bytes; 0 uses backend default");
+DEFINE_double(
+    fasterkv_mutable_fraction,
+    0.0,
+    "KVEngineFasterKV hybrid log mutable fraction; 0 uses backend default");
+DEFINE_int64(fasterkv_read_cache_bytes,
+             0,
+             "KVEngineFasterKV read cache bytes; 0 disables read cache");
 DEFINE_string(dram_allocator, "PERSIST_LOOP_SLAB", "value.dram_allocator.type");
 DEFINE_string(ssd_io_backend, "IOURING", "SSD IO backend");
 DEFINE_int32(ssd_queue_depth, 512, "SSD IO queue depth");
@@ -41,17 +56,15 @@ DEFINE_int64(dram_capacity_bytes, 0, "override DRAM allocator capacity bytes");
 DEFINE_int64(ssd_capacity_bytes, 0, "override SSD allocator capacity bytes");
 
 DEFINE_int64(record_count, 100000000, "YCSB record count");
-DEFINE_string(workload, "c", "YCSB workload: a/b/c or workloada/workloadb/workloadc");
+DEFINE_string(workload,
+              "c",
+              "YCSB workload: a/b/c or workloada/workloadb/workloadc");
 DEFINE_string(distribution, "uniform", "key distribution: uniform/zipfian");
 DEFINE_double(zipfian_alpha, 0.9, "Zipfian alpha");
 DEFINE_string(read_mode, "exists", "read mode: exists/get");
 DEFINE_bool(load, true, "run load phase");
 DEFINE_bool(run, true, "run transaction phase");
 DEFINE_bool(print_util, false, "print KVEngine utilization after load");
-DEFINE_bool(bulk_load, false, "use BaseKV::BulkLoad during the load phase");
-DEFINE_string(run_cpu_profile,
-              "",
-              "gperftools CPU profile path for the transaction phase only");
 
 DEFINE_int32(thread_num, 16, "worker thread count");
 DEFINE_int32(load_thread_num, 0, "load thread count; 0 uses thread_num");
@@ -61,8 +74,8 @@ DEFINE_int32(running_seconds, 5, "transaction runtime seconds");
 namespace {
 
 struct PhaseStats {
-  uint64_t total_ops = 0;
-  uint64_t read_ops = 0;
+  uint64_t total_ops  = 0;
+  uint64_t read_ops   = 0;
   uint64_t update_ops = 0;
 };
 
@@ -72,7 +85,8 @@ struct WorkloadMix {
 
 class FastRandom {
 public:
-  explicit FastRandom(uint64_t seed) : state_(seed ? seed : 0x9e3779b97f4a7c15ULL) {}
+  explicit FastRandom(uint64_t seed)
+      : state_(seed ? seed : 0x9e3779b97f4a7c15ULL) {}
 
   uint64_t Next() {
     uint64_t x = state_;
@@ -83,13 +97,9 @@ public:
     return x * 2685821657736338717ULL;
   }
 
-  double Uniform01() {
-    return (Next() >> 11) * (1.0 / 9007199254740992.0);
-  }
+  double Uniform01() { return (Next() >> 11) * (1.0 / 9007199254740992.0); }
 
-  uint64_t Uniform(uint64_t n) {
-    return n == 0 ? 0 : Next() % n;
-  }
+  uint64_t Uniform(uint64_t n) { return n == 0 ? 0 : Next() % n; }
 
 private:
   uint64_t state_;
@@ -129,14 +139,12 @@ public:
     return NextZipfian() + 1;
   }
 
-  uint64_t NextUint(uint64_t n) {
-    return rng_.Uniform(n);
-  }
+  uint64_t NextUint(uint64_t n) { return rng_.Uniform(n); }
 
 private:
   uint64_t NextZipfian() {
     const double u = std::max(rng_.Uniform01(), 1e-12);
-    double rank = 1.0;
+    double rank    = 1.0;
     if (std::abs(alpha_ - 1.0) < 1e-9) {
       rank = std::exp(u * log_n_);
     } else {
@@ -159,17 +167,28 @@ private:
 
 std::string NormalizeWorkload(std::string workload) {
   std::transform(workload.begin(), workload.end(), workload.begin(), ::tolower);
-  if (workload == "workloada") return "a";
-  if (workload == "workloadb") return "b";
-  if (workload == "workloadc") return "c";
+  if (workload == "workloada")
+    return "a";
+  if (workload == "workloadb")
+    return "b";
+  if (workload == "workloadc")
+    return "c";
   return workload;
 }
 
 WorkloadMix GetWorkloadMix(const std::string& workload) {
-  if (workload == "a") return WorkloadMix{50};
-  if (workload == "b") return WorkloadMix{95};
-  if (workload == "c") return WorkloadMix{100};
-  throw std::invalid_argument("workload must be a/b/c or workloada/workloadb/workloadc");
+  if (workload == "a")
+    return WorkloadMix{50};
+  if (workload == "b")
+    return WorkloadMix{95};
+  if (workload == "c")
+    return WorkloadMix{100};
+  throw std::invalid_argument(
+      "workload must be a/b/c or workloada/workloadb/workloadc");
+}
+
+bool IsSsdIndexType(const std::string& type) {
+  return type == "SSD" || type == "SSD_EXTENDIBLE_HASH";
 }
 
 bool HasDramValueStore(const std::string& type) {
@@ -180,14 +199,100 @@ bool HasSsdValueStore(const std::string& type) {
   return type == "SSD_VALUE_STORE" || type == "TIERED_VALUE_STORE";
 }
 
+bool IsLegacyDirectEngine(const std::string& engine_class) {
+  return engine_class == "KVEngineExtendibleHash" ||
+         engine_class == "KVEngineCCEH" || engine_class == "KVEngineFasterKV";
+}
+
 BaseKVConfig BuildConfig() {
   BaseKVConfig config;
   const uint64_t capacity = static_cast<uint64_t>(FLAGS_record_count);
   const uint64_t value_slot_bytes =
       static_cast<uint64_t>(std::max(FLAGS_value_size, 1)) + sizeof(uint64_t);
-  const uint64_t guessed_value_capacity = capacity * value_slot_bytes * 2;
+  const uint64_t value_capacity           = capacity * value_slot_bytes * 6 / 5;
   constexpr uint64_t kMinSsdCapacityBytes = 256ULL * 1024ULL * 1024ULL;
-
+  if (FLAGS_engine_class == "KVEngineExtendibleHash") {
+    const uint64_t dram_capacity =
+        FLAGS_dram_capacity_bytes > 0
+            ? static_cast<uint64_t>(FLAGS_dram_capacity_bytes)
+            : value_capacity;
+    const uint64_t ssd_capacity =
+        FLAGS_ssd_capacity_bytes > 0
+            ? static_cast<uint64_t>(FLAGS_ssd_capacity_bytes)
+            : std::max(value_capacity, kMinSsdCapacityBytes);
+    std::string value_medium = "DRAM";
+    if (FLAGS_value_store_type == "SSD_VALUE_STORE") {
+      value_medium = "SSD";
+    } else if (FLAGS_value_store_type != "DRAM_VALUE_STORE") {
+      throw std::invalid_argument("KVEngineExtendibleHash only supports "
+                                  "DRAM_VALUE_STORE/SSD_VALUE_STORE");
+    }
+    const std::string engine_path =
+        (value_medium == "SSD" && !FLAGS_ssd_path.empty())
+            ? FLAGS_ssd_path
+            : FLAGS_dram_path;
+    config.json_config_ = {
+        {"capacity", capacity},
+        {"path", engine_path},
+        {"value_size", FLAGS_value_size},
+        {"value_type", value_medium},
+        {"DRAM_SIZE", dram_capacity},
+        {"SSD_SIZE", ssd_capacity}};
+    config.num_threads_ = std::max(FLAGS_thread_num, FLAGS_load_thread_num);
+    return config;
+  }
+  if (FLAGS_engine_class == "KVEngineCCEH") {
+    const uint64_t ssd_capacity =
+        FLAGS_ssd_capacity_bytes > 0
+            ? static_cast<uint64_t>(FLAGS_ssd_capacity_bytes)
+            : std::max(value_capacity, kMinSsdCapacityBytes);
+    config.json_config_ = {
+        {"capacity", capacity},
+        {"path", FLAGS_ssd_path},
+        {"value_size", FLAGS_value_size},
+        {"queue_cnt", std::max(FLAGS_thread_num, 1)},
+        {"io_backend_type", FLAGS_ssd_io_backend},
+        {"SSD_SIZE", ssd_capacity}};
+    config.num_threads_ = std::max(FLAGS_thread_num, FLAGS_load_thread_num);
+    return config;
+  }
+  if (FLAGS_engine_class == "KVEngineFasterKV") {
+    if (FLAGS_fasterkv_storage != "memory" && FLAGS_fasterkv_storage != "ssd") {
+      throw std::invalid_argument("fasterkv_storage must be memory or ssd");
+    }
+    if (FLAGS_fasterkv_mutable_fraction < 0.0 ||
+        FLAGS_fasterkv_mutable_fraction > 1.0) {
+      throw std::invalid_argument(
+          "fasterkv_mutable_fraction must be in [0, 1]");
+    }
+    config.json_config_ = {
+        {"external_engine_type", "KVEngineFasterKV"},
+        {"capacity", capacity},
+        {"path", FLAGS_ssd_path.empty() ? FLAGS_dram_path : FLAGS_ssd_path},
+        {"value_size", FLAGS_value_size},
+        {"fasterkv", {{"storage", FLAGS_fasterkv_storage}}}};
+    if (FLAGS_fasterkv_storage == "ssd") {
+      const std::string log_path =
+          FLAGS_fasterkv_log_path.empty()
+              ? FLAGS_ssd_path + "/fasterkv-log"
+              : FLAGS_fasterkv_log_path;
+      config.json_config_["fasterkv"]["log_path"] = log_path;
+    }
+    if (FLAGS_fasterkv_hlog_memory_bytes > 0) {
+      config.json_config_["fasterkv"]["hlog_memory_bytes"] =
+          static_cast<uint64_t>(FLAGS_fasterkv_hlog_memory_bytes);
+    }
+    if (FLAGS_fasterkv_mutable_fraction > 0.0) {
+      config.json_config_["fasterkv"]["mutable_fraction"] =
+          FLAGS_fasterkv_mutable_fraction;
+    }
+    if (FLAGS_fasterkv_read_cache_bytes > 0) {
+      config.json_config_["fasterkv"]["read_cache_bytes"] =
+          static_cast<uint64_t>(FLAGS_fasterkv_read_cache_bytes);
+    }
+    config.num_threads_ = std::max(FLAGS_thread_num, FLAGS_load_thread_num);
+    return config;
+  }
   if (FLAGS_engine_class == "KVEnginePetKV") {
     if (FLAGS_dram_path.empty()) {
       throw std::invalid_argument("dram_path must be set for KVEnginePetKV");
@@ -199,6 +304,8 @@ BaseKVConfig BuildConfig() {
     return config;
   }
 
+  const bool ssd_index = IsSsdIndexType(FLAGS_index_type);
+
   config.json_config_ = {
       {"capacity", capacity},
       {"index", {{"type", FLAGS_index_type}}},
@@ -206,46 +313,56 @@ BaseKVConfig BuildConfig() {
        {{"type", FLAGS_value_store_type},
         {"default_value_size_hint", FLAGS_value_size}}}};
 
+  if (ssd_index) {
+    config.json_config_["index"]["path"] = FLAGS_ssd_path + "/index.db";
+    config.json_config_["index"]["io"]   = {
+          {"type", FLAGS_ssd_io_backend},
+          {"queue_depth", FLAGS_ssd_queue_depth},
+          {"base_offset_bytes", 0}};
+  }
+
   const uint64_t dram_capacity =
-      FLAGS_dram_capacity_bytes > 0 ? static_cast<uint64_t>(FLAGS_dram_capacity_bytes)
-                                    : guessed_value_capacity;
+      FLAGS_dram_capacity_bytes > 0
+          ? static_cast<uint64_t>(FLAGS_dram_capacity_bytes)
+          : value_capacity;
   const uint64_t ssd_capacity =
-      FLAGS_ssd_capacity_bytes > 0 ? static_cast<uint64_t>(FLAGS_ssd_capacity_bytes)
-                                   : std::max(guessed_value_capacity, kMinSsdCapacityBytes);
+      FLAGS_ssd_capacity_bytes > 0
+          ? static_cast<uint64_t>(FLAGS_ssd_capacity_bytes)
+          : std::max(value_capacity, kMinSsdCapacityBytes);
 
   if (FLAGS_value_store_type == "DRAM_VALUE_STORE") {
     if (!FLAGS_dram_path.empty()) {
       config.json_config_["value"]["path"] = FLAGS_dram_path + "/value";
     }
-    config.json_config_["value"]["dram_allocator"] =
-        {{"type", FLAGS_dram_allocator}, {"capacity_bytes", dram_capacity}};
+    config.json_config_["value"]["dram_allocator"] = {
+        {"type", FLAGS_dram_allocator}, {"capacity_bytes", dram_capacity}};
   }
   if (FLAGS_value_store_type == "SSD_VALUE_STORE") {
     config.json_config_["value"]["path"] = FLAGS_ssd_path + "/value.db";
-    config.json_config_["value"]["ssd_allocator"] =
-        {{"type", "SSD_SLAB"},
-         {"capacity_bytes", ssd_capacity},
-         {"min_block_size", 128},
-         {"max_block_size", 4096},
-         {"io",
-          {{"type", FLAGS_ssd_io_backend},
-           {"queue_depth", FLAGS_ssd_queue_depth},
-           {"base_offset_bytes", 4096}}}};
+    config.json_config_["value"]["ssd_allocator"] = {
+        {"type", "SSD_SLAB"},
+        {"capacity_bytes", ssd_capacity},
+        {"min_block_size", 128},
+        {"max_block_size", 4096},
+        {"io",
+         {{"type", FLAGS_ssd_io_backend},
+          {"queue_depth", FLAGS_ssd_queue_depth},
+          {"base_offset_bytes", 4096}}}};
   } else if (FLAGS_value_store_type == "TIERED_VALUE_STORE") {
-    config.json_config_["value"]["dram_allocator"] =
-        {{"type", FLAGS_dram_allocator},
-         {"capacity_bytes", ssd_capacity * 0.01},
-         {"path", FLAGS_dram_path + "/dram"}};
-    config.json_config_["value"]["ssd_allocator"] =
-        {{"type", "SSD_SLAB"},
-         {"capacity_bytes", ssd_capacity},
-         {"min_block_size", 128},
-         {"max_block_size", 4096},
-         {"path", FLAGS_ssd_path + "/ssd.db"},
-         {"io",
-          {{"type", FLAGS_ssd_io_backend},
-           {"queue_depth", FLAGS_ssd_queue_depth},
-           {"base_offset_bytes", 4096}}}};
+    config.json_config_["value"]["dram_allocator"] = {
+        {"type", FLAGS_dram_allocator},
+        {"capacity_bytes", dram_capacity},
+        {"path", FLAGS_dram_path + "/dram"}};
+    config.json_config_["value"]["ssd_allocator"] = {
+        {"type", "SSD_SLAB"},
+        {"capacity_bytes", ssd_capacity},
+        {"min_block_size", 128},
+        {"max_block_size", 4096},
+        {"path", FLAGS_ssd_path + "/ssd.db"},
+        {"io",
+         {{"type", FLAGS_ssd_io_backend},
+          {"queue_depth", FLAGS_ssd_queue_depth},
+          {"base_offset_bytes", 4096}}}};
     config.json_config_["value"]["tiering"] = {{"cache_policy", "LRU"}};
   }
 
@@ -263,27 +380,9 @@ PhaseStats LoadRecords(BaseKV* kv, int load_threads, uint64_t record_count) {
   for (int tid = 0; tid < load_threads; ++tid) {
     threads.emplace_back([kv, tid, per_thread, record_count, &counts]() {
       base::auto_bind_core();
-      const uint64_t begin = static_cast<uint64_t>(tid) * per_thread + 1;
-      const uint64_t end = std::min(record_count + 1, begin + per_thread);
-      const uint64_t count = end > begin ? end - begin : 0;
-      if (FLAGS_bulk_load) {
-        std::vector<uint64_t> keys;
-        keys.reserve(count);
-        for (uint64_t key = begin; key < end; ++key) {
-          keys.push_back(key);
-        }
-        std::vector<char> values(
-            static_cast<size_t>(count) * static_cast<size_t>(FLAGS_value_size));
-        for (uint64_t i = 0; i < count; ++i) {
-          std::memset(values.data() + i * static_cast<size_t>(FLAGS_value_size),
-                      static_cast<char>('a' + (tid % 26)),
-                      static_cast<size_t>(FLAGS_value_size));
-        }
-        kv->BulkLoad(base::ConstArray<uint64_t>(keys), values.data());
-        counts[tid] = count;
-        return;
-      }
       std::string value(FLAGS_value_size, static_cast<char>('a' + (tid % 26)));
+      const uint64_t begin = static_cast<uint64_t>(tid) * per_thread + 1;
+      const uint64_t end   = std::min(record_count + 1, begin + per_thread);
       for (uint64_t key = begin; key < end; ++key) {
         kv->Put(key, std::string_view(value.data(), value.size()), tid);
         ++counts[tid];
@@ -302,12 +401,13 @@ PhaseStats LoadRecords(BaseKV* kv, int load_threads, uint64_t record_count) {
   return stats;
 }
 
-PhaseStats RunTransactions(BaseKV* kv,
-                           const std::string& workload,
-                           const std::string& distribution,
-                           int threads_num,
-                           uint64_t record_count,
-                           int seconds) {
+PhaseStats RunTransactions(
+    BaseKV* kv,
+    const std::string& workload,
+    const std::string& distribution,
+    int threads_num,
+    uint64_t record_count,
+    int seconds) {
   const WorkloadMix mix = GetWorkloadMix(workload);
   const bool use_exists = FLAGS_read_mode == "exists";
   if (!use_exists && FLAGS_read_mode != "get") {
@@ -322,10 +422,11 @@ PhaseStats RunTransactions(BaseKV* kv,
   for (int tid = 0; tid < threads_num; ++tid) {
     threads.emplace_back([&, tid]() {
       base::auto_bind_core();
-      KeyGenerator key_gen(distribution,
-                           record_count,
-                           FLAGS_zipfian_alpha,
-                           0x9e3779b97f4a7c15ULL + static_cast<uint64_t>(tid));
+      KeyGenerator key_gen(
+          distribution,
+          record_count,
+          FLAGS_zipfian_alpha,
+          0x9e3779b97f4a7c15ULL + static_cast<uint64_t>(tid));
       std::string value(FLAGS_value_size, static_cast<char>('A' + (tid % 26)));
       std::string read_value;
       PhaseStats local;
@@ -333,7 +434,8 @@ PhaseStats RunTransactions(BaseKV* kv,
       }
       while (!stop.load(std::memory_order_relaxed)) {
         const uint64_t key = key_gen.NextKey();
-        const bool do_read = static_cast<int>(key_gen.NextUint(100)) < mix.read_percent;
+        const bool do_read =
+            static_cast<int>(key_gen.NextUint(100)) < mix.read_percent;
         if (do_read) {
           if (use_exists) {
             (void)kv->Exists(key, tid);
@@ -391,11 +493,32 @@ int main(int argc, char* argv[]) {
   if (FLAGS_running_seconds <= 0) {
     LOG(FATAL) << "running_seconds must be positive";
   }
-  if (HasSsdValueStore(FLAGS_value_store_type) && FLAGS_ssd_path.empty()) {
+  if (!IsLegacyDirectEngine(FLAGS_engine_class) &&
+      IsSsdIndexType(FLAGS_index_type) && FLAGS_ssd_path.empty()) {
+    LOG(FATAL) << "ssd_path must be set for SSD index";
+  }
+  if (!IsLegacyDirectEngine(FLAGS_engine_class) &&
+      HasSsdValueStore(FLAGS_value_store_type) && FLAGS_ssd_path.empty()) {
     LOG(FATAL) << "ssd_path must be set for SSD/TIERED value store";
   }
-  if (FLAGS_value_store_type == "TIERED_VALUE_STORE" && FLAGS_dram_path.empty()) {
+  if (!IsLegacyDirectEngine(FLAGS_engine_class) &&
+      FLAGS_value_store_type == "TIERED_VALUE_STORE" &&
+      FLAGS_dram_path.empty()) {
     LOG(FATAL) << "dram_path must be set for TIERED value store";
+  }
+  if (FLAGS_engine_class == "KVEngineCCEH" && FLAGS_ssd_path.empty()) {
+    LOG(FATAL) << "ssd_path must be set for KVEngineCCEH";
+  }
+  if (FLAGS_engine_class == "KVEngineExtendibleHash" &&
+      FLAGS_dram_path.empty() && FLAGS_ssd_path.empty()) {
+    LOG(FATAL)
+        << "dram_path or ssd_path must be set for KVEngineExtendibleHash";
+  }
+  if (FLAGS_engine_class == "KVEngineFasterKV" &&
+      FLAGS_fasterkv_storage == "ssd" && FLAGS_ssd_path.empty() &&
+      FLAGS_fasterkv_log_path.empty()) {
+    LOG(FATAL) << "ssd_path or fasterkv_log_path must be set for "
+                  "KVEngineFasterKV fasterkv_storage=ssd";
   }
 
   const std::string workload = NormalizeWorkload(FLAGS_workload);
@@ -423,13 +546,14 @@ int main(int argc, char* argv[]) {
   }
 
   if (FLAGS_load) {
-    const auto begin = std::chrono::steady_clock::now();
-    PhaseStats load_stats =
-        LoadRecords(kv.get(), load_threads, static_cast<uint64_t>(FLAGS_record_count));
-    const auto end = std::chrono::steady_clock::now();
+    const auto begin      = std::chrono::steady_clock::now();
+    PhaseStats load_stats = LoadRecords(
+        kv.get(), load_threads, static_cast<uint64_t>(FLAGS_record_count));
+    const auto end       = std::chrono::steady_clock::now();
     const double seconds = SecondsSince(begin, end);
     const double throughput =
-        seconds > 0.0 ? static_cast<double>(load_stats.total_ops) / seconds : 0.0;
+        seconds > 0.0 ? static_cast<double>(load_stats.total_ops) / seconds
+                      : 0.0;
     std::printf(
         "YCSB_LOAD_RESULT records=%ld threads=%d seconds=%.6f ops=%lu "
         "throughput_ops_sec=%.6f\n",
@@ -444,31 +568,19 @@ int main(int argc, char* argv[]) {
   }
 
   if (FLAGS_run) {
-#ifdef RECSTORE_USE_GPERF_PROFILING
-    if (!FLAGS_run_cpu_profile.empty()) {
-      ProfilerStart(FLAGS_run_cpu_profile.c_str());
-    }
-#else
-    if (!FLAGS_run_cpu_profile.empty()) {
-      LOG(FATAL) << "--run_cpu_profile requires USE_GPERF_PROFILING=ON";
-    }
-#endif
-    const auto begin = std::chrono::steady_clock::now();
-    PhaseStats run_stats = RunTransactions(kv.get(),
-                                           workload,
-                                           FLAGS_distribution,
-                                           FLAGS_thread_num,
-                                           static_cast<uint64_t>(FLAGS_record_count),
-                                           FLAGS_running_seconds);
-    const auto end = std::chrono::steady_clock::now();
-#ifdef RECSTORE_USE_GPERF_PROFILING
-    if (!FLAGS_run_cpu_profile.empty()) {
-      ProfilerStop();
-    }
-#endif
+    const auto begin     = std::chrono::steady_clock::now();
+    PhaseStats run_stats = RunTransactions(
+        kv.get(),
+        workload,
+        FLAGS_distribution,
+        FLAGS_thread_num,
+        static_cast<uint64_t>(FLAGS_record_count),
+        FLAGS_running_seconds);
+    const auto end       = std::chrono::steady_clock::now();
     const double seconds = SecondsSince(begin, end);
     const double throughput =
-        seconds > 0.0 ? static_cast<double>(run_stats.total_ops) / seconds : 0.0;
+        seconds > 0.0 ? static_cast<double>(run_stats.total_ops) / seconds
+                      : 0.0;
     std::printf(
         "YCSB_RESULT workload=%s distribution=%s zipfian_alpha=%.6f "
         "read_mode=%s threads=%d records=%ld runtime_s=%.6f ops=%lu "

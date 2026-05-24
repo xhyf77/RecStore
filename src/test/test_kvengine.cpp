@@ -23,6 +23,7 @@
 
 #include "storage/kv_engine/engine_factory.h"
 #include "storage/kv_engine/engine_selector.h"
+#include "test_io_uring_helper.h"
 
 class KVEngineCartesianTest
     : public ::testing::TestWithParam<
@@ -113,6 +114,18 @@ protected:
     const size_t capacity = 1000000;
     const int value_sz    = 128;
 
+    if ((index_type_ == "SSD" || index_type_ == "SSD_EXTENDIBLE_HASH") &&
+        value_type_ != "SSD_VALUE_STORE") {
+      GTEST_SKIP() << "Skip invalid SSD index combo with " << value_type_;
+    }
+
+    if (NeedsIoUring(index_type_, value_type_)) {
+      std::string reason;
+      if (!test_utils::CanUseIoUring(&reason)) {
+        GTEST_SKIP() << reason;
+      }
+    }
+
     cfg_.json_config_ = BuildConfig(capacity, value_sz);
 
     auto r       = base::ResolveEngine(cfg_);
@@ -178,6 +191,15 @@ protected:
   std::string index_type_, value_type_, allocator_type_, engine_name_;
 
 private:
+  static bool IsSsdIndex(const std::string& idx) {
+    return idx == "SSD" || idx == "SSD_EXTENDIBLE_HASH";
+  }
+
+  static bool NeedsIoUring(const std::string& idx, const std::string& val) {
+    return IsSsdIndex(idx) || val == "SSD_VALUE_STORE" ||
+           val == "TIERED_VALUE_STORE";
+  }
+
   json BuildConfig(size_t capacity, int value_sz) const {
     json j = {{"capacity", capacity},
               {"index", {{"type", index_type_}}},

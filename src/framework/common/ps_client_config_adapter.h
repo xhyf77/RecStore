@@ -9,6 +9,7 @@ namespace recstore {
 
 std::string NormalizePSType(std::string ps_type);
 PSClientType ResolveFrameworkPSClientType(const json& config);
+json ResolveFrameworkDistributedClientConfig(const json& config);
 json ResolveFrameworkPSClientTransportConfig(const json& config);
 PSClientCreateOptions
 ResolvePSClientOptionsFromFrameworkConfig(const json& config);

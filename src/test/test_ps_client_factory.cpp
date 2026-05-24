@@ -62,6 +62,31 @@ TEST(PSClientFactoryTest, PreservesExplicitBrpcClientConfig) {
   EXPECT_EQ(client_config["shard"], 1);
 }
 
+TEST(PSClientFactoryTest, ResolvesDistributedClientConfigWithFieldFallback) {
+  json config = {
+      {"cache_ps",
+       {{"ps_type", "BRPC"}, {"num_shards", 2}, {"hash_method", "city_hash"}}},
+      {"distributed_client",
+       {{"servers",
+         json::array(
+             {{{"host", "10.0.0.1"}, {"port", 25123}, {"shard", 1}},
+              {{"host", "10.0.0.2"}, {"port", 25124}, {"shard", 0}}})}}},
+  };
+
+  json client_config = ResolveFrameworkDistributedClientConfig(config);
+  EXPECT_EQ(client_config["num_shards"], 2);
+  EXPECT_EQ(client_config["hash_method"], "city_hash");
+  ASSERT_TRUE(client_config["servers"].is_array());
+  ASSERT_EQ(client_config["servers"].size(), 2);
+  EXPECT_EQ(client_config["servers"][0]["shard"], 1);
+
+  PSClientCreateOptions options =
+      ResolvePSClientOptionsFromFrameworkConfig(config);
+  EXPECT_EQ(options.raw_config["distributed_client"]["num_shards"], 2);
+  EXPECT_EQ(options.raw_config["distributed_client"]["hash_method"],
+            "city_hash");
+}
+
 TEST(PSClientFactoryTest, CreatesBrpcClientWithoutFactoryRegistration) {
   json config = {
       {"cache_ps", {{"ps_type", "BRPC"}}},

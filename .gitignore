@@ -1,3 +1,4 @@
+*.INFO
 *.ERROR
 *.WARNING
 *.code-workspace
@@ -35,5 +36,13 @@ results/
 plan
 dockerfiles/start_sshd.sh
 dockerfiles/codex/config.toml
-dockerfiles/codex/config.toml
 dockerfiles/codex/init_codex.sh
+
+.worktrees/
+.cache/
+
+.claude/
+docs/superpowers/
+
+rpc_data/
+Testing/

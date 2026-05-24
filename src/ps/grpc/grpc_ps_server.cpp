@@ -4,8 +4,10 @@
 
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <future>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -21,6 +23,7 @@
 #include "ps/base/cache_ps_impl.h"
 #include "ps/base/parameters.h"
 #include "recstore_config.h"
+#include "src/base/config.h"
 
 #ifdef ENABLE_PERF_REPORT
 #  include <chrono>
@@ -48,15 +51,22 @@ using recstoreps::PutParameterResponse;
 using recstoreps::UpdateParameterRequest;
 using recstoreps::UpdateParameterResponse;
 
-DEFINE_string(config_path,
-              RECSTORE_PATH "/recstore_config.json",
-              "config file path");
+DEFINE_string(config_path, "", "config file path");
 DEFINE_int32(grpc_local_shard_id,
              -1,
              "Only start the specified shard in multi-shard gRPC mode; "
              "-1 means start all configured shards");
 
 namespace {
+
+void AppendShardSuffixIfPresent(
+    nlohmann::json& config_node, const char* key, int shard_id) {
+  if (!config_node.contains(key) || !config_node[key].is_string()) {
+    return;
+  }
+  config_node[key] =
+      config_node[key].get<std::string>() + "_" + std::to_string(shard_id);
+}
 
 void AppendShardSuffixToNestedFilePaths(nlohmann::json& node, int shard_id) {
   if (node.is_object()) {
@@ -585,15 +595,13 @@ public:
 
             nlohmann::json shard_config = config_["cache_ps"];
             if (shard_config.contains("base_kv_config") &&
-                shard_config["base_kv_config"].contains("path")) {
-              std::string original_path =
-                  shard_config["base_kv_config"]["path"];
-              shard_config["base_kv_config"]["path"] =
-                  original_path + "_" + std::to_string(shard);
-              AppendShardSuffixToNestedFilePaths(
-                  shard_config["base_kv_config"], shard);
-              LOG(INFO) << "Shard " << shard << " using data path: "
-                        << shard_config["base_kv_config"]["path"];
+                shard_config["base_kv_config"].is_object()) {
+              auto& base_kv_config = shard_config["base_kv_config"];
+              AppendShardSuffixIfPresent(base_kv_config, "path", shard);
+              AppendShardSuffixIfPresent(base_kv_config, "rocksdb_path", shard);
+              AppendShardSuffixToNestedFilePaths(base_kv_config, shard);
+              LOG(INFO) << "gRPC shard " << shard
+                        << " using base_kv_config: " << base_kv_config.dump();
             }
 
             auto cache_ps = std::make_unique<CachePS>(shard_config);
@@ -700,7 +708,14 @@ FACTORY_REGISTER(BaseParameterServer, GRPCParameterServer, GRPCParameterServer);
 int main(int argc, char** argv) {
   base::Init(&argc, &argv);
   xmh::Reporter::StartReportThread(2000);
-  std::ifstream config_file(FLAGS_config_path);
+  const std::string config_path =
+      FLAGS_config_path.empty()
+          ? base::ResolveRecStoreConfigPath().string()
+          : FLAGS_config_path;
+  std::ifstream config_file(config_path);
+  if (!config_file.is_open()) {
+    throw std::runtime_error("Cannot open config file: " + config_path);
+  }
   nlohmann::json ex;
   config_file >> ex;
   recstore::GRPCParameterServer ps;

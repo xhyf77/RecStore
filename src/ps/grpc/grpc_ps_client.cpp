@@ -41,6 +41,11 @@ using recstoreps::UpdateParameterResponse;
 
 namespace {
 
+void SetRpcDeadline(grpc::ClientContext* context, int timeout_ms = 15000) {
+  context->set_deadline(
+      std::chrono::system_clock::now() + std::chrono::milliseconds(timeout_ms));
+}
+
 int BuildUpdateBlocksFromFlat(
     const base::ConstArray<uint64_t>& keys,
     const float* grads,
@@ -103,6 +108,8 @@ GRPCParameterClient::GRPCParameterClient(json config)
       fmt::format("{}:{}", host_, port_),
       grpc::InsecureChannelCredentials(),
       args);
+  auto* raw_cq = new grpc::CompletionQueue();
+  cq_.reset(raw_cq);
 
   for (int i = 0; i < nr_clients_; i++) {
     stubs_.push_back(nullptr);
@@ -130,6 +137,8 @@ GRPCParameterClient::GRPCParameterClient(
       fmt::format("{}:{}", host, port),
       grpc::InsecureChannelCredentials(),
       args);
+  auto* raw_cq = new grpc::CompletionQueue();
+  cq_.reset(raw_cq);
 
   for (int i = 0; i < nr_clients_; i++) {
     stubs_.push_back(nullptr);
@@ -179,14 +188,14 @@ int GRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
     }
     std::unique_ptr<ClientAsyncResponseReader<GetParameterResponse>> rpc =
         stubs_[0]->AsyncGetParameter(
-            get_param_contexts_[index].get(), request, &cq);
+            get_param_contexts_[index].get(), request, cq_.get());
     rpc->Finish(&response, &status, reinterpret_cast<void*>(index));
   }
   int get = 0;
   while (get != request_num) {
     void* got_tag;
     bool ok = false;
-    cq.Next(&got_tag, &ok);
+    cq_->Next(&got_tag, &ok);
     if (!ok) {
       LOG(ERROR) << "error";
     }
@@ -334,7 +343,7 @@ int GRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
       get_param_contexts_[index] = std::make_unique<grpc::ClientContext>();
     }
     get_param_resonse_readers_.emplace_back(stubs_[0]->AsyncGetParameter(
-        get_param_contexts_[index].get(), request, &cq));
+        get_param_contexts_[index].get(), request, cq_.get()));
     auto& rpc = get_param_resonse_readers_.back();
     // GetParameter(&context, request, &response);
     rpc->Finish(&response, &status, reinterpret_cast<void*>(index));
@@ -344,7 +353,7 @@ int GRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
   while (get != request_num) {
     void* got_tag;
     bool ok = false;
-    cq.Next(&got_tag, &ok);
+    cq_->Next(&got_tag, &ok);
     if (unlikely(!ok)) {
       LOG(ERROR) << "error";
     }
@@ -441,7 +450,6 @@ int GRPCParameterClient::GetParameter(const base::ConstArray<uint64_t>& keys,
 // return prefetch id
 uint64_t
 GRPCParameterClient::PrefetchParameter(const base::ConstArray<uint64_t>& keys) {
-  uint64_t prefetch_id = next_prefetch_id_++;
   int request_num =
       (keys.Size() + MAX_PARAMETER_BATCH - 1) / MAX_PARAMETER_BATCH;
 
@@ -467,12 +475,18 @@ GRPCParameterClient::PrefetchParameter(const base::ConstArray<uint64_t>& keys) {
     // GetParameter(&context, request, &response);
     rpc->Finish(&response, &status, reinterpret_cast<void*>(index));
   }
-  prefetch_batches_.emplace(prefetch_id, std::move(pb));
+  uint64_t prefetch_id = 0;
+  {
+    std::lock_guard<std::mutex> lk(prefetch_mu_);
+    prefetch_id = next_prefetch_id_++;
+    prefetch_batches_.emplace(prefetch_id, std::move(pb));
+  }
 
   return prefetch_id;
 }
 
 bool GRPCParameterClient::IsPrefetchDone(uint64_t prefetch_id) {
+  std::lock_guard<std::mutex> lk(prefetch_mu_);
   auto it = prefetch_batches_.find(prefetch_id);
   if (it == prefetch_batches_.end()) {
     LOG(ERROR) << "Invalid prefetch_id: " << prefetch_id;
@@ -513,29 +527,49 @@ bool GRPCParameterClient::IsPrefetchDone(uint64_t prefetch_id) {
 }
 
 void GRPCParameterClient::WaitForPrefetch(uint64_t prefetch_id) {
+  std::lock_guard<std::mutex> lk(prefetch_mu_);
   auto it = prefetch_batches_.find(prefetch_id);
   if (it == prefetch_batches_.end()) {
     LOG(ERROR) << "Invalid prefetch_id: " << prefetch_id;
     return;
   }
-  auto& pb      = it->second;
-  void* got_tag = nullptr;
-  bool ok       = false;
+  auto& pb                     = it->second;
+  void* got_tag                = nullptr;
+  bool ok                      = false;
+  int idle_rounds              = 0;
+  constexpr auto kPollInterval = std::chrono::milliseconds(200);
+  constexpr int kMaxIdleRounds = 150; // 30s
   while (pb.completed_count_ < pb.batch_size_) {
-    auto status = pb.cqs_->Next(&got_tag, &ok);
-    if (!status) {
+    auto deadline = std::chrono::system_clock::now() + kPollInterval;
+    auto status   = pb.cqs_->AsyncNext(&got_tag, &ok, deadline);
+    if (status == grpc::CompletionQueue::NextStatus::GOT_EVENT) {
+      idle_rounds = 0;
+      if (unlikely(!ok)) {
+        LOG(ERROR) << "CompletionQueue returned not ok for prefetch";
+      }
+      pb.completed_count_++;
+      continue;
+    }
+    if (status == grpc::CompletionQueue::NextStatus::TIMEOUT) {
+      idle_rounds++;
+      if (idle_rounds >= kMaxIdleRounds) {
+        LOG(ERROR) << "WaitForPrefetch timed out for prefetch_id "
+                   << prefetch_id << ", completed " << pb.completed_count_
+                   << "/" << pb.batch_size_;
+        break;
+      }
+      continue;
+    }
+    if (status == grpc::CompletionQueue::NextStatus::SHUTDOWN) {
       LOG(ERROR) << "CompletionQueue shutdown while waiting prefetch";
       break;
     }
-    if (unlikely(!ok)) {
-      LOG(ERROR) << "CompletionQueue returned not ok for prefetch";
-    }
-    pb.completed_count_++;
   }
 }
 
 bool GRPCParameterClient::GetPrefetchResult(
     uint64_t prefetch_id, std::vector<std::vector<float>>* values) {
+  std::lock_guard<std::mutex> lk(prefetch_mu_);
   auto it = prefetch_batches_.find(prefetch_id);
   if (it == prefetch_batches_.end()) {
     LOG(ERROR) << "Invalid prefetch_id: " << prefetch_id;
@@ -582,6 +616,7 @@ bool GRPCParameterClient::GetPrefetchResultFlat(
     std::vector<float>* values,
     int64_t* num_rows,
     int64_t embedding_dim) {
+  std::lock_guard<std::mutex> lk(prefetch_mu_);
   auto it = prefetch_batches_.find(prefetch_id);
   if (it == prefetch_batches_.end()) {
     LOG(ERROR) << "Invalid prefetch_id: " << prefetch_id;
@@ -638,7 +673,12 @@ bool GRPCParameterClient::ClearPS() {
   CommandResponse response;
   request.set_command(PSCommand::CLEAR_PS);
   grpc::ClientContext context;
+  SetRpcDeadline(&context);
   grpc::Status status = stubs_[0]->Command(&context, request, &response);
+  if (!status.ok()) {
+    LOG(ERROR) << "gRPC ClearPS failed: " << status.error_code() << " "
+               << status.error_message();
+  }
   return status.ok();
 }
 
@@ -650,6 +690,7 @@ bool GRPCParameterClient::LoadFakeData(int64_t n) {
   request.set_command(PSCommand::LOAD_FAKE_DATA);
   request.add_arg1(&n, sizeof(int64_t));
   grpc::ClientContext context;
+  SetRpcDeadline(&context);
   grpc::Status status = stubs_[0]->Command(&context, request, &response);
   if (!status.ok()) {
     LOG(ERROR) << "gRPC LoadFakeData failed: " << status.error_code() << " "
@@ -671,6 +712,7 @@ bool GRPCParameterClient::DumpFakeData(int64_t n) {
   request.set_command(PSCommand::DUMP_FAKE_DATA);
   request.add_arg1(&n, sizeof(int64_t));
   grpc::ClientContext context;
+  SetRpcDeadline(&context);
   grpc::Status status = stubs_[0]->Command(&context, request, &response);
   if (!status.ok()) {
     LOG(ERROR) << "gRPC DumpFakeData failed: " << status.error_code() << " "
@@ -698,6 +740,7 @@ bool GRPCParameterClient::LoadCkpt(
     request.add_arg2(each);
   }
   grpc::ClientContext context;
+  SetRpcDeadline(&context, 30000);
   grpc::Status status = stubs_[0]->Command(&context, request, &response);
   return status.ok();
 }
@@ -730,6 +773,7 @@ bool GRPCParameterClient::PutParameter(
     CHECK_EQ(blocks.size(), 1);
     request.mutable_parameter_value()->swap(blocks[0]);
     grpc::ClientContext context;
+    SetRpcDeadline(&context);
     grpc::Status status = stubs_[0]->PutParameter(&context, request, &response);
     if (status.ok()) {
       continue;
@@ -786,6 +830,7 @@ int GRPCParameterClient::UpdateParameter(
   }
 
   grpc::ClientContext context;
+  SetRpcDeadline(&context);
 #ifdef ENABLE_PERF_REPORT
   if (trace_id != 0) {
     context.AddMetadata("x-recstore-trace-id", std::to_string(trace_id));
@@ -872,6 +917,7 @@ int GRPCParameterClient::UpdateParameterFlat(
   }
 
   grpc::ClientContext context;
+  SetRpcDeadline(&context);
 #ifdef ENABLE_PERF_REPORT
   if (trace_id != 0) {
     context.AddMetadata("x-recstore-trace-id", std::to_string(trace_id));

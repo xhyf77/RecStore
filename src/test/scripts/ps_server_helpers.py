@@ -4,6 +4,14 @@ import os
 import socket
 import json
 import glob
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from recstore_config_path import find_recstore_config_path
 
 
 RDMA_SKIP_EXIT_CODE = 77
@@ -45,23 +53,9 @@ def is_port_open(host, port, timeout=1):
 
 
 def find_config_file():
-    """Find recstore_config.json by searching upwards to the root."""
-    config_path = os.environ.get('RECSTORE_CONFIG')
-    if config_path and os.path.exists(config_path):
-        return os.path.abspath(config_path)
-    
-    current_dir = os.path.abspath(os.getcwd())
-    while True:
-        candidate = os.path.join(current_dir, 'recstore_config.json')
-        if os.path.exists(candidate):
-            return candidate
-        
-        parent_dir = os.path.dirname(current_dir)
-        if parent_dir == current_dir:  # Reached root
-            break
-        current_dir = parent_dir
-    
-    return None
+    """Find the active RecStore config file."""
+    config_path = find_recstore_config_path(os.getcwd())
+    return str(config_path) if config_path is not None else None
 
 
 def load_config():

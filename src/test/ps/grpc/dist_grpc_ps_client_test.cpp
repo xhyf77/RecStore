@@ -1,5 +1,7 @@
 #include "ps/grpc/dist_grpc_ps_client.h"
 
+#include <stdlib.h>
+
 #include <future>
 #include <random>
 
@@ -11,10 +13,15 @@
 #include "test/server_mgr/ps_server_launcher.h"
 
 namespace {
-std::vector<int> AcquireDistGrpcTestPorts() {
-  auto ports = recstore::test::PSServerLauncher::FindAvailablePorts(2);
-  CHECK_EQ(ports.size(), 2);
-  return ports;
+constexpr int kDistGrpcPort0 = 15133;
+constexpr int kDistGrpcPort1 = 15134;
+
+void DisableGrpcTracingEnv() {
+  // CI may inject tracing knobs that force grpc_tracer_init() during channel
+  // credential creation and hang inside TraceFlagList::Set. Clear them for
+  // this integration test to keep gRPC startup deterministic.
+  unsetenv("GRPC_TRACE");
+  unsetenv("GRPC_VERBOSITY");
 }
 } // namespace
 
@@ -247,21 +254,26 @@ void TestPrefetch(const std::vector<int>& ports) {
 
   uint64_t prefetch_id = client.PrefetchParameter(keys_array);
   CHECK(prefetch_id != 0);
+  std::cout << "Issued prefetch request" << std::endl;
   CHECK(!client.IsPrefetchDone(999999));
   client.WaitForPrefetch(prefetch_id);
+  std::cout << "Prefetch wait completed" << std::endl;
   CHECK(client.IsPrefetchDone(prefetch_id));
 
   std::vector<std::vector<float>> fetched_values;
   CHECK(client.GetPrefetchResult(prefetch_id, &fetched_values));
+  std::cout << "Fetched structured prefetch result" << std::endl;
   CHECK(check_eq_2d(fetched_values, values));
   CHECK(!client.GetPrefetchResult(prefetch_id, &fetched_values));
 
   uint64_t flat_prefetch_id = client.PrefetchParameter(keys_array);
   CHECK(flat_prefetch_id != 0);
+  std::cout << "Issued flat prefetch request" << std::endl;
   std::vector<float> flat_values;
   int64_t num_rows = 0;
   CHECK(client.GetPrefetchResultFlat(
       flat_prefetch_id, &flat_values, &num_rows, 3));
+  std::cout << "Fetched flat prefetch result" << std::endl;
   CHECK(num_rows == static_cast<int64_t>(keys.size()));
   CHECK(flat_values.size() == keys.size() * 3);
   for (size_t i = 0; i < keys.size(); ++i) {
@@ -271,7 +283,6 @@ void TestPrefetch(const std::vector<int>& ports) {
   }
   CHECK(!client.GetPrefetchResultFlat(
       flat_prefetch_id, &flat_values, &num_rows, 3));
-  std::cout << "TestPrefetch done" << std::endl;
 }
 
 void TestPrefetchConcurrency(const std::vector<int>& ports) {
@@ -295,7 +306,7 @@ void TestPrefetchConcurrency(const std::vector<int>& ports) {
     std::vector<std::vector<float>> values;
   };
 
-  std::vector<CaseData> cases(4);
+  std::vector<CaseData> cases(16);
   for (size_t c = 0; c < cases.size(); ++c) {
     auto& cs = cases[c];
     for (int i = 0; i < 12; ++i) {
@@ -330,14 +341,14 @@ void TestPrefetchConcurrency(const std::vector<int>& ports) {
   for (auto& future : futures) {
     CHECK(future.get());
   }
-  std::cout << "TestPrefetchConcurrency done" << std::endl;
 }
 
 int main(int argc, char** argv) {
+  DisableGrpcTracingEnv();
   base::Init(&argc, &argv);
   Reporter::StartReportThread(2000);
 
-  const auto ports = AcquireDistGrpcTestPorts();
+  const std::vector<int> ports = {kDistGrpcPort0, kDistGrpcPort1};
 
   auto launch_options =
       recstore::test::PSServerLauncher::LoadOptionsFromEnvironment();

@@ -1,99 +1,63 @@
 # RecStore 计算层
 
-## 概述
+计算层把模型里的 sparse id 读写转换成参数服务器请求。
 
-计算层负责模型训练和推理中的嵌入向量查询与梯度更新，从参数服务器向上，通过 OP 层提供统一的 C++ 接口，再到 PyTorch Python 绑定，最后接入推荐系统模型代码。
-
-## 架构分层
-
-| 层级 | 模块 | 文件路径 | 说明 |
-|------|------|---------|------|
-| 7 | 推荐模型 | `用户代码` | DLRM, Wide&Deep 等 |
-| 6 | Embedding 模块 | `src/python/pytorch/torchrec/EmbeddingBag.py` | EmbeddingBag / DistEmbedding |
-| 5 | KV 客户端 | `src/python/pytorch/recstore/KVClient.py` | RecStoreClient 单例 |
-| 4 | PyTorch 扩展 | `src/framework/pytorch/op_torch.cc` | torch.ops.recstore_ops |
-| 3 | C++ 接口 | `src/framework/op.h` | CommonOp / KVClientOp |
-| 2 | PS 客户端 | `src/ps/client/` | BasePSClient |
-| 1 | PS 服务 | `src/ps/server/` | gRPC/bRPC 通信 |
-| 0 | 存储层 | `src/storage/` | BaseKV / 引擎 / 内存管理 |
-
-## 数据流
-
-### 前向传播
-
-| 步骤 | 组件 | 文件路径 | 代码/操作 |
-|------|------|---------|----------|
-| 1 | 推荐模型 | 用户代码 | `features = get_batch()` |
-| 2 | EmbeddingBag | `src/python/pytorch/torchrec/EmbeddingBag.py` | `output = emb_module(features)` |
-| 3 | KVClient | `src/python/pytorch/recstore/KVClient.py` | `client.pull(name, ids)` |
-| 4 | PyTorch 扩展 | `src/framework/pytorch/op_torch.cc` | `torch.ops.recstore_ops.emb_read()` |
-| 5 | CommonOp | `src/framework/op.h` | `op->EmbRead(rec_keys, rec_values)` |
-| 6 | BasePSClient | `src/ps/client/` | 与 PS 通信获取向量 |
-| 7 | EmbeddingBag | `src/python/pytorch/torchrec/EmbeddingBag.py` | `F.embedding_bag(..., mode="sum")` |
-| 8 | 返回 | PyTorch | `[batch_size, num_features, emb_dim]` |
-
-### 反向传播与梯度更新
-
-| 步骤 | 组件 | 文件路径 | 代码/操作 |
-|------|------|---------|----------|
-| 1 | 用户代码 | - | `loss.backward()` |
-| 2 | EmbeddingBag | `src/python/pytorch/torchrec/EmbeddingBag.py` | 触发 _RecStoreEBCFunction.backward |
-| 3 | 梯度收集 | 同上 | 将 (ID, grad) 追踪到 `_trace` |
-| 4 | 优化器 | `src/python/pytorch/recstore/optimizer.py` | `optimizer.step([emb_module])` |
-| 5 | 梯度应用 | KVClient | `client.update(table_name, ids, grads)` |
-| 6 | C++ 接口 | `src/framework/op.h` | `op->EmbUpdate(keys, grads)` |
-| 7 | PS 客户端 | `src/ps/client/` | Get → Update → Put |
-| 8 | 参数更新完成 | - | PS 中的嵌入向量更新 |
-
-### 异步预取流程
-
-| 步骤 | 组件 | 文件路径 | 代码/操作 |
-|------|------|---------|----------|
-| 1 | 模型 | 用户代码 | `prefetch_id = client.prefetch(ids)` |
-| 2 | KVClient | `src/python/pytorch/recstore/KVClient.py` | 返回唯一 prefetch_id |
-| 3 | 后台读取 | `src/framework/pytorch/op_torch.cc` | `op->EmbPrefetch()` 异步执行 |
-| 4 | 计算重叠 | 用户代码 | 执行其他计算，不阻塞 |
-| 5 | 等待完成 | KVClient | `result = client.wait_for_prefetch(prefetch_id)` |
-| 6 | 获取结果 | C++ 侧 | `op->GetPretchResult()` |
-| 7 | 返回 | PyTorch | `[N, embedding_dim]` 张量 |
-
-## 模块说明
-
-详细文档：
-
-- [op_interface.md](./op_interface.md) - CommonOp 接口定义
-- [kvlient.md](./kvclient.md) - KVClient Python 客户端
-- [pytorch_binding.md](./pytorch_binding.md) - PyTorch C++ 扩展
-- [embedding_modules.md](./embedding_modules.md) - EmbeddingBag / DistEmbedding
-- [optimizer.md](./optimizer.md) - 优化器与梯度更新
-
-## 配置示例
-
-### 初始化嵌入表
-
-```python
-kv_client = RecStoreClient(library_path="/path/to/lib_recstore_ops.so")
-
-# 初始化嵌入表
-kv_client.init_data(
-    name="user_embedding",
-    shape=(1000000, 128),  # num_embeddings, embedding_dim
-    dtype=torch.float32,
-    init_func=lambda shape, dtype: torch.randn(shape, dtype=dtype) * 0.01
-)
+```mermaid
+graph TD
+    Embedding[Embedding module] --> Client[RecStoreClient]
+    Client --> TorchOps[torch.ops.recstore_ops]
+    TorchOps --> KVOp[KVClientOp]
+    KVOp --> PSClient[BasePSClient]
+    PSClient --> Service[ParameterService]
 ```
 
-### 创建 EmbeddingBag
+## 入口文件
 
-```python
-emb_configs = [
-    # ...
-]
+| 层 | 文件 |
+|----|------|
+| TorchRec 风格模块 | `src/python/pytorch/torchrec_kv/EmbeddingBag.py` |
+| 单表模块 | `src/python/pytorch/recstore/DistEmb.py` |
+| Python client | `src/python/pytorch/recstore/KVClient.py` |
+| PyTorch op | `src/framework/pytorch/op_torch.cc` |
+| C++ facade | `src/framework/op.h`、`src/framework/op.cc` |
+| Python sparse optimizer | `src/python/pytorch/recstore/optimizer.py` |
+| 后端 optimizer | `src/optimizer/optimizer.cpp` |
 
-emb_bag = RecStoreEmbeddingBagCollection(
-    embedding_bag_configs=emb_configs,
-    lr=0.01,
-    enable_fusion=True,
-    fusion_k=30
-)
-```
+## 数据路径
+
+### 前向读取
+
+| 顺序 | 操作 | 文件 |
+|------|------|------|
+| 1 | 模型传入 sparse feature ids。 | 用户模型 |
+| 2 | Embedding 模块按表名取 ids，必要时生成 fused id。 | `torchrec_kv/EmbeddingBag.py` |
+| 3 | `RecStoreClient.pull` 或 `local_lookup_flat` 调 PyTorch op。 | `recstore/KVClient.py` |
+| 4 | `KVClientOp::EmbRead` 从 PS 拉取 embedding。 | `src/framework/op.cc` |
+| 5 | Python 侧执行 `embedding_bag` pooling。 | `torchrec_kv/EmbeddingBag.py` |
+
+### 梯度更新
+
+| 顺序 | 操作 | 文件 |
+|------|------|------|
+| 1 | autograd backward 把 `(table, ids, grads)` 写入模块 `_trace`。 | `torchrec_kv/EmbeddingBag.py`、`recstore/DistEmb.py` |
+| 2 | `SparseOptimizer.step()` 消费 `_trace`。 | `recstore/optimizer.py` |
+| 3 | Python client 调 `emb_update_table` 或 local update。 | `recstore/KVClient.py` |
+| 4 | PS 后端读取当前 embedding，执行 optimizer 更新，写回存储层。 | `src/optimizer/optimizer.cpp` |
+
+### 预取
+
+| 顺序 | 操作 | 文件 |
+|------|------|------|
+| 1 | `issue_fused_prefetch(features)` 去重 fused ids。 | `torchrec_kv/EmbeddingBag.py` |
+| 2 | `RecStoreClient.prefetch(ids)` 返回 handle。 | `recstore/KVClient.py` |
+| 3 | forward 等待 handle，取回结果。 | `torchrec_kv/EmbeddingBag.py` |
+| 4 | inverse index 恢复原始顺序。 | `torchrec_kv/EmbeddingBag.py` |
+
+Python 侧只收集和发送 sparse gradients。参数更新逻辑在后端。
+
+## 相关页面
+
+| 任务 | 文档 |
+|------|------|
+| 查 C++ / Python / `torch.ops` 接口 | [interfaces.md](./interfaces.md) |
+| 接模型、改 EmbeddingBag、改 optimizer | [embedding_optimizer.md](./embedding_optimizer.md) |

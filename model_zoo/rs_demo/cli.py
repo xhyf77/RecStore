@@ -30,10 +30,12 @@ from .runtime.server import (
     stop_server,
     wait_server_ready,
 )
+from recstore_config_path import resolve_recstore_config_path
 
 
 def repo_root_from_this_file() -> Path:
     return Path(__file__).resolve().parents[2]
+
 
 
 def estimate_recstore_kv_capacity(num_embeddings: int, table_count: int = 26) -> int:
@@ -77,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg.start_server = False
 
     repo_root = repo_root_from_this_file()
-    with open(repo_root / "recstore_config.json", "r", encoding="utf-8") as f:
+    with open(resolve_recstore_config_path(), "r", encoding="utf-8") as f:
         base_cfg = json.load(f)
 
     p0_default, p1_default = resolve_default_ports(base_cfg)
@@ -121,11 +123,16 @@ def main(argv: list[str] | None = None) -> int:
                     if effective_ps_type == "LOCAL_SHM"
                     else None
                 ),
+                index_type=cfg.recstore_index_type,
             )
             cfg.recstore_runtime_dir = str(runtime_dir)
 
     proc = None
+    previous_recstore_config = os.environ.get("RECSTORE_CONFIG")
+    recstore_config_was_set = "RECSTORE_CONFIG" in os.environ
     try:
+        if cfg.backend == "recstore":
+            os.environ["RECSTORE_CONFIG"] = str(runtime_cfg_path)
         if server_needed:
             print(f"[rs_demo] starting server ({effective_ps_type}) with {runtime_cfg_path}")
             proc = start_server(repo_root, runtime_cfg_path, Path(cfg.server_log))
@@ -205,6 +212,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     finally:
         stop_server(proc)
+        if recstore_config_was_set:
+            os.environ["RECSTORE_CONFIG"] = previous_recstore_config or ""
+        else:
+            os.environ.pop("RECSTORE_CONFIG", None)
 
 
 if __name__ == "__main__":

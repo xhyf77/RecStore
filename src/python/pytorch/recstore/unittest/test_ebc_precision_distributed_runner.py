@@ -26,6 +26,7 @@ if TEST_SCRIPTS_PATH not in sys.path:
 try:
     from ps_server_runner import ps_server_context
     from ps_server_helpers import find_ps_server_binary
+    from recstore_config_path import resolve_recstore_config_path
 except ImportError:
     print("Error: Could not import ps_server_runner. Make sure the script is in the correct location.")
     sys.exit(1)
@@ -53,12 +54,7 @@ def create_temp_config(port=15000):
     Create a temporary RecStore config file based on the root recstore_config.json,
     modified to bind to 0.0.0.0 and run a single shard for testing.
     """
-    base_config_path = os.path.join(RECSTORE_PATH, 'recstore_config.json')
-    if not os.path.exists(base_config_path):
-        # Fallback to current directory or raise error
-        base_config_path = 'recstore_config.json'
-        if not os.path.exists(base_config_path):
-            raise FileNotFoundError(f"Could not find recstore_config.json at {RECSTORE_PATH} or current directory")
+    base_config_path = str(resolve_recstore_config_path())
     
     print(f"[Runner] Loading base config from: {base_config_path}")
     with open(base_config_path, 'r') as f:

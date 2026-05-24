@@ -212,12 +212,76 @@
       "type": "object",
       "description": "Underlying KV engine config.",
       "additionalProperties": true,
-      "required": [
-        "capacity",
-        "index",
-        "value"
-      ],
       "properties": {
+        "engine_type": {
+          "type": "string",
+          "description": "Deprecated alias for external_engine_type. Use external_engine_type for new configs.",
+          "enum": [
+            "KVEngineFasterKV",
+            "KVEngineHPSHashMap",
+            "KVEngineHPSRocksDB"
+          ]
+        },
+        "external_engine_type": {
+          "type": "string",
+          "description": "Explicit selector for external KV backend adapters. RecStore built-in KV uses index/value instead.",
+          "enum": [
+            "KVEngineFasterKV",
+            "KVEngineHPSHashMap",
+            "KVEngineHPSRocksDB"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_batch_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fasterkv": {
+          "type": "object",
+          "description": "Optional KVEngineFasterKV backend settings. storage=memory keeps NullDisk; storage=ssd uses FasterKV FileSystemDisk for the hybrid log.",
+          "additionalProperties": true,
+          "properties": {
+            "storage": {
+              "type": "string",
+              "enum": [
+                "memory",
+                "ssd"
+              ],
+              "default": "memory"
+            },
+            "log_path": {
+              "type": "string"
+            },
+            "hlog_memory_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "mutable_fraction": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            },
+            "read_cache_bytes": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "rocksdb_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "table_name": {
+          "type": "string",
+          "minLength": 1
+        },
         "capacity": {
           "type": "integer",
           "minimum": 1
@@ -233,12 +297,13 @@
               "enum": [
                 "DRAM_EXTENDIBLE_HASH",
                 "DRAM_UNORDERED_MAP",
-                "DRAM_PET_HASH"
+                "DRAM_PET_HASH",
+                "SSD",
+                "SSD_EXTENDIBLE_HASH"
               ]
             },
             "path": {
-              "type": "string",
-              "minLength": 1
+              "type": "string"
             },
             "io": {
               "type": "object",
@@ -293,8 +358,7 @@
                   "minimum": 1
                 },
                 "path": {
-                  "type": "string",
-                  "minLength": 1
+                  "type": "string"
                 }
               },
               "additionalProperties": true
@@ -361,7 +425,6 @@
               },
               "then": {
                 "required": [
-                  "path",
                   "dram_allocator"
                 ]
               }
@@ -404,7 +467,134 @@
             }
           ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "anyOf": [
+            {
+              "required": [
+                "external_engine_type",
+                "path",
+                "capacity",
+                "value_size"
+              ]
+            },
+            {
+              "required": [
+                "engine_type",
+                "path",
+                "capacity",
+                "value_size"
+              ]
+            },
+            {
+              "required": [
+                "capacity",
+                "index",
+                "value"
+              ]
+            },
+            {
+              "required": [
+                "path",
+                "capacity",
+                "index_type",
+                "value_type",
+                "value_size"
+              ]
+            }
+          ]
+        },
+        {
+          "if": {
+            "properties": {
+              "index": {
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "SSD",
+                      "SSD_EXTENDIBLE_HASH"
+                    ]
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "index": {
+                "required": [
+                  "path",
+                  "io"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "external_engine_type",
+              "engine_type"
+            ],
+            "properties": {
+              "external_engine_type": {
+                "const": "KVEngineFasterKV"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "engine_type": {
+                "const": "KVEngineFasterKV"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "external_engine_type",
+              "engine_type"
+            ],
+            "properties": {
+              "external_engine_type": {
+                "const": "KVEngineHPSHashMap"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "engine_type": {
+                "const": "KVEngineHPSHashMap"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "external_engine_type",
+              "engine_type"
+            ],
+            "properties": {
+              "external_engine_type": {
+                "const": "KVEngineHPSRocksDB"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "engine_type": {
+                "const": "KVEngineHPSRocksDB"
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

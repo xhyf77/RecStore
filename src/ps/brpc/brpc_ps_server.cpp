@@ -10,6 +10,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -25,6 +26,7 @@
 #include "ps/base/parameters.h"
 #include "ps_brpc.pb.h"
 #include "recstore_config.h"
+#include "src/base/config.h"
 
 #ifdef ENABLE_PERF_REPORT
 #  include <chrono>
@@ -44,9 +46,7 @@ using recstoreps_brpc::PutParameterResponse;
 using recstoreps_brpc::UpdateParameterRequest;
 using recstoreps_brpc::UpdateParameterResponse;
 
-DEFINE_string(brpc_config_path,
-              RECSTORE_PATH "/recstore_config.json",
-              "config file path");
+DEFINE_string(brpc_config_path, "", "config file path");
 DEFINE_int32(brpc_server_port, 15000, "bRPC server port");
 DEFINE_int32(local_shard_id,
              -1,
@@ -744,6 +744,7 @@ public:
               shard_config["base_kv_config"].is_object()) {
             auto& base_kv_config = shard_config["base_kv_config"];
             AppendShardSuffixIfPresent(base_kv_config, "path", shard);
+            AppendShardSuffixIfPresent(base_kv_config, "rocksdb_path", shard);
             AppendShardSuffixToNestedFilePaths(base_kv_config, shard);
             LOG(INFO) << "bRPC shard " << shard
                       << " using base_kv_config: " << base_kv_config.dump();
@@ -837,7 +838,14 @@ FACTORY_REGISTER(BaseParameterServer, BRPCParameterServer, BRPCParameterServer);
 int main(int argc, char** argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-  std::ifstream config_file(FLAGS_brpc_config_path);
+  const std::string config_path =
+      FLAGS_brpc_config_path.empty()
+          ? base::ResolveRecStoreConfigPath().string()
+          : FLAGS_brpc_config_path;
+  std::ifstream config_file(config_path);
+  if (!config_file.is_open()) {
+    throw std::runtime_error("Cannot open config file: " + config_path);
+  }
   nlohmann::json ex;
   config_file >> ex;
 

@@ -1,4 +1,21 @@
 
+if(RECSTORE_HUGECTR_CUDA_HEADERS_AVAILABLE)
+    add_executable(backend_benchmark backend_benchmark.cc)
+    target_link_libraries(backend_benchmark PUBLIC
+        pthread
+        base
+        kv_engine
+        ps_common
+        TBB::tbb
+        hps_backend_support
+        fasterkv_backend
+        rocksdb-shared
+        OpenMP::OpenMP_CXX
+    )
+else()
+    message(STATUS "Skipping backend_benchmark: HugeCTR CUDA headers are unavailable.")
+endif()
+
 add_executable(perf_sgl perf_sgl.cc)
 target_link_libraries(perf_sgl PUBLIC base ${warp_wq_ps_client} mayfly Folly::folly)
 target_compile_options(perf_sgl PUBLIC -fopenmp)
@@ -25,7 +42,9 @@ add_executable(ps_transport_benchmark
 target_link_libraries(ps_transport_benchmark PUBLIC
     base
     grpc_ps_client
+    dist_grpc_ps_client
     brpc_ps_client
+    dist_brpc_ps_client
     local_shm_ps_client
     ${warp_wq_ps_client}
     Folly::folly

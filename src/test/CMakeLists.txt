@@ -1,4 +1,6 @@
-find_package(folly REQUIRED)
+if(NOT TARGET Folly::folly)
+    find_package(folly REQUIRED)
+endif()
 find_package(ZLIB REQUIRED)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
@@ -88,6 +90,15 @@ target_link_libraries(test_io_uring_test_utils PUBLIC
 )
 add_test(NAME test_io_uring_test_utils COMMAND test_io_uring_test_utils)
 
+add_executable(test_config test_config.cpp)
+target_link_libraries(test_config PUBLIC
+    base
+    gtest
+    gtest_main
+    pthread
+)
+add_test(NAME test_config COMMAND test_config)
+
 add_executable(test_shm_file test_shm_file.cpp)
 target_link_libraries(test_shm_file PUBLIC
     base
@@ -121,6 +132,95 @@ target_link_libraries(test_kvengine PUBLIC
     TBB::tbb
 )
 add_test(NAME test_kvengine COMMAND test_kvengine)
+
+if(RECSTORE_HUGECTR_CUDA_HEADERS_AVAILABLE)
+    add_executable(test_hps_recstore_backend
+        test_hps_recstore_backend.cpp
+    )
+    target_link_libraries(test_hps_recstore_backend PUBLIC
+        base_memory
+        hps_backend_support
+        gtest
+        gtest_main
+        pthread
+    )
+    add_test(NAME test_hps_recstore_backend COMMAND test_hps_recstore_backend)
+else()
+    message(STATUS
+        "Skipping test_hps_recstore_backend: HugeCTR CUDA headers are unavailable."
+    )
+endif()
+
+if(TARGET rocksdb-shared)
+    add_executable(test_raw_rocksdb_backend
+        test_raw_rocksdb_backend.cpp
+        ${PROJECT_SOURCE_DIR}/src/storage/external/hps/raw_rocksdb.cc
+    )
+    target_include_directories(test_raw_rocksdb_backend PRIVATE
+        ${PROJECT_SOURCE_DIR}
+        ${PROJECT_SOURCE_DIR}/src
+        ${PROJECT_SOURCE_DIR}/third_party/HugeCTR/third_party/rocksdb/include
+    )
+    target_link_libraries(test_raw_rocksdb_backend PUBLIC
+        rocksdb-shared
+        gtest
+        gtest_main
+        pthread
+    )
+    add_test(NAME test_raw_rocksdb_backend COMMAND test_raw_rocksdb_backend)
+else()
+    message(STATUS "Skipping test_raw_rocksdb_backend: rocksdb-shared target is unavailable.")
+endif()
+
+if(TARGET fasterkv_backend)
+    add_executable(test_fasterkv_backend
+        test_fasterkv_backend.cpp
+    )
+    target_include_directories(test_fasterkv_backend PRIVATE
+        ${PROJECT_SOURCE_DIR}
+        ${PROJECT_SOURCE_DIR}/src
+    )
+    target_link_libraries(test_fasterkv_backend PUBLIC
+        fasterkv_backend
+        gtest
+        gtest_main
+        pthread
+    )
+    add_test(NAME test_fasterkv_backend COMMAND test_fasterkv_backend)
+else()
+    message(STATUS
+        "Skipping test_fasterkv_backend: fasterkv_backend target is unavailable."
+    )
+endif()
+
+set(RECSTORE_EXTERNAL_KV_ENGINE_TEST_ENABLED OFF)
+set(RECSTORE_EXTERNAL_KV_ENGINE_TEST_LIBS
+    kv_engine
+    gtest
+    gtest_main
+    pthread
+)
+set(RECSTORE_EXTERNAL_KV_ENGINE_TEST_DEFS)
+if(TARGET fasterkv_backend)
+    set(RECSTORE_EXTERNAL_KV_ENGINE_TEST_ENABLED ON)
+    list(APPEND RECSTORE_EXTERNAL_KV_ENGINE_TEST_DEFS
+        RECSTORE_TEST_ENABLE_FASTERKV_ENGINE)
+endif()
+if(TARGET hps_backend_support)
+    set(RECSTORE_EXTERNAL_KV_ENGINE_TEST_ENABLED ON)
+    list(APPEND RECSTORE_EXTERNAL_KV_ENGINE_TEST_DEFS
+        RECSTORE_TEST_ENABLE_HPS_ENGINE)
+endif()
+if(RECSTORE_EXTERNAL_KV_ENGINE_TEST_ENABLED)
+    add_executable(test_external_kv_engine test_external_kv_engine.cpp)
+    target_compile_definitions(test_external_kv_engine PRIVATE
+        ${RECSTORE_EXTERNAL_KV_ENGINE_TEST_DEFS}
+    )
+    target_link_libraries(test_external_kv_engine PUBLIC
+        ${RECSTORE_EXTERNAL_KV_ENGINE_TEST_LIBS}
+    )
+    add_test(NAME test_external_kv_engine COMMAND test_external_kv_engine)
+endif()
 
 add_executable(test_index test_index.cpp)
 target_link_libraries(test_index PUBLIC
@@ -305,6 +405,16 @@ set_tests_properties(
 )
 
 add_python_unittest(
+    test_recstore_config_schema_py
+    src/test/scripts/test_recstore_config_schema.py
+)
+set_tests_properties(
+    test_recstore_config_schema_py
+    PROPERTIES
+    LABELS "config;python"
+)
+
+add_python_unittest(
     test_hierkv_python_ops_py
     src.python.pytorch.recstore.unittest.test_kvclient_local_fast_path
     src.python.pytorch.recstore.unittest.test_hierkv_integration
@@ -337,6 +447,7 @@ set(HUGECTR_CONFIG_TEMPLATE
 )
 
 if(ENABLE_CUDA AND CMAKE_CUDA_COMPILER AND
+   RECSTORE_HUGECTR_CUDA_HEADERS_AVAILABLE AND
    EXISTS ${HUGECTR_TENSOR2_HEADER} AND
    EXISTS ${HUGECTR_CONFIG_TEMPLATE})
     set(HUGECTR_TEST_GENERATED_INCLUDE_DIR
@@ -368,7 +479,7 @@ if(ENABLE_CUDA AND CMAKE_CUDA_COMPILER AND
         ${PROJECT_SOURCE_DIR}/third_party/HugeCTR/HugeCTR
         ${PROJECT_SOURCE_DIR}/third_party/HugeCTR/HugeCTR/include
         ${HUGECTR_TEST_GENERATED_INCLUDE_DIR}
-        ${CUDA_TOOLKIT_INCLUDE}
+        ${RECSTORE_CUDA_INCLUDE_DIRS}
     )
     target_link_libraries(test_hugectr_emb PUBLIC
         base

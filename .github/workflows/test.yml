@@ -148,6 +148,7 @@ jobs:
           PULLED_IMAGE="${TEST_IMAGE}"
 
           docker run -d --name "${TEST_CONTAINER}" --network host \
+            --security-opt seccomp=unconfined \
             -v "${GITHUB_WORKSPACE}:/workspace" \
             "${PULLED_IMAGE}" \
             bash -lc 'tail -f /dev/null'
@@ -248,7 +249,8 @@ jobs:
             cd "/workspace/${BUILD_DIR}"
             # Docker default seccomp in GitHub Actions blocks io_uring syscalls.
             # Skip io_uring-dependent tests in this containerized lane.
-            ctest --output-on-failure \
+            ctest --output-on-failure --progress \
+              --timeout 300 \
               -E "${CTEST_EXCLUDE_REGEX}" \
               2>&1 | tee /workspace/runner/logs/ctest.log
             exit ${PIPESTATUS[0]}
