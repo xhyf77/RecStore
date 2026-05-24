@@ -20,7 +20,7 @@ graph TD
     subgraph Storage ["3. 存储层 (Storage Layer)"]
         PSServer --> CachePS["CachePS 核心逻辑<br/>src/ps/base/cache_ps_impl.h"]
         CachePS --> BaseKV["BaseKV 抽象层<br/>src/storage/kv_engine/base_kv.h"]
-        BaseKV --> KVEngine["KV 引擎 (ExtendibleHash/CCEH/Hybrid)<br/>src/storage/kv_engine/"]
+        BaseKV --> KVEngine["KV 引擎 (Composite/PetKV/External)<br/>src/storage/kv_engine/"]
         KVEngine --> MemMgr["内存管理器<br/>src/memory/"]
     end
 

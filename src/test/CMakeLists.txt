@@ -119,7 +119,16 @@ target_link_libraries(test_concurrent_slab_memory_pool PUBLIC
 )
 add_test(NAME test_concurrent_slab_memory_pool COMMAND test_concurrent_slab_memory_pool)
 
+set(RECSTORE_KVENGINE_TEST_DEFS)
+if(TARGET fasterkv_backend)
+    list(APPEND RECSTORE_KVENGINE_TEST_DEFS RECSTORE_TEST_ENABLE_FASTERKV_ENGINE)
+endif()
+if(TARGET hps_backend_support)
+    list(APPEND RECSTORE_KVENGINE_TEST_DEFS RECSTORE_TEST_ENABLE_HPS_ENGINE)
+endif()
+
 add_executable(test_kvengine test_kvengine.cpp)
+target_compile_definitions(test_kvengine PRIVATE ${RECSTORE_KVENGINE_TEST_DEFS})
 target_link_libraries(test_kvengine PUBLIC
     extendible_hash
     base

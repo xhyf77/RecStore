@@ -30,8 +30,14 @@ inline uint64_t* BitmapWords(base::BitMap* bitmap) {
 
 inline int BitmapNumWords(int nr_entries) { return nr_entries / 64; }
 
-inline int TryAllocFromBitmap(uint64_t* words, int n_words) {
-  for (int i = 0; i < n_words; ++i) {
+inline int& AllocWordHintTls() {
+  thread_local int hint = 0;
+  return hint;
+}
+
+inline int TryAllocFromBitmap(uint64_t* words, int n_words, int start_word = 0) {
+  for (int w = 0; w < n_words; ++w) {
+    const int i = (start_word + w) % n_words;
     uint64_t old = words[i];
     while (true) {
       const uint64_t inv = ~old;
@@ -79,13 +85,15 @@ class ConcurrentSlabMemoryPool : public MallocApi {
         : header_(reinterpret_cast<ChunkHeader*>(chunk_start)),
           data_(nullptr),
           chunk_id_(chunk_id),
-          allocated_entries_(0) {}
+          allocated_entries_(0),
+          listed_in_partial_(false) {}
 
     void Initialize() {
       header_->slab_size_  = 0;
       header_->nr_entries_ = 0;
       data_                = nullptr;
       allocated_entries_.store(0, std::memory_order_relaxed);
+      listed_in_partial_.store(false, std::memory_order_relaxed);
     }
 
     void Use(int slab_size) {
@@ -108,6 +116,7 @@ class ConcurrentSlabMemoryPool : public MallocApi {
       header_->bitmap_->Clear();
       data_ = reinterpret_cast<char*>(header_) + header_->HeaderSize();
       allocated_entries_.store(0, std::memory_order_relaxed);
+      listed_in_partial_.store(false, std::memory_order_relaxed);
     }
 
     bool IsActivated() const { return header_->slab_size_ != 0; }
@@ -123,23 +132,40 @@ class ConcurrentSlabMemoryPool : public MallocApi {
       uint64_t* words =
           concurrent_slab_detail::BitmapWords(header_->bitmap_);
       const int n_words = concurrent_slab_detail::BitmapNumWords(nr_entries);
-      const int entry_id =
-          concurrent_slab_detail::TryAllocFromBitmap(words, n_words);
+      int& word_hint = concurrent_slab_detail::AllocWordHintTls();
+      const int entry_id = concurrent_slab_detail::TryAllocFromBitmap(
+          words, n_words, n_words > 0 ? word_hint % n_words : 0);
       if (entry_id < 0) {
         return nullptr;
       }
+      word_hint = (entry_id / 64 + 1) % n_words;
       allocated_entries_.fetch_add(1, std::memory_order_relaxed);
       return Entry(entry_id);
     }
 
-    void Free(void* memory_data) {
+    // Returns true if the chunk was full before this free (now has free slots).
+    bool Free(void* memory_data) {
       CHECK(IsActivated());
+      const int nr_entries = header_->nr_entries_;
+      const bool was_full =
+          allocated_entries_.load(std::memory_order_relaxed) >= nr_entries;
       const int entry_id = EntryId(memory_data);
       uint64_t* words =
           concurrent_slab_detail::BitmapWords(header_->bitmap_);
       CHECK(concurrent_slab_detail::TryFreeBitmapBit(words, entry_id))
           << "double free or corrupt pointer in chunk " << chunk_id_;
       allocated_entries_.fetch_sub(1, std::memory_order_relaxed);
+      return was_full;
+    }
+
+    bool TryMarkListedInPartial() {
+      bool expected = false;
+      return listed_in_partial_.compare_exchange_strong(
+          expected, true, std::memory_order_relaxed);
+    }
+
+    void ClearListedInPartial() {
+      listed_in_partial_.store(false, std::memory_order_relaxed);
     }
 
     int SlabSize() const { return header_->slab_size_; }
@@ -194,6 +220,7 @@ class ConcurrentSlabMemoryPool : public MallocApi {
     char* data_;
     uint64_t chunk_id_;
     std::atomic<int> allocated_entries_;
+    std::atomic<bool> listed_in_partial_;
     DISALLOW_COPY_AND_ASSIGN(SlabChunk);
   };
 
@@ -273,7 +300,17 @@ public:
     if (chunk_id < 0 || chunk_id >= nr_chunks_) {
       return false;
     }
-    chunks_[static_cast<size_t>(chunk_id)]->Free(memory_data);
+    SlabChunk* chunk = chunks_[static_cast<size_t>(chunk_id)];
+    const bool was_full = chunk->Free(memory_data);
+    const int slab_size = chunk->SlabSize();
+    ThreadLocalPool& tls = PoolTls();
+    SlabChunk*& hot      = tls.hot_by_slab[slab_size];
+    if (hot == nullptr && !chunk->Full()) {
+      chunk->ClearListedInPartial();
+      hot = chunk;
+    } else if (was_full) {
+      TryEnqueuePartial(slab_size, chunk);
+    }
     total_malloc_.fetch_sub(1, std::memory_order_relaxed);
     return true;
   }
@@ -366,6 +403,28 @@ public:
   }
 
 private:
+  void AbandonHotChunk(int slab_size, SlabChunk*& hot) {
+    SlabChunk* abandoned = hot;
+    hot                  = nullptr;
+    if (abandoned != nullptr && !abandoned->Full()) {
+      TryEnqueuePartial(slab_size, abandoned);
+    }
+  }
+
+  void TryEnqueuePartial(int slab_size, SlabChunk* chunk) {
+    if (chunk == nullptr || chunk->Full() || !chunk->TryMarkListedInPartial()) {
+      return;
+    }
+    auto state_it = slab_states_.find(slab_size);
+    CHECK(state_it != slab_states_.end());
+    base::AutoLock slab_lock(state_it->second.lock);
+    if (chunk->Full()) {
+      chunk->ClearListedInPartial();
+      return;
+    }
+    state_it->second.partial.push_back(chunk);
+  }
+
   char* NewInternal(int slab_size) {
     ThreadLocalPool& tls = PoolTls();
     SlabChunk*& hot      = tls.hot_by_slab[slab_size];
@@ -378,7 +437,7 @@ private:
           return ptr;
         }
         // Another thread filled the chunk after the Full() check.
-        hot = nullptr;
+        AbandonHotChunk(slab_size, hot);
       }
 
       SlabChunk* chunk = AcquireChunk(slab_size, &hot);
@@ -390,7 +449,7 @@ private:
       // The selected chunk became full after AcquireChunk() released the slab
       // lock, or Full() briefly lagged behind the bitmap state.
       if (hot == chunk) {
-        hot = nullptr;
+        AbandonHotChunk(slab_size, hot);
       }
     }
   }
@@ -410,9 +469,11 @@ private:
     while (!state.partial.empty()) {
       SlabChunk* chunk = state.partial.front();
       state.partial.pop_front();
+      chunk->ClearListedInPartial();
       if (chunk->Full()) {
         continue;
       }
+      chunk->ClearListedInPartial();
       hot = chunk;
       return chunk;
     }
@@ -424,6 +485,7 @@ private:
         free_chunks_.pop_front();
         chunk->Use(slab_size);
         state.active.push_back(chunk);
+        chunk->ClearListedInPartial();
         hot = chunk;
         return chunk;
       }
@@ -431,6 +493,7 @@ private:
 
     for (SlabChunk* chunk : state.active) {
       if (!chunk->Full()) {
+        chunk->ClearListedInPartial();
         hot = chunk;
         return chunk;
       }

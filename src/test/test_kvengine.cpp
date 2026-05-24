@@ -896,6 +896,173 @@ TEST_P(KVEngineCartesianTest, DataConsistencyTest) {
   EXPECT_GT(total_updates.load(), 0);
 }
 
+#if defined(RECSTORE_TEST_ENABLE_FASTERKV_ENGINE) || \
+    defined(RECSTORE_TEST_ENABLE_HPS_ENGINE)
+
+class KVEngineExternalEngineTest : public ::testing::TestWithParam<const char*> {
+public:
+  static std::string Sanitize(std::string s) {
+    for (char& c : s)
+      if (!std::isalnum((unsigned char)c))
+        c = '_';
+    return s;
+  }
+
+protected:
+  std::string CreateFixedLengthValue(const std::string& base_value) {
+    std::string value = base_value;
+    value.resize(128);
+    return value;
+  }
+
+  void SetUp() override {
+    engine_type_ = GetParam();
+    test_dir_    = "/tmp/test_kv_engine_external_" + engine_type_ + "_" +
+                std::to_string(getpid());
+    std::filesystem::remove_all(test_dir_);
+    std::filesystem::create_directories(test_dir_);
+
+    cfg_.num_threads_ = 8;
+    cfg_.json_config_ = {{"external_engine_type", engine_type_},
+                         {"path", test_dir_},
+                         {"capacity", 1000000},
+                         {"value_size", 128}};
+
+    auto resolved  = base::ResolveEngine(cfg_);
+    engine_name_   = resolved.engine;
+    ASSERT_EQ(engine_name_, engine_type_);
+
+    try {
+      kv_engine_.reset(base::Factory<BaseKV, const BaseKVConfig&>::NewInstance(
+          engine_name_, resolved.cfg));
+    } catch (const std::exception& e) {
+      FAIL() << "Create external engine failed for " << engine_type_ << " : "
+             << e.what();
+    }
+    ASSERT_NE(kv_engine_, nullptr);
+  }
+
+  void TearDown() override {
+    kv_engine_.reset();
+    std::filesystem::remove_all(test_dir_);
+  }
+
+  std::string test_dir_;
+  BaseKVConfig cfg_;
+  std::unique_ptr<BaseKV> kv_engine_;
+  std::string engine_type_;
+  std::string engine_name_;
+};
+
+TEST_P(KVEngineExternalEngineTest, BasicPutAndGet) {
+  uint64_t key      = 123;
+  std::string value = CreateFixedLengthValue("external_test_value_123");
+  std::string retrieved_value;
+
+  kv_engine_->Put(key, value, 0);
+  kv_engine_->Get(key, retrieved_value, 0);
+  EXPECT_EQ(retrieved_value, value);
+}
+
+TEST_P(KVEngineExternalEngineTest, GetNonExistentKey) {
+  std::string retrieved_value;
+  kv_engine_->Get(999999, retrieved_value, 0);
+  EXPECT_TRUE(retrieved_value.empty());
+}
+
+TEST_P(KVEngineExternalEngineTest, KeyOverwrite) {
+  uint64_t key = 456;
+  std::string value1 = CreateFixedLengthValue("external_value1");
+  std::string value2 = CreateFixedLengthValue("external_value2");
+  std::string retrieved_value;
+
+  kv_engine_->Put(key, value1, 0);
+  kv_engine_->Put(key, value2, 0);
+  kv_engine_->Get(key, retrieved_value, 0);
+  EXPECT_EQ(retrieved_value, value2);
+}
+
+TEST_P(KVEngineExternalEngineTest, MultiplePutAndGet) {
+  const int num_keys = 100;
+  for (int i = 0; i < num_keys; i++) {
+    std::string value = CreateFixedLengthValue("external_key_" + std::to_string(i));
+    kv_engine_->Put(i, value, 0);
+  }
+  for (int i = 0; i < num_keys; i++) {
+    std::string expected = CreateFixedLengthValue("external_key_" + std::to_string(i));
+    std::string retrieved;
+    kv_engine_->Get(i, retrieved, 0);
+    EXPECT_EQ(retrieved, expected) << "Mismatch for key " << i;
+  }
+}
+
+TEST_P(KVEngineExternalEngineTest, BatchGet) {
+  std::vector<uint64_t> keys;
+  for (int i = 0; i < 10; i++) {
+    keys.push_back(i);
+    kv_engine_->Put(i, CreateFixedLengthValue("batch_" + std::to_string(i)), 0);
+  }
+
+  base::ConstArray<uint64_t> key_view(keys.data(), keys.size());
+  std::vector<base::ConstArray<float>> values;
+  kv_engine_->BatchGet(key_view, &values, 0);
+
+  ASSERT_EQ(values.size(), keys.size());
+  const int floats_per_row = 128 / static_cast<int>(sizeof(float));
+  for (size_t i = 0; i < keys.size(); ++i) {
+    ASSERT_EQ(values[i].Size(), floats_per_row);
+  }
+}
+
+TEST_P(KVEngineExternalEngineTest, BulkLoadThenGetAndBatchGet) {
+  const int num_keys = 50;
+  std::vector<uint64_t> keys(num_keys);
+  std::vector<std::string> values(num_keys);
+  std::vector<char> bulk_data(static_cast<size_t>(num_keys) * 128);
+
+  for (int i = 0; i < num_keys; i++) {
+    keys[i]   = i + 1000;
+    values[i] = CreateFixedLengthValue("bulk_" + std::to_string(i));
+    std::memcpy(bulk_data.data() + static_cast<size_t>(i) * 128, values[i].data(),
+                128);
+  }
+
+  base::ConstArray<uint64_t> key_view(keys.data(), keys.size());
+  kv_engine_->BulkLoad(key_view, bulk_data.data());
+
+  for (int i = 0; i < num_keys; i++) {
+    std::string retrieved;
+    kv_engine_->Get(keys[i], retrieved, 0);
+    EXPECT_EQ(retrieved, values[i]);
+  }
+
+  std::vector<base::ConstArray<float>> batch_values;
+  kv_engine_->BatchGet(key_view, &batch_values, 0);
+  ASSERT_EQ(batch_values.size(), keys.size());
+}
+
+#ifdef RECSTORE_TEST_ENABLE_FASTERKV_ENGINE
+INSTANTIATE_TEST_SUITE_P(
+    FasterKV,
+    KVEngineExternalEngineTest,
+    ::testing::Values("KVEngineFasterKV"),
+    [](const testing::TestParamInfo<KVEngineExternalEngineTest::ParamType>& info) {
+      return KVEngineExternalEngineTest::Sanitize(info.param);
+    });
+#endif
+
+#ifdef RECSTORE_TEST_ENABLE_HPS_ENGINE
+INSTANTIATE_TEST_SUITE_P(
+    HPSRocksDB,
+    KVEngineExternalEngineTest,
+    ::testing::Values("KVEngineHPSRocksDB"),
+    [](const testing::TestParamInfo<KVEngineExternalEngineTest::ParamType>& info) {
+      return KVEngineExternalEngineTest::Sanitize(info.param);
+    });
+#endif
+
+#endif  // RECSTORE_TEST_ENABLE_FASTERKV_ENGINE || RECSTORE_TEST_ENABLE_HPS_ENGINE
+
 INSTANTIATE_TEST_SUITE_P(
     AllCombos,
     KVEngineCartesianTest,

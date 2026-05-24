@@ -428,7 +428,11 @@ RETRY:
     }
     goto RETRY;
   } else if (ret == -2) {
-    return Insert(key, value);
+    // Block is splitting or directory pointers are stale; retry without recursion.
+    if (target->sema == -1) {
+      std::this_thread::yield();
+    }
+    goto RETRY;
   } else {
     clflush((char*)&dir._[x]->_[ret], sizeof(Pair));
   }
