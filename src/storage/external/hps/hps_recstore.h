@@ -46,9 +46,10 @@ public:
 
   explicit HpsRecStoreBackend(const HpsRecStoreBackendParams& params)
       : Base(params) {
-    base::PMMmapRegisterCenter::GetConfig().use_dram =
-        params.value_store_type == "DRAM_VALUE_STORE" ||
-        params.value_store_type == "TIERED_VALUE_STORE";
+    base::PMMmapRegisterCenter::GetConfig().backend =
+        base::PMMmapRegisterCenter::BackendFromUseDram(
+            params.value_store_type == "DRAM_VALUE_STORE" ||
+            params.value_store_type == "TIERED_VALUE_STORE");
 
     BaseKVConfig cfg;
     cfg.num_threads_ = params.num_threads;

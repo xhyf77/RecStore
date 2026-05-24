@@ -293,6 +293,16 @@ BaseKVConfig BuildConfig() {
     config.num_threads_ = std::max(FLAGS_thread_num, FLAGS_load_thread_num);
     return config;
   }
+  if (FLAGS_engine_class == "KVEnginePetKV") {
+    if (FLAGS_dram_path.empty()) {
+      throw std::invalid_argument("dram_path must be set for KVEnginePetKV");
+    }
+    config.json_config_ = {{"capacity", capacity},
+                           {"path", FLAGS_dram_path},
+                           {"value_size", FLAGS_value_size}};
+    config.num_threads_ = std::max(FLAGS_thread_num, FLAGS_load_thread_num);
+    return config;
+  }
 
   const bool ssd_index = IsSsdIndexType(FLAGS_index_type);
 
@@ -468,6 +478,7 @@ double SecondsSince(std::chrono::steady_clock::time_point start,
 } // namespace
 
 int main(int argc, char* argv[]) {
+  ForceLinkIOBackends();
   base::Init(&argc, &argv);
 
   if (FLAGS_record_count <= 0) {
@@ -515,8 +526,10 @@ int main(int argc, char* argv[]) {
   const int load_threads =
       FLAGS_load_thread_num > 0 ? FLAGS_load_thread_num : FLAGS_thread_num;
 
-  base::PMMmapRegisterCenter::GetConfig().use_dram =
-      HasDramValueStore(FLAGS_value_store_type);
+  base::PMMmapRegisterCenter::GetConfig().backend =
+      base::PMMmapRegisterCenter::BackendFromUseDram(
+          HasDramValueStore(FLAGS_value_store_type) ||
+          FLAGS_engine_class == "KVEnginePetKV");
 
   BaseKVConfig config = BuildConfig();
   std::unique_ptr<BaseKV> kv;
