@@ -15,15 +15,15 @@ public:
   explicit KVEnginePetKV(const BaseKVConfig& config) : BaseKV(config) {
     const std::string shm_path = config.json_config_["path"];
     const int shard_num        = config.json_config_.value("shard_num", 16);
-    const int value_size       = config.json_config_.at("value_size").get<int>();
-    const int capacity         = config.json_config_.at("capacity").get<int>();
+    const int value_size = config.json_config_.at("value_size").get<int>();
+    const int capacity   = config.json_config_.at("capacity").get<int>();
     constexpr int64_t kMinShardMemory = 2LL * 1024 * 1024;
-
+    const int64_t value_capacity =
+        config.json_config_.at("value_capacity").get<int64_t>();
     const int shard_capacity =
         std::max(1, (capacity + shard_num - 1) / shard_num);
     const int64_t shard_memory =
-        std::max<int64_t>(kMinShardMemory,
-                          static_cast<int64_t>(value_size) * shard_capacity) * 1.2;
+        std::max<int64_t>(kMinShardMemory, value_capacity / shard_num);
     shm_kv = std::make_unique<base::PetMultiKV>(
         shm_path, shard_num, shard_memory, shard_capacity, value_size);
   }
