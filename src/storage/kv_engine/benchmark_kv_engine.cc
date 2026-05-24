@@ -185,7 +185,7 @@ BaseKVConfig BuildConfig() {
   const uint64_t capacity = static_cast<uint64_t>(FLAGS_record_count);
   const uint64_t value_slot_bytes =
       static_cast<uint64_t>(std::max(FLAGS_value_size, 1)) + sizeof(uint64_t);
-  const uint64_t value_capacity = capacity * value_slot_bytes * 6 / 5;
+  const uint64_t guessed_value_capacity = capacity * value_slot_bytes * 2;
   constexpr uint64_t kMinSsdCapacityBytes = 256ULL * 1024ULL * 1024ULL;
 
   if (FLAGS_engine_class == "KVEnginePetKV") {
@@ -208,10 +208,10 @@ BaseKVConfig BuildConfig() {
 
   const uint64_t dram_capacity =
       FLAGS_dram_capacity_bytes > 0 ? static_cast<uint64_t>(FLAGS_dram_capacity_bytes)
-                                    : value_capacity;
+                                    : guessed_value_capacity;
   const uint64_t ssd_capacity =
       FLAGS_ssd_capacity_bytes > 0 ? static_cast<uint64_t>(FLAGS_ssd_capacity_bytes)
-                                   : std::max(value_capacity, kMinSsdCapacityBytes);
+                                   : std::max(guessed_value_capacity, kMinSsdCapacityBytes);
 
   if (FLAGS_value_store_type == "DRAM_VALUE_STORE") {
     if (!FLAGS_dram_path.empty()) {
@@ -234,7 +234,7 @@ BaseKVConfig BuildConfig() {
   } else if (FLAGS_value_store_type == "TIERED_VALUE_STORE") {
     config.json_config_["value"]["dram_allocator"] =
         {{"type", FLAGS_dram_allocator},
-         {"capacity_bytes", dram_capacity},
+         {"capacity_bytes", ssd_capacity * 0.01},
          {"path", FLAGS_dram_path + "/dram"}};
     config.json_config_["value"]["ssd_allocator"] =
         {{"type", "SSD_SLAB"},

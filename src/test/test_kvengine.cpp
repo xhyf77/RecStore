@@ -7,6 +7,7 @@
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <gtest/gtest.h>
@@ -57,9 +58,16 @@ public:
            allocator == "CONCURRENT_SLAB_MEMORY_POOL";
   }
 
+  static bool RunAllEnabled() {
+    const char* value = std::getenv("RUN_ALL");
+    return value != nullptr && std::strcmp(value, "1") == 0;
+  }
+
   static bool ShouldRunHeavyScenario(const std::string& idx,
                                      const std::string& val,
                                      const std::string& allocator) {
+    if (RunAllEnabled())
+      return true;
     if (idx == "DRAM_EXTENDIBLE_HASH" && val == "DRAM_VALUE_STORE")
       return true;
     if (!IsSlabAllocatorForHeavyScenarios(allocator))
@@ -89,9 +97,13 @@ protected:
                    << value_type_ << "," << allocator_type_ << ")";
     }
 
-    test_dir_ = "/dev/shm/test_kv_engine_cartesian_" + std::to_string(getpid()) +
-                "_" + index_type_ + "_" + value_type_ + "_" + allocator_type_;
-    std::filesystem::create_directories(test_dir_);
+    const std::string test_name =
+        "test_kv_engine_cartesian_" + std::to_string(getpid()) + "_" +
+        index_type_ + "_" + value_type_ + "_" + allocator_type_;
+    dram_test_dir_ = "/dev/shm/" + test_name;
+    ssd_test_dir_  = "/tmp/" + test_name;
+    std::filesystem::create_directories(dram_test_dir_);
+    std::filesystem::create_directories(ssd_test_dir_);
 
     base::PMMmapRegisterCenter::GetConfig().backend =
         base::PMMmapRegisterCenter::Backend::kAnonymousDram;
@@ -113,18 +125,29 @@ protected:
       kv_engine_.reset(base::Factory<BaseKV, const BaseKVConfig&>::NewInstance(
           engine_name_, r.cfg));
     } catch (const std::exception& e) {
-      GTEST_SKIP() << "Create engine failed for allocator=" << allocator_type_
-                   << " : " << e.what();
+      if (RunAllEnabled()) {
+        FAIL() << "Create engine failed for allocator=" << allocator_type_
+               << " : " << e.what();
+      } else {
+        GTEST_SKIP() << "Create engine failed for allocator=" << allocator_type_
+                     << " : " << e.what();
+      }
     }
     if (!kv_engine_) {
-      GTEST_SKIP() << "Engine '" << engine_name_ << "' or allocator '"
-                   << allocator_type_ << "' not registered/linked.";
+      if (RunAllEnabled()) {
+        FAIL() << "Engine '" << engine_name_ << "' or allocator '"
+               << allocator_type_ << "' not registered/linked.";
+      } else {
+        GTEST_SKIP() << "Engine '" << engine_name_ << "' or allocator '"
+                     << allocator_type_ << "' not registered/linked.";
+      }
     }
   }
 
   void TearDown() override {
     kv_engine_.reset();
-    std::filesystem::remove_all(test_dir_);
+    std::filesystem::remove_all(dram_test_dir_);
+    std::filesystem::remove_all(ssd_test_dir_);
   }
 
   class SimpleBarrier {
@@ -148,7 +171,8 @@ protected:
     std::condition_variable condition_;
   };
 
-  std::string test_dir_;
+  std::string dram_test_dir_;
+  std::string ssd_test_dir_;
   BaseKVConfig cfg_;
   std::unique_ptr<BaseKV> kv_engine_;
   std::string index_type_, value_type_, allocator_type_, engine_name_;
@@ -161,7 +185,7 @@ private:
                {{"type", value_type_},
                 {"default_value_size_hint", value_sz}}}};
     if (value_type_ == "DRAM_VALUE_STORE") {
-      j["value"]["path"] = test_dir_ + "/value";
+      j["value"]["path"] = dram_test_dir_ + "/value";
       j["value"]["dram_allocator"] =
           {{"type", allocator_type_},
            {"capacity_bytes", capacity * static_cast<size_t>(value_sz)}};
@@ -175,18 +199,18 @@ private:
             {{"type", "IOURING"},
              {"queue_depth", 512},
              {"base_offset_bytes", 4096}}}};
-      j["value"]["path"] = test_dir_ + "/value_pages.db";
+      j["value"]["path"] = ssd_test_dir_ + "/value_pages.db";
     } else if (value_type_ == "TIERED_VALUE_STORE") {
       j["value"]["dram_allocator"] =
           {{"type", allocator_type_},
            {"capacity_bytes", capacity * static_cast<size_t>(value_sz) / 2},
-           {"path", test_dir_ + "/dram"}};
+           {"path", dram_test_dir_ + "/dram"}};
       j["value"]["ssd_allocator"] =
           {{"type", "SSD_BUDDY"},
            {"capacity_bytes", capacity * static_cast<size_t>(value_sz)},
            {"min_block_size", 128},
            {"max_block_size", 65536},
-           {"path", test_dir_ + "/tiered_value_pages.db"},
+           {"path", ssd_test_dir_ + "/tiered_value_pages.db"},
            {"io",
             {{"type", "IOURING"},
              {"queue_depth", 512},

@@ -23,7 +23,7 @@ public:
         std::max(1, (capacity + shard_num - 1) / shard_num);
     const int64_t shard_memory =
         std::max<int64_t>(kMinShardMemory,
-                          static_cast<int64_t>(value_size) * shard_capacity);
+                          static_cast<int64_t>(value_size) * shard_capacity) * 1.2;
     shm_kv = std::make_unique<base::PetMultiKV>(
         shm_path, shard_num, shard_memory, shard_capacity, value_size);
   }

@@ -516,6 +516,18 @@ private:
   // different slab
 };
 
+// Factory wrapper for DramValueStore; matches PetKV PersistMemoryPool<false> slabs.
+class PersistMemoryPoolMalloc : public PersistMemoryPool<false> {
+public:
+  PersistMemoryPoolMalloc(const std::string& filename,
+                          int64 memory_size,
+                          const std::string& /*medium*/)
+      : PersistMemoryPool<false>(
+            filename,
+            memory_size,
+            {8 + 32, 8 + 64, 8 + 128, 8 + 512, 8 + 1024}) {}
+};
+
 class PersistLoopShmMalloc : public MallocApi {
 public:
   static const int max_fast_list_type = 32;
@@ -628,6 +640,12 @@ FACTORY_REGISTER(MallocApi,
 FACTORY_REGISTER(MallocApi,
                  PERSIST_LOOP_SLAB,
                  PersistLoopShmMalloc,
+                 const std::string&,
+                 int64,
+                 const std::string&);
+FACTORY_REGISTER(MallocApi,
+                 PERSIST_MEMORY_POOL,
+                 PersistMemoryPoolMalloc,
                  const std::string&,
                  int64,
                  const std::string&);

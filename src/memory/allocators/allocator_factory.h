@@ -26,6 +26,9 @@ inline std::string ImplFromAllocatorType(const std::string& allocator_type) {
     return "PERSIST_LOOP_SLAB";
   if (t == "R2_SLAB" || t == "R2_SHM_MALLOC" || t == "R2SHMMALLOC")
     return "R2_SLAB";
+  if (t == "CONCURRENT_SLAB_MEMORY_POOL" || t == "CONCURRENT_SLAB" ||
+      t == "CONCURRENTSLABMEMORYPOOL")
+    return "CONCURRENT_SLAB_MEMORY_POOL";
   throw std::invalid_argument("unknown allocator_type: " + allocator_type);
 }
 
@@ -35,6 +38,9 @@ inline std::string AllocatorTypeFromImpl(const std::string& impl_name) {
     return "PERSIST_LOOP_SLAB";
   if (t == "R2SHMMALLOC" || t == "R2_SLAB")
     return "R2_SLAB";
+  if (t == "CONCURRENTSLABMEMORYPOOL" || t == "CONCURRENT_SLAB" ||
+      t == "CONCURRENT_SLAB_MEMORY_POOL")
+    return "CONCURRENT_SLAB_MEMORY_POOL";
   throw std::invalid_argument("unknown allocator impl: " + impl_name);
 }
 
@@ -45,6 +51,8 @@ LegacyImplFromAllocatorType(const std::string& allocator_type) {
     return "PersistLoopShmMalloc";
   if (t == "R2_SLAB")
     return "R2ShmMalloc";
+  if (t == "CONCURRENT_SLAB_MEMORY_POOL")
+    return "ConcurrentSlabMemoryPoolMalloc";
   throw std::invalid_argument("unknown allocator_type: " + allocator_type);
 }
 

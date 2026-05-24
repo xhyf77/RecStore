@@ -65,14 +65,12 @@ endif()
 add_library(dist_grpc_ps_client
     dist_grpc_ps_client.cpp dist_grpc_ps_client.h
 )
+# Link gRPC only through grpc_ps_client to avoid duplicate grpc symbols in
+# consumers (e.g. dist_grpc_ps_client_test), which can deadlock in grpc_init().
 target_link_libraries(dist_grpc_ps_client PUBLIC
     base
     ps_base
     grpc_ps_client
-    ps_proto
-    gRPC::grpc++_reflection
-    gRPC::grpc++
-    protobuf::libprotobuf
 )
 if(USE_PERF_REPORT)
     target_compile_definitions(dist_grpc_ps_client PUBLIC ENABLE_PERF_REPORT)

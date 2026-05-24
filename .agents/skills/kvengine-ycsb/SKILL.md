@@ -1,6 +1,6 @@
 ---
 name: kvengine-ycsb
-description: Run RecStore KVEngine correctness and YCSB benchmark workflows. Use when Codex needs to validate src/test/test_kvengine.cpp, run tools/benchmark/run_ycsb_compare.py, prompt for thread count, SSD benchmark path, and results directory, then generate a three-table Chinese summary.md with workload descriptions, Run throughput, and Load throughput.
+description: Run RecStore KVEngine correctness and YCSB benchmark workflows. Use when Codex needs to validate src/test/test_kvengine.cpp, run tools/benchmarks/run_ycsb_compare.py, prompt for thread count, SSD benchmark path, and results directory, then generate a three-table Chinese summary.md with workload descriptions, Run throughput, and Load throughput.
 ---
 
 # KVEngine YCSB
@@ -23,7 +23,7 @@ Use this skill from a RecStore checkout. Do not run helper scripts from this ski
    - `cmake --build build --target test_kvengine -j`
    - `ctest -R '^test_kvengine$' -VV`
    - `cmake --build build --target benchmark_kv_engine -j`
-   - `tools/benchmark/run_ycsb_compare.py`
+   - `tools/benchmarks/run_ycsb_compare.py`
 4. Save logs and CSV/SVG artifacts under the chosen result directory.
 5. Write `summary.md` as exactly three report tables, with the benchmark hyperparameters recorded as Chinese prose under `Workload 说明` before the first table:
    - Workload description
@@ -42,7 +42,7 @@ cmake --build build --target benchmark_kv_engine -j
 ```
 
 ```bash
-python3 tools/benchmark/run_ycsb_compare.py \
+python3 tools/benchmarks/run_ycsb_compare.py \
   --output-dir <output_dir> \
   --workloads a b c \
   --distributions uniform \
@@ -55,7 +55,7 @@ python3 tools/benchmark/run_ycsb_compare.py \
   --read-mode get
 ```
 
-`tools/benchmark/run_ycsb_compare.py` currently uses `/mnt/nvme1n1_recstore/recstore` internally for SSD data. If the user provides a different SSD path, create a temporary symlink or patch the command wrapper only after making that choice explicit.
+`tools/benchmarks/run_ycsb_compare.py` currently uses `/mnt/nvme1n1_recstore/recstore` internally for SSD data. If the user provides a different SSD path, create a temporary symlink or patch the command wrapper only after making that choice explicit.
 
 If the user asks for "3 次平均", pass `--repeat 3`; otherwise preserve the requested repeat count in the `summary.md` heading.
 
